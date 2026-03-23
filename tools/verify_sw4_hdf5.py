@@ -4,7 +4,7 @@ Uses rtest.srf from this SW4 repo as a Version 1.0 SRF test case.
 
 Usage
 -----
-    python tools/verify_sw4_hdf5.py /path/to/sw4
+    python tools/verify_sw4_hdf5.py
 
 Requires the source_modelling package to be installed (pip install source_modelling).
 """
@@ -18,12 +18,14 @@ import numpy as np
 
 from source_modelling import srf
 
+SW4_REPO = Path(__file__).parent.parent
 
-def run_srf2hdf5(sw4_repo: Path, srf_path: Path, output_path: Path) -> None:
+
+def run_srf2hdf5(srf_path: Path, output_path: Path) -> None:
     """Run SW4's srf2hdf5.py as a subprocess."""
     import subprocess
 
-    script = sw4_repo / "tools" / "srf2hdf5.py"
+    script = SW4_REPO / "tools" / "srf2hdf5.py"
     result = subprocess.run(
         [sys.executable, str(script), str(srf_path), str(output_path)],
         capture_output=True,
@@ -101,16 +103,7 @@ def compare(ref_path: Path, ours_path: Path) -> bool:
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python tools/verify_sw4_hdf5.py /path/to/sw4")
-        sys.exit(1)
-
-    sw4_repo = Path(sys.argv[1])
-    srf_path = sw4_repo / "examples" / "rupture" / "rtest.srf"
-
-    if not srf_path.exists():
-        print(f"Error: {srf_path} not found. Is {sw4_repo} the SW4 repo root?")
-        sys.exit(1)
+    srf_path = SW4_REPO / "examples" / "rupture" / "rtest.srf"
 
     print(f"SRF file: {srf_path}")
 
@@ -119,7 +112,7 @@ def main():
         ours_path = Path(tmp_dir) / "ours.h5"
 
         print("\n--- Running SW4's srf2hdf5.py ---")
-        run_srf2hdf5(sw4_repo, srf_path, ref_path)
+        run_srf2hdf5(srf_path, ref_path)
 
         print("\n--- Running write_sw4_hdf5 ---")
         srf_file = srf.read_srf(srf_path)
