@@ -106,8 +106,12 @@ for i in range(0, npoints):
     area   = np.float32(fields[5])
     tinit  = np.float32(fields[6])
     dt     = np.float32(fields[7])
-    vs     = np.float32(fields[8])
-    den    = np.float32(fields[9])
+    if len(fields) >= 10:
+        vs  = np.float32(fields[8])
+        den = np.float32(fields[9])
+    else:
+        vs  = np.float32(0.0)
+        den = np.float32(0.0)
     idx += 1
 
     fields = lines[idx].split()
