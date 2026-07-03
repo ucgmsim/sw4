@@ -95,7 +95,7 @@ void MaterialSfile::set_material_properties(std::vector<Sarray> & rho,
       bool curvilinear = mEW->topographyExists() && g >= mEW->mNumberOfCartesianGrids;
       size_t ni=mEW->m_iEnd[g]-mEW->m_iStart[g]+1;
       size_t nj=mEW->m_jEnd[g]-mEW->m_jStart[g]+1;
-#pragma omp parallel for collapse(2) reduction(+:material,outside)
+#pragma omp parallel for reduction(+:material,outside)
       for (int k = mEW->m_kStart[g]; k <= mEW->m_kEnd[g]; ++k) {
 	 for (int j = mEW->m_jStartInt[g]; j <= mEW->m_jEndInt[g]; ++j) {
 	    for (int i = mEW->m_iStartInt[g]; i <= mEW->m_iEndInt[g]; ++i) {

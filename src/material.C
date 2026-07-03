@@ -39,7 +39,7 @@ void EW::convert_material_to_mulambda( )
       // On input, we have stored cs in MU, cp in Lambda
       // use mu = rho*cs*cs and lambda = rho*cp*cp  - 2*mu
       
-#pragma omp parallel for collapse(2)
+#pragma omp parallel for     
       for( int k = m_kStart[g] ; k <= m_kEnd[g]; k++ )
       {
           for( int j = m_jStart[g] ; j <= m_jEnd[g]; j++ )
