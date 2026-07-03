@@ -532,7 +532,7 @@ void RandomizedMaterial::get_fourier_modes( complex<float_sw4>* uhat, int n1, in
 	    if( k3 > r3 )
 	       k3eff = k3-n3;
 	    uhat[k3+n3*k2+n2*n3*(k1-ib1)] = (A0isq2/pow(1+tpi2*(k1eff*k1eff*ll1+k2eff*k2eff*ll2+k3eff*k3eff*ll3),hhalf))
-               *exp(I*udist(generator));
+               *exp(I*float_sw4(udist(generator)));
                //	       *(ndist(generator)+I*ndist(generator));
 	    //	       *(1+I);
 	 }

@@ -10,9 +10,23 @@ extern "C" {
    void F77_FUNC(dgetrf,DGETRF)(int*,  int*, double*, int*, int*, int*);
    void F77_FUNC(dgetri,DGETRI)(int*, double*, int*, int*, double*, int*, int* );
    void F77_FUNC(dgetrs,DGETRS)(char*, int*, int*, double*, int*, int*, double*, int*, int*);
+   void F77_FUNC(sgetrf,SGETRF)(int*,  int*, float*, int*, int*, int*);
+   void F77_FUNC(sgetri,SGETRI)(int*, float*, int*, int*, float*, int*, int* );
+   void F77_FUNC(sgetrs,SGETRS)(char*, int*, int*, float*, int*, int*, float*, int*, int*);
 }
 
-void bndryOpNoGhostc( double *acof_no_gp, double *ghcof_no_gp, double *sbop_no_gp );
+// Precision-dispatched LAPACK wrappers: the factorized mass blocks are stored
+// in float_sw4, so the LU routines must match that type in both builds.
+static inline void getrf_sw4(int* m, int* n, double* a, int* lda, int* ipiv, int* info)
+{ F77_FUNC(dgetrf,DGETRF)(m, n, a, lda, ipiv, info); }
+static inline void getrf_sw4(int* m, int* n, float* a, int* lda, int* ipiv, int* info)
+{ F77_FUNC(sgetrf,SGETRF)(m, n, a, lda, ipiv, info); }
+static inline void getri_sw4(int* n, double* a, int* lda, int* ipiv, double* work, int* lwork, int* info)
+{ F77_FUNC(dgetri,DGETRI)(n, a, lda, ipiv, work, lwork, info); }
+static inline void getri_sw4(int* n, float* a, int* lda, int* ipiv, float* work, int* lwork, int* info)
+{ F77_FUNC(sgetri,SGETRI)(n, a, lda, ipiv, work, lwork, info); }
+
+void bndryOpNoGhostc( float_sw4 *acof_no_gp, float_sw4 *ghcof_no_gp, float_sw4 *sbop_no_gp );
 
 void curvilinear4sgwind( int, int, int, int, int, int, int, int, float_sw4*, float_sw4*, float_sw4*,
                          float_sw4*, float_sw4*, float_sw4*, int*, float_sw4*, float_sw4*, float_sw4*, float_sw4*,
@@ -260,11 +274,11 @@ void CurvilinearInterface2::init_arrays( vector<float_sw4*>& a_strx,
    int info     = 0;
    m_ipiv_block = new int[3*msize];
    int lwork=9;
-   double* work=new double[lwork];
+   float_sw4* work=new float_sw4[lwork];
    for( size_t ind=0 ; ind < msize; ind++ )
    {
-      F77_FUNC(dgetrf,DGETRF)(&three, &three, &m_mass_block[9*ind], &three,
-			      &m_ipiv_block[3*ind], &info );
+      getrf_sw4(&three, &three, &m_mass_block[9*ind], &three,
+                &m_ipiv_block[3*ind], &info );
       if( info != 0)
       {
 	 int j = ind/m_Mass_block.m_ni+m_Mass_block.m_jb;
@@ -277,8 +291,8 @@ void CurvilinearInterface2::init_arrays( vector<float_sw4*>& a_strx,
 	      std::cerr << m_Mass_block(m +3*(l-1), i, j,1) << ",";
 	    std::cerr << "\n";
       }
-      F77_FUNC(dgetri,DGETRI)(&three, &m_mass_block[9*ind], &three,
-			      &m_ipiv_block[3*ind], work, &lwork, &info );
+      getri_sw4(&three, &m_mass_block[9*ind], &three,
+                &m_ipiv_block[3*ind], work, &lwork, &info );
       if( info != 0)
       {
 	 int j = ind/m_Mass_block.m_ni+m_Mass_block.m_jb;

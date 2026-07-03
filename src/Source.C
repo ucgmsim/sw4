@@ -3290,7 +3290,7 @@ void Source::get_mr_psources( EW* a_EW, int g, float_sw4 q, float_sw4 r,
          Sarray zfa(icf-7,icf+7,jcf-7,jcf+7,Nzf-5,Nzf);
          Sarray Jfa(icf-7,icf+7,jcf-7,jcf+7,Nzf-5,Nzf);
          a_EW->m_gridGenerator->generate_z_and_j( a_EW, gf, zfa, Jfa );
-         float_sw4* _mom_f=new double[15*15*ncond];
+         float_sw4* _mom_f=new float_sw4[15*15*ncond];
 #define mom_f(c,i,j) _mom_f[(c-1)+ncond*(i-icf+7)+15*ncond*(j-jcf+7)]
          for( int j=jcf-7 ; j<= jcf+7 ; j++ )
             for( int i=icf-7 ; i<= icf+7 ; i++ )
@@ -3542,9 +3542,21 @@ void Source::get_mr_psources( EW* a_EW, int g, float_sw4 q, float_sw4 r,
    char tr='N';
    int ssize=125, one=1, info=0, nb=20;
    int lwork=ncond+ncond*nb;
-   float_sw4* work = new float_sw4[lwork];
-   F77_FUNC(dgels,DGELS)( tr, ncond, ssize, nrhs, a_, ncond, b_, ldb, 
+   // LAPACK solve is done in double regardless of float_sw4, matching the
+   // dgels usage in EW.C; the copies are setup-time only and tiny (125 x ncond).
+   double* work = new double[lwork];
+   double* ad = new double[ncond*125];
+   double* bd = new double[ldb*nrhs];
+   for( int ci=0 ; ci < ncond*125 ; ci++ )
+      ad[ci] = a_[ci];
+   for( int ci=0 ; ci < ldb*nrhs ; ci++ )
+      bd[ci] = b_[ci];
+   F77_FUNC(dgels,DGELS)( tr, ncond, ssize, nrhs, ad, ncond, bd, ldb,
                           work, lwork, info );
+   for( int ci=0 ; ci < ldb*nrhs ; ci++ )
+      b_[ci] = bd[ci];
+   delete[] ad;
+   delete[] bd;
    delete[] work;
    REQUIRE2( info==0, "ERROR, info = " << info << " returned from DGELS ")
 
@@ -4102,9 +4114,21 @@ void Source::get_cc_psources( EW* a_EW, int g, float_sw4 q, float_sw4 r,
    char tr='N';
    int ssize=125, one=1, info=0, nb=20;
    int lwork=ncond+ncond*nb;
-   float_sw4* work = new float_sw4[lwork];
-   F77_FUNC(dgels,DGELS)( tr, ncond, ssize, nrhs, a_, ncond, b_, ldb, 
+   // LAPACK solve is done in double regardless of float_sw4, matching the
+   // dgels usage in EW.C; the copies are setup-time only and tiny (125 x ncond).
+   double* work = new double[lwork];
+   double* ad = new double[ncond*125];
+   double* bd = new double[ldb*nrhs];
+   for( int ci=0 ; ci < ncond*125 ; ci++ )
+      ad[ci] = a_[ci];
+   for( int ci=0 ; ci < ldb*nrhs ; ci++ )
+      bd[ci] = b_[ci];
+   F77_FUNC(dgels,DGELS)( tr, ncond, ssize, nrhs, ad, ncond, bd, ldb,
                           work, lwork, info );
+   for( int ci=0 ; ci < ldb*nrhs ; ci++ )
+      b_[ci] = bd[ci];
+   delete[] ad;
+   delete[] bd;
    delete[] work;
    REQUIRE2( info==0, "ERROR, info = " << info << " returned from DGELS ")
 

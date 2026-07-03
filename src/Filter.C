@@ -302,8 +302,8 @@ float_sw4 Filter::complexConjugatedPolesBP(float_sw4 f1, float_sw4 f2, float_sw4
   }
 
 // roots of the two quadratics
-  complex<float_sw4> s1 = 0.5*(q*b + sqrt(pow(q,2)*b*b - 4*p));
-  complex<float_sw4> s2 = 0.5*(q*b - sqrt(pow(q,2)*b*b - 4*p));
+  complex<float_sw4> s1 = float_sw4(0.5)*(q*b + sqrt(pow(q,2)*b*b - 4*p));
+  complex<float_sw4> s2 = float_sw4(0.5)*(q*b - sqrt(pow(q,2)*b*b - 4*p));
 // these are for testing only
 //  complex<float_sw4> s3 = 0.5*(conj(q)*b + sqrt(pow(conj(q),2)*b*b - 4*p));
 //  complex<float_sw4> s4 = 0.5*(conj(q)*b - sqrt(pow(conj(q),2)*b*b - 4*p));
