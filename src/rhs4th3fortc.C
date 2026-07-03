@@ -77,7 +77,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
               mu3yz,mu1zx,u1zip2,u1zip1,u1zim1,u1zim2,\
 	      u2zjp2,u2zjp1,u2zjm1,u2zjm2,mu2zy,lau1xz,lau2yz,kb,qb,mb,muz1,muz2,muz3,muz4)
    {
-#pragma omp for collapse(2)
+#pragma omp for
    for( k= k1; k <= k2 ; k++ )
       for( j=jfirst+2; j <= jlast-2 ; j++ )
 //#pragma simd deprecated
@@ -314,7 +314,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 	 }
       if( onesided[4]==1 )
       {
-#pragma omp for collapse(2)
+#pragma omp for
 	 for( k=1 ; k<= 6 ; k++ )
 /* the centered stencil can be used in the x- and y-directions */
 	    for( j=jfirst+2; j<=jlast-2; j++ )
@@ -567,7 +567,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
       }
       if( onesided[5] == 1 )
       {
-#pragma omp for collapse(2)
+#pragma omp for
 	 for(  k = nk-5 ; k <= nk ; k++ )
 	    for(  j=jfirst+2; j<=jlast-2; j++ )
 	       //#pragma simd
@@ -913,7 +913,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
               mu3yz,mu1zx,u1zip2,u1zip1,u1zim1,u1zim2,\
 	      u2zjp2,u2zjp1,u2zjm1,u2zjm2,mu2zy,lau1xz,lau2yz,kb,qb,mb,muz1,muz2,muz3,muz4)
    {
-#pragma omp for collapse(2)
+#pragma omp for
    for( k= k1; k <= k2 ; k++ )
       for( j=jfirst+2; j <= jlast-2 ; j++ )
 	 //#pragma simd
@@ -1150,7 +1150,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 	 }
       if( onesided[4]==1 )
       {
-#pragma omp for collapse(2)
+#pragma omp for
 	 for( k=1 ; k<= 6 ; k++ )
 /* the centered stencil can be used in the x- and y-directions */
 	    for( j=jfirst+2; j<=jlast-2; j++ )
@@ -1403,7 +1403,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
       }
       if( onesided[5] == 1 )
       {
-#pragma omp for collapse(2)
+#pragma omp for
 	 for(  k = nk-5 ; k <= nk ; k++ )
 	    for(  j=jfirst+2; j<=jlast-2; j++ )
 	       //#pragma simd

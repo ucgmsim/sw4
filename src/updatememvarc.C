@@ -71,7 +71,7 @@ void memvar_pred_fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
    const size_t nijk= nij*(klast-kfirst+1);
    const int base = -ifirst-ni*jfirst-nij*kfirst;
    for( int c=0 ; c < 3 ;c++)
-#pragma omp parallel for collapse(2)
+#pragma omp parallel for
       for( int k=k1 ; k <= k2 ; k++)
 	 for( int j=jfirst ; j<= jlast; j++ )
 	    for( int i=ifirst ; i<= ilast; i++ )
@@ -125,7 +125,7 @@ void memvar_corr_fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
    const size_t nijk= nij*(klast-kfirst+1);
    const int base = -ifirst-ni*jfirst-nij*kfirst;
    for( int c=0 ; c < 3 ;c++)
-#pragma omp parallel for collapse(2)
+#pragma omp parallel for
       for( int k=k1 ; k <= k2 ; k++)
 	 for( int j=jfirst ; j<= jlast; j++ )
 	    for( int i=ifirst ; i<= ilast; i++ )
@@ -195,7 +195,7 @@ void memvar_corr_fort_wind_ci( int ifirst, int ilast, int jfirst, int jlast, int
    //  real*8 alm(3,d1b:d1e, d2b:d2e, d3b:d3e)
 
    for( int c=0 ; c < 3 ;c++)
-#pragma omp parallel for collapse(2)
+#pragma omp parallel for
       for( int k=k1 ; k <= k2 ; k++)
 	 for( int j=jfirst ; j<= jlast; j++ )
 	    for( int i=ifirst ; i<= ilast; i++ )
