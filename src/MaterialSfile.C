@@ -421,7 +421,7 @@ void MaterialSfile::read_sfile()
 
   // ---------- azimuth on file
   double alpha = lonlataz[2], lon0 = lonlataz[0], lat0 = lonlataz[1];
-  CHECK_INPUT( fabs(alpha-mEW->getGridAzimuth()) < 1e-6, "ERROR: sfile azimuth must be equal "
+  CHECK_INPUT( fabs(alpha-mEW->getGridAzimuth()) < 1e-5, "ERROR: sfile azimuth must be equal "
                "to coordinate system azimuth" << " azimuth on sfile = " << alpha << 
                " azimuth of coordinate sytem = " << mEW->getGridAzimuth() );
 
