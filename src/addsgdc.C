@@ -72,7 +72,7 @@ void EW::addsgd4_ci( int ifirst, int ilast, int jfirst, int jlast,
 #pragma omp parallel
       {
       for( int c=0 ; c < 3 ; c++ )
-#pragma omp for
+#pragma omp for collapse(2)
       for( int k=kfirst+2; k <= klast-2 ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 	    //#pragma simd
@@ -177,7 +177,7 @@ void EW::addsgd6_ci( int ifirst, int ilast, int jfirst, int jlast,
 #pragma omp parallel
       {
       for( int c=0 ; c < 3 ; c++ )
-#pragma omp for
+#pragma omp for collapse(2)
       for( int k=kfirst+3; k <= klast-3 ; k++ )
 	 for( int j=jfirst+3; j <= jlast-3 ; j++ )
 	    //#pragma simd
@@ -279,7 +279,7 @@ void EW::addsgd4c_ci( int ifirst, int ilast, int jfirst, int jlast,
 #pragma omp parallel
       {
       for( int c=0 ; c < 3 ; c++ )
-#pragma omp for
+#pragma omp for collapse(2)
       for( int k=kfirst+2; k <= klast-2 ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 	    //#pragma simd
@@ -363,7 +363,7 @@ void EW::addsgd6c_ci(  int ifirst, int ilast, int jfirst, int jlast,
 #pragma omp parallel
       {
       for( int c=0 ; c < 3 ; c++ )
-#pragma omp for
+#pragma omp for collapse(2)
       for( int k=kfirst+3; k <= klast-3 ; k++ )
 	 for( int j=jfirst+3; j <= jlast-3 ; j++ )
 	    //#pragma simd
