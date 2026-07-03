@@ -953,8 +953,8 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
     t += mDt;
 
 // periodically, print time stepping info to stdout
-    printTime( currentTimeStep, t, currentTimeStep == mNumberOfTimeSteps[event] ); 
-    //    printTime( currentTimeStep, t, true ); 
+    printTime( currentTimeStep, t, MPI_Wtime()-time_start_solve, currentTimeStep == mNumberOfTimeSteps[event] );
+    //    printTime( currentTimeStep, t, true );
 
 // Images have to be written before the solution arrays are cycled, because both Up and Um are needed
 // to compute a centered time derivative

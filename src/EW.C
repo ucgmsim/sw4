@@ -730,13 +730,16 @@ int EW::local_to_global_event( int e ) const
 }
 
 //-----------------------------------------------------------------------
-void EW::printTime( int cycle, float_sw4 t, bool force ) const 
+void EW::printTime( int cycle, float_sw4 t, double wallclock, bool force ) const
 {
    if (!mQuiet && proc_zero() && (force || mPrintInterval == 1 ||
 			(cycle % mPrintInterval) == 1 ||
 			cycle == 1) ) {
-// string big enough for >1 million time steps 
-      printf("Time step %7i  t = %15.7e\n", cycle, t);
+// string big enough for >1 million time steps
+      if( wallclock >= 0 )
+         printf("Time step %7i  t = %15.7e  wallclock = %10.2f s\n", cycle, t, wallclock);
+      else
+         printf("Time step %7i  t = %15.7e\n", cycle, t);
       fflush(stdout);
    }
 }
