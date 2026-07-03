@@ -7232,6 +7232,7 @@ static char* read_hdf5_attr_str(hid_t loc, const char *name)
   /* fprintf(stderr, "Read data: [%s]\n", data); */
   return data;
 }
+#include "GMGHDF5Helpers.h"
 #endif
 
 //-----------------------------------------------------------------------
@@ -7240,13 +7241,13 @@ void EW::extractTopographyFromGMG( std::string a_topoFileName )
   double start_time, end_time;
   start_time = MPI_Wtime();
 #ifdef USE_HDF5
-  int verbose = mVerbose;
   Sarray gridElev;
   herr_t ierr;
-  hid_t file_id, dataset_id, datatype_id, group_id, dataspace_id;
+  hid_t file_id, dataset_id, datatype_id, group_id;
   int prec, str_len;
-  double az=0, origin_x=0, origin_y=0, hh=0, alpha=0, lon0=0, lat0=0;
-  hsize_t dims[2];
+  double az=0, origin_x=0, origin_y=0, top_hx=0, top_hy=0, alpha=0;
+  hsize_t dims[3];
+  const char* surface_name = NULL;
   char *crs_to = NULL;
 
   if (m_myRank == 0) {
@@ -7263,18 +7264,17 @@ void EW::extractTopographyFromGMG( std::string a_topoFileName )
     group_id = H5Gopen(file_id, "surfaces", H5P_DEFAULT);
     ASSERT(group_id >= 0);
 
-    dataset_id = H5Dopen(group_id, "topography_bathymetry", H5P_DEFAULT);
-    ASSERT(dataset_id >= 0);
+    dataset_id = open_gmg_surface_dataset(group_id, &surface_name);
+    CHECK_INPUT(dataset_id >= 0,
+                "ERROR: GMG /surfaces must contain one of: top_surface, topography_bathymetry");
 
-    dataspace_id = H5Dget_space(dataset_id);
-    H5Sget_simple_extent_dims(dataspace_id, dims, NULL);
-    H5Sclose(dataspace_id);
+    read_gmg_surface_dims(dataset_id, dims);
 
     datatype_id = H5Dget_type(dataset_id);
     prec = (int)H5Tget_size(datatype_id);
     H5Tclose(datatype_id);
 
-    read_hdf5_attr(dataset_id, H5T_IEEE_F64LE, "resolution_horiz", &hh);
+    read_gmg_surface_spacing(dataset_id, top_hx, top_hy);
 
     crs_to = read_hdf5_attr_str(file_id, "crs");
     str_len = (int)(strlen(crs_to)+1);
@@ -7283,8 +7283,9 @@ void EW::extractTopographyFromGMG( std::string a_topoFileName )
   MPI_Bcast(&origin_x, 1, MPI_DOUBLE, 0, m_1d_communicator);
   MPI_Bcast(&origin_y, 1, MPI_DOUBLE, 0, m_1d_communicator);
   MPI_Bcast(&az,       1, MPI_DOUBLE, 0, m_1d_communicator);
-  MPI_Bcast(&hh,       1, MPI_DOUBLE, 0, m_1d_communicator);
-  MPI_Bcast(dims,      2, MPI_LONG_LONG, 0, m_1d_communicator );
+  MPI_Bcast(&top_hx,   1, MPI_DOUBLE, 0, m_1d_communicator);
+  MPI_Bcast(&top_hy,   1, MPI_DOUBLE, 0, m_1d_communicator);
+  MPI_Bcast(dims,      3, MPI_LONG_LONG, 0, m_1d_communicator );
   MPI_Bcast(&prec,     1, MPI_INT, 0, m_1d_communicator );
   MPI_Bcast(&str_len,  1, MPI_INT, 0, m_1d_communicator );
 
@@ -7293,16 +7294,16 @@ void EW::extractTopographyFromGMG( std::string a_topoFileName )
 
   MPI_Bcast(crs_to, str_len, MPI_CHAR, 0, m_1d_communicator );
 
-  // For some reason origin_x is not correctly read sometimes
-  if (origin_x < 1.0) {
-    origin_x = 99286.2;
-    if (m_myRank == 0)
-      printf("GMG origin_x read zero value, correct to 99286.2 \n");
-  }
-
-  ASSERT(origin_x > 0);
-  ASSERT(origin_y > 0);
-  ASSERT(az > 0);
+  CHECK_INPUT(origin_x > 0 && origin_y > 0,
+              "ERROR: invalid GMG origin values origin_x="
+                  << origin_x << " origin_y=" << origin_y);
+  CHECK_INPUT(az > 0, "ERROR: invalid GMG y_azimuth " << az);
+  CHECK_INPUT(top_hx > 0 && top_hy > 0,
+              "ERROR: invalid GMG surface spacing hx="
+                  << top_hx << " hy=" << top_hy);
+  CHECK_INPUT(dims[0] > 1 && dims[1] > 1,
+              "ERROR: GMG surface dataset must be at least 2x2 for interpolation, got "
+                  << dims[0] << "x" << dims[1]);
 
   // Convert GMG az to SW4 az
   alpha = az - 180.0;
@@ -7313,7 +7314,8 @@ void EW::extractTopographyFromGMG( std::string a_topoFileName )
 
   if (m_myRank==0 && mVerbose >= 2) {
     printf("GMG header: azimuth=%e, origin_x=%f, origin_y=%f\n", az, origin_x, origin_y);
-    printf("            hh=%e, ni=%lld, nj=%lld\n", hh, dims[0], dims[1]);
+    printf("            surface=%s, hx=%e, hy=%e, ni=%lld, nj=%lld\n",
+           surface_name ? surface_name : "broadcast", top_hx, top_hy, dims[0], dims[1]);
   }
 
   float  *f_data = new float[dims[0] * dims[1]];
@@ -7352,8 +7354,7 @@ void EW::extractTopographyFromGMG( std::string a_topoFileName )
       computeGeographicCoord(x, y, sw4_lon, sw4_lat);
       /* printf("\ncomputeGeographicCoord: %f %f %f %f\n", x, y, sw4_lon, sw4_lat); */
 
-      // GMG x/y, lat/lon is switched from sw4 CRS
-      computeCartesianCoordGMG(gmg_y0, gmg_x0, sw4_lon, sw4_lat, crs_to);
+      computeCartesianCoordGMG(gmg_x0, gmg_y0, sw4_lon, sw4_lat, crs_to);
       /* printf("computeCartesianCoordGMG : %f %f %f %f\n", gmg_x0, gmg_y0, sw4_lon, sw4_lat); */
   
       const double xRel = gmg_x0 - origin_x;
@@ -7362,11 +7363,20 @@ void EW::extractTopographyFromGMG( std::string a_topoFileName )
       gmg_y = xRel*sinAz + yRel*cosAz;
       /* printf("converted gmg xy: %f, %f, origin: %f %f\n", gmg_x, gmg_y, origin_x, origin_y); */
   
-      int i0 = static_cast<int>( floor(gmg_x/hh) );
-      int j0 = static_cast<int>( floor(gmg_y/hh) );
+      const double xmax = (dims[0] - 1) * top_hx;
+      const double ymax = (dims[1] - 1) * top_hy;
+      const double gmg_x_clamped = std::max(0.0, std::min(gmg_x, xmax));
+      const double gmg_y_clamped = std::max(0.0, std::min(gmg_y, ymax));
 
-      double fac0 = (gmg_y - j0 * hh) / hh;
-      double fac1 = (gmg_x - i0 * hh) / hh;
+      int i0 = static_cast<int>( floor(gmg_x_clamped/top_hx) );
+      int j0 = static_cast<int>( floor(gmg_y_clamped/top_hy) );
+      if (i0 >= static_cast<int>(dims[0]) - 1)
+        i0 = dims[0] - 2;
+      if (j0 >= static_cast<int>(dims[1]) - 1)
+        j0 = dims[1] - 2;
+
+      double fac0 = (gmg_y_clamped - j0 * top_hy) / top_hy;
+      double fac1 = (gmg_x_clamped - i0 * top_hx) / top_hx;
 
       /* printf("x=%f, y=%f, i0=%d, j0=%d\n", x, y, i0, j0); */
       /* printf("interp points: %f %f %f %f\n", f_data[i0*dims[1]+j0], f_data[(i0+1)*dims[1]+j0], f_data[i0*dims[1]+j0+1], f_data[(i0+1)*dims[1]+j0+1]); */
