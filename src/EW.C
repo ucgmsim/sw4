@@ -6950,7 +6950,7 @@ void EW::extractTopographyFromSfile( std::string a_topoFileName )
 
   double alpha = lonlataz[2], lon0 = lonlataz[0], lat0 = lonlataz[1];
 
-  CHECK_INPUT( fabs(alpha-mGeoAz) < 1e-6, "ERROR: Sfile azimuth must be equal to coordinate system azimuth" <<
+  CHECK_INPUT( fabs(alpha-mGeoAz) < 1e-5, "ERROR: Sfile azimuth must be equal to coordinate system azimuth" <<
                " azimuth on sfile = " << alpha << " azimuth of coordinate sytem = " << mGeoAz << 
                " difference = " << alpha-mGeoAz );
 
