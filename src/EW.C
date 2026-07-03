@@ -6606,7 +6606,7 @@ void EW::extractTopographyFromRfile( std::string a_topoFileName )
 
       // ---------- origin on file
       float_sw4 lon0, lat0;
-      nr = read( fd, &lon0, sizeof(double));
+      nr = read( fd, &lon0, sizeof(float_sw4));
       if( nr != sizeof(double) )
       {
 	 cout << rname << " Error reading lon0, nr= " << nr
@@ -6617,7 +6617,7 @@ void EW::extractTopographyFromRfile( std::string a_topoFileName )
       if( swapbytes )
 	 bswap.byte_rev( &lon0, 1, "double" );
 
-      nr = read( fd, &lat0, sizeof(double));
+      nr = read( fd, &lat0, sizeof(float_sw4));
       if( nr != sizeof(double) )
       {
 	 cout << rname << " Error reading lat0, nr= " << nr
