@@ -1012,7 +1012,7 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
       }
       slip_sum *=dt;
   
-      if (world_rank == 0 && mVerbose >= 2)
+      if (world_rank == 0 && mVerbose >= 3)
       {
          printf("INFO: SRF file: dt*sum(slip_vel)=%e [m], total slip (from header)=%e [m]\n", slip_sum, slip_m);
       }
@@ -1035,7 +1035,7 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
         {
            par[i] /= slip_sum;
         }
-        if (world_rank == 0 && mVerbose >= 2)
+        if (world_rank == 0 && mVerbose >= 3)
         {
            slip_sum=0;
            for (int i=1; i<=nt1dim+1; i++)
