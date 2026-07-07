@@ -1098,8 +1098,22 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
           time_sum[8] = 0;
           time_sum[9] = 0;
        }
+
+// Periodic breakdown so the phase split is visible WITHOUT waiting for the run
+// to finish. time_sum is cumulative, so this reports the running total wall
+// time per phase (divide by the step count for per-step); watch which column
+// dominates. Cadence follows printcycle (mPrintInterval). print_execution_times
+// does a collective MPI_Gather, so every rank must reach it - the condition is
+// on currentTimeStep, which is identical on all ranks.
+       if( mPrintInterval > 0 &&
+           (currentTimeStep % mPrintInterval == 0 || currentTimeStep == mNumberOfTimeSteps[event]) )
+       {
+          if( !mQuiet && proc_zero() )
+             cout << "  Cumulative detailed timing after " << currentTimeStep << " steps:" << endl;
+          print_execution_times( time_sum );
+       }
     }
-    
+
   } // end time stepping loop
 
   if ( !mQuiet && proc_zero() )
