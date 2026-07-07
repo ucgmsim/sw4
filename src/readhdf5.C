@@ -346,8 +346,247 @@ static herr_t traverse_func (hid_t loc_id, const char *grp_name, const H5L_info_
   return 0;
 }
 
+// Collected station data for the rank-0-scan + broadcast path used when
+// is_obs==false (the common rechdf5/receiver case, often 1e4+ stations).
+// Unlike traverse_data_t, this is only ever touched on rank 0, so it carries
+// no per-rank bookkeeping.
+struct station_collect_t {
+  EW* ew;
+  float_sw4 m_global_xmax;
+  float_sw4 m_global_ymax;
+  vector<string> names;
+  vector<double> x, y, z;
+  vector<int> nsew;       // 1 if station uses NS/EW/UP components
+  vector<int> topodepth;  // 1 if z is a depth relative to topography
+};
+
+static herr_t traverse_func_collect(hid_t loc_id, const char *grp_name, const H5L_info_t *info, void *operator_data)
+{
+  hid_t grp = -1, dset = -1, attr = -1;
+  herr_t status;
+#if H5_VERSION_GE(1,12,0)
+  H5O_info1_t infobuf;
+#else
+  H5O_info_t infobuf;
+#endif
+  double data[4];
+  double lon=0, lat=0, depth, x=0, y=0, z=0;
+  bool geoCoordSet = true, topodepth = true, nsew = true;
+  int isnsew, usezvalue, ret;
+
+  struct station_collect_t *cd = (struct station_collect_t *)operator_data;
+
+#if H5_VERSION_GE(1,12,0)
+  status = H5Oget_info_by_name1(loc_id, grp_name, &infobuf, H5P_DEFAULT);
+#else
+  status = H5Oget_info_by_name(loc_id, grp_name, &infobuf, H5P_DEFAULT);
+#endif
+  if (infobuf.type != H5O_TYPE_GROUP)
+    return 0;
+
+  grp = H5Gopen(loc_id, grp_name, H5P_DEFAULT);
+  if (grp < 0) {
+    fprintf(stderr, "Error opening group [%s]\n", grp_name);
+    return -1;
+  }
+
+  if (H5Lexists(grp, "ISNSEW", H5P_DEFAULT) > 0) {
+    attr = H5Dopen(grp, "ISNSEW", H5P_DEFAULT);
+    ASSERT(attr > 0);
+    ret = H5Dread(attr, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, &isnsew);
+    ASSERT(ret >= 0);
+    H5Dclose(attr);
+    if (isnsew == 0)
+      nsew = false;
+  }
+
+  if (H5Lexists(grp, "USEZVALUE", H5P_DEFAULT) > 0) {
+    attr = H5Dopen(grp, "USEZVALUE", H5P_DEFAULT);
+    ASSERT(attr > 0);
+    ret = H5Dread(attr, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, &usezvalue);
+    ASSERT(ret >= 0);
+    H5Dclose(attr);
+    if (usezvalue != 0)
+      topodepth = false;
+  }
+
+  if (H5Lexists(grp, "STX,STY,STZ", H5P_DEFAULT) > 0) {
+    dset = H5Dopen(grp, "STX,STY,STZ", H5P_DEFAULT);
+    if (dset < 0)
+      fprintf(stderr, "Error reading from rechdf5 station %s, STX,STY,STZ open failed!\n", grp_name);
+    ASSERT(dset > 0);
+    ret = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+    ASSERT(ret >= 0);
+    H5Dclose(dset);
+    x = data[0];
+    y = data[1];
+    z = data[2];
+    geoCoordSet = false;
+  }
+  else if (H5Lexists(grp, "STLA,STLO,STDP", H5P_DEFAULT) > 0) {
+    dset = H5Dopen(grp, "STLA,STLO,STDP", H5P_DEFAULT);
+    if (dset < 0)
+      fprintf(stderr, "Error reading from rechdf5 station %s, STLA,STLO,STDP open failed!\n", grp_name);
+    ASSERT(dset > 0);
+    ret = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+    ASSERT(ret >= 0);
+    H5Dclose(dset);
+    lat = data[0];
+    lon = data[1];
+    z = data[2];
+  }
+  else {
+    // Not a station group, ignore
+    H5Gclose(grp);
+    return 0;
+  }
+
+  depth = z;
+  if (geoCoordSet)
+    cd->ew->computeCartesianCoord(x, y, lon, lat);
+
+  bool inCurvilinear = false;
+  if (cd->ew->topographyExists() && z < cd->ew->m_zmin[cd->ew->mNumberOfCartesianGrids-1])
+    inCurvilinear = true;
+
+  if (!((inCurvilinear || z >= 0) && x >= 0 && x <= cd->m_global_xmax && y >= 0 && y <= cd->m_global_ymax)) {
+    // The location of this station was outside the domain, so don't include it in the global list
+    if (cd->ew->getVerbosity() > 0) {
+      stringstream receivererr;
+      receivererr << endl
+                  << "***************************************************" << endl
+                  << " WARNING:  RECEIVER positioned outside grid!" << endl;
+      receivererr << " No RECEIVER file will be generated for station = " << grp_name << endl;
+      if (geoCoordSet)
+        receivererr << " @ lon=" << lon << " lat=" << lat << " depth=" << depth << endl << endl;
+      else
+        receivererr << " @ x=" << x << " y=" << y << " z=" << z << endl << endl;
+      receivererr << "***************************************************" << endl;
+      cerr << receivererr.str();
+      cerr.flush();
+    }
+    H5Gclose(grp);
+    return 0;
+  }
+
+  cd->names.push_back(grp_name);
+  cd->x.push_back(x);
+  cd->y.push_back(y);
+  cd->z.push_back(z);
+  cd->nsew.push_back(nsew ? 1 : 0);
+  cd->topodepth.push_back(topodepth ? 1 : 0);
+
+  H5Gclose(grp);
+  return 0;
+}
+
 void readStationHDF5(EW* ew, string inFileName, string outFileName, int writeEvery, int downSample, TimeSeries::receiverMode mode, int event, vector< vector<TimeSeries*> > *GlobalTimeSeries, float_sw4 m_global_xmax, float_sw4 m_global_ymax, bool is_obs, bool winlset, bool winrset, float_sw4 winl, float_sw4 winr, bool usex, bool usey, bool usez, float_sw4 t0, bool scalefactor_set, float_sw4 scalefactor)
 {
+  if (!is_obs) {
+    // Fast path (rechdf5/receiver command): station files here commonly
+    // hold 1e4+ stations. The is_obs path below has every rank
+    // independently H5Literate the whole file (~10 HDF5 metadata round
+    // trips per station group) - fine for a handful of ranks, but at
+    // O(stations x ranks) it turns into an uncoordinated filesystem
+    // hammering that can dominate startup (minutes, scaling with both
+    // station count and rank count). Instead, only rank 0 touches the
+    // file; the station list is then broadcast, mirroring the same
+    // rank-0-reads-then-broadcasts pattern already used for rupture
+    // files in readRuptureHDF5() above.
+    MPI_Comm comm = ew->m_1d_communicator;
+    int rank = ew->getRank();
+
+    struct station_collect_t cd;
+    cd.ew = ew;
+    cd.m_global_xmax = m_global_xmax;
+    cd.m_global_ymax = m_global_ymax;
+
+    if (rank == 0) {
+      if (inFileName == outFileName)
+        printf("Warning: Same station input file and output file name [%s]\n", inFileName.c_str());
+
+      hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+      hid_t fid = H5Fopen(inFileName.c_str(), H5F_ACC_RDONLY, fapl);
+      if (fid < 0)
+        printf("%s Error opening file [%s]\n", __func__, inFileName.c_str());
+      else {
+        H5Literate(fid, H5_INDEX_NAME, H5_ITER_NATIVE, NULL, traverse_func_collect, &cd);
+        H5Fclose(fid);
+      }
+      H5Pclose(fapl);
+    }
+
+    int n = (int)cd.x.size();
+    MPI_Bcast(&n, 1, MPI_INT, 0, comm);
+
+    if (rank != 0) {
+      cd.x.resize(n);
+      cd.y.resize(n);
+      cd.z.resize(n);
+      cd.nsew.resize(n);
+      cd.topodepth.resize(n);
+    }
+    if (n > 0) {
+      MPI_Bcast(cd.x.data(), n, MPI_DOUBLE, 0, comm);
+      MPI_Bcast(cd.y.data(), n, MPI_DOUBLE, 0, comm);
+      MPI_Bcast(cd.z.data(), n, MPI_DOUBLE, 0, comm);
+      MPI_Bcast(cd.nsew.data(), n, MPI_INT, 0, comm);
+      MPI_Bcast(cd.topodepth.data(), n, MPI_INT, 0, comm);
+    }
+
+    // Station names, packed as one '\0'-separated buffer.
+    string namebuf;
+    if (rank == 0)
+      for (int s = 0; s < n; s++) {
+        namebuf += cd.names[s];
+        namebuf += '\0';
+      }
+
+    int namebuflen = (rank == 0) ? (int)namebuf.size() : 0;
+    MPI_Bcast(&namebuflen, 1, MPI_INT, 0, comm);
+    vector<char> namebytes(namebuflen > 0 ? namebuflen : 1);
+    if (rank == 0 && namebuflen > 0)
+      memcpy(namebytes.data(), namebuf.data(), namebuflen);
+    if (namebuflen > 0)
+      MPI_Bcast(namebytes.data(), namebuflen, MPI_CHAR, 0, comm);
+
+    if (rank != 0) {
+      cd.names.resize(n);
+      int pos = 0;
+      for (int s = 0; s < n; s++) {
+        cd.names[s] = string(&namebytes[pos]);
+        pos += (int)cd.names[s].size() + 1;
+      }
+    }
+
+    // Every rank constructs the same TimeSeries objects in the same
+    // order from the broadcast data. This is required, not just
+    // convenient: TimeSeries's constructor itself does collective
+    // MPI_Allreduce calls (over m_1d_communicator) to determine which
+    // rank owns each point, so every rank must call it the same number
+    // of times, in the same order.
+    for (int s = 0; s < n; s++) {
+      TimeSeries *ts_ptr = new TimeSeries(ew, cd.names[s], cd.names[s], mode, false, false, true,
+                                          outFileName, cd.x[s], cd.y[s], cd.z[s],
+                                          cd.topodepth[s] != 0, writeEvery, downSample,
+                                          cd.nsew[s] == 0, event);
+      if ((*GlobalTimeSeries)[event].size() == 0) {
+        ts_ptr->allocFid();
+        ts_ptr->setTS0Ptr(ts_ptr);
+      }
+      else {
+        ts_ptr->setFidPtr((*GlobalTimeSeries)[event][0]->getFidPtr());
+        ts_ptr->setTS0Ptr((*GlobalTimeSeries)[event][0]);
+      }
+      (*GlobalTimeSeries)[event].push_back(ts_ptr);
+    }
+    return;
+  }
+
+  // is_obs == true (observation command): each owning rank must read its
+  // own SAC/HDF5 waveform data out of the same file via readSACHDF5(), so
+  // every rank still needs its own file handle - left as a per-rank
+  // H5Literate traversal.
   hid_t fid, fapl;
 
   struct traverse_data_t tData;
