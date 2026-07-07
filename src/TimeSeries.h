@@ -55,8 +55,9 @@ public:
 // support for derived quantities of the time derivative are not yet implemented
   enum receiverMode{Displacement, Div, Curl, Strains, Velocity, DisplacementGradient /*, DivVelo, CurlVelo, StrainsVelo */ };
 
-TimeSeries( EW* a_ew, std::string fileName, std::string staName, receiverMode mode, bool sacFormat, bool usgsFormat, bool hdf5Format, std::string hdf5FileName, 
-	    float_sw4 x, float_sw4 y, float_sw4 z, bool topoDepth, int writeEvery, int downSample, bool xyzcomponent=true, int event=0 );
+TimeSeries( EW* a_ew, std::string fileName, std::string staName, receiverMode mode, bool sacFormat, bool usgsFormat, bool hdf5Format, std::string hdf5FileName,
+	    float_sw4 x, float_sw4 y, float_sw4 z, bool topoDepth, int writeEvery, int downSample, bool xyzcomponent=true, int event=0,
+	    bool deferCollectives=false, float_sw4 precomputedZTopo=0.0 );
 ~TimeSeries();
 
 void allocateRecordingArrays( int numberOfTimeSteps, float_sw4 startTime, float_sw4 timeStep );

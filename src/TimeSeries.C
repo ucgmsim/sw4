@@ -57,10 +57,11 @@ using namespace std;
 void parsedate( char* datestr, int& year, int& month, int& day, int& hour, int& minute,
 		int& second, int& msecond, int& fail );
 
-TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, receiverMode mode, 
-                        bool sacFormat, bool usgsFormat, bool hdf5Format, std::string hdf5FileName, 
-                        float_sw4 x, float_sw4 y, float_sw4 depth, 
-                        bool topoDepth, int writeEvery, int downSample, bool xyzcomponent, int event ):
+TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, receiverMode mode,
+                        bool sacFormat, bool usgsFormat, bool hdf5Format, std::string hdf5FileName,
+                        float_sw4 x, float_sw4 y, float_sw4 depth,
+                        bool topoDepth, int writeEvery, int downSample, bool xyzcomponent, int event,
+                        bool deferCollectives, float_sw4 precomputedZTopo ):
   m_ew(a_ew),
   m_mode(mode),
   m_nComp(0),
@@ -139,14 +140,24 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
    m_path         = a_ew->getPath(m_global_event);
 
  // 1. Adjust z if depth below topography is given
-   if (a_ew->topographyExists() ) 
+//
+// When deferCollectives is set, the caller (e.g. readStationHDF5's bulk path)
+// has already computed the global topography elevation for this station with a
+// single batched MPI_Allreduce over all stations, and passes it in as
+// precomputedZTopo. This avoids the per-station collective below, which would
+// otherwise serialize O(#stations) Allreduces - prohibitive for 1e5+ stations.
+   if (deferCollectives)
+   {
+      m_zTopo = a_ew->topographyExists() ? precomputedZTopo : 0;
+   }
+   else if (a_ew->topographyExists() )
    {
       float_sw4 zTopoLocal;
       if(!a_ew->m_gridGenerator->interpolate_topography( a_ew, mX, mY, zTopoLocal, a_ew->mTopoGridExt))
          zTopoLocal=-1e38;
       MPI_Allreduce( &zTopoLocal, &m_zTopo, 1, a_ew->m_mpifloat, MPI_MAX, a_ew->m_1d_communicator );
          //      mZ += m_zTopo;
-   } 
+   }
    else
       m_zTopo = 0;
    if( m_zRelativeToTopography )
@@ -160,8 +171,11 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
 // Make sure the station is below the topography (z is positive downwards)
    if ( mZ < m_zTopo - rofftol)
    {
-      printf("Ignoring SAC station %s mX=%g, mY=%g, mZ=%g, because it is above the topography z=%g\n", 
-	     m_staName.c_str(),  mX,  mY, mZ, m_zTopo);
+// m_zTopo is identical on every rank (batched or per-station Allreduce), so all
+// ranks take this branch together; only rank 0 prints to avoid N-way spam.
+      if (!deferCollectives || a_ew->getRank() == 0)
+         printf("Ignoring SAC station %s mX=%g, mY=%g, mZ=%g, because it is above the topography z=%g\n",
+	        m_staName.c_str(),  mX,  mY, mZ, m_zTopo);
       m_myPoint=false;
       return;
    }
@@ -184,24 +198,22 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
 //   m_myPoint = a_ew->interior_point_in_proc(m_i0, m_j0, m_grid0);
 
 // The following is a safety check to make sure only one processor writes each time series.
-// We could remove this check if we were certain that interior_point_in_proc() never lies
-   int iwrite = m_myPoint ? 1 : 0;
-   int counter;
-   MPI_Allreduce( &iwrite, &counter, 1, MPI_INT, MPI_SUM, a_ew->m_1d_communicator );
+// We could remove this check if we were certain that interior_point_in_proc() never lies.
+// When deferCollectives is set the caller performs this check in batched form (one
+// Allreduce over all stations) instead of one per station.
+   if( !deferCollectives )
+   {
+      int iwrite = m_myPoint ? 1 : 0;
+      int counter;
+      MPI_Allreduce( &iwrite, &counter, 1, MPI_INT, MPI_SUM, a_ew->m_1d_communicator );
+
+      REQUIRE2(counter == 1,"Exactly one processor must be writing each SAC, but counter = " << counter <<
+	       " for receiver station " << m_fileName << " at (x,y,depth)=" <<  mX << ", " << mY
+               << ", "  << mZ );
+   }
 
    a_ew->get_utc( m_utc, m_event );
-   //   int size;
-   //   MPI_Comm_size(MPI_COMM_WORLD,&size);
-   //   std::vector<int> whoIsOne(size);
-   //   int counter = 0;
-   //   MPI_Allgather(&iwrite, 1, MPI_INT, &whoIsOne[0], 1, MPI_INT, MPI_COMM_WORLD );
-   //   for (unsigned int i = 0; i < whoIsOne.size(); ++i)
-   //      if (whoIsOne[i] == 1)
-   //	 counter++;
 
-   REQUIRE2(counter == 1,"Exactly one processor must be writing each SAC, but counter = " << counter <<
-	    " for receiver station " << m_fileName << " at (x,y,depth)=" <<  mX << ", " << mY 
-            << ", "  << mZ );
    if (!m_myPoint)
    {
       m_compute_scalefactor = false;
