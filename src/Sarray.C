@@ -418,25 +418,37 @@ void Sarray::side_plane_fortran( int side, int wind[6], int nGhost )
 //-----------------------------------------------------------------------
 void Sarray::set_to_zero()
 {
-#pragma omp parallel for
-   for( size_t i=0 ; i < m_npts ; i++ )
-      m_data[i] = 0;
+   for( int c=1 ; c <= m_nc ; c++ )
+#pragma omp parallel for collapse(2)
+      for( int k=m_kb ; k <= m_ke ; k++ )
+	 for( int j=m_jb ; j <= m_je ; j++ )
+#pragma ivdep
+	    for( int i=m_ib ; i <= m_ie ; i++ )
+	       m_data[m_base+m_offc*c+m_offi*i+m_offj*j+m_offk*k] = 0;
 }
 
 //-----------------------------------------------------------------------
 void Sarray::set_to_minusOne()
 {
-#pragma omp parallel for
-   for( size_t i=0 ; i < m_npts ; i++ )
-      m_data[i] = -1.;
+   for( int c=1 ; c <= m_nc ; c++ )
+#pragma omp parallel for collapse(2)
+      for( int k=m_kb ; k <= m_ke ; k++ )
+	 for( int j=m_jb ; j <= m_je ; j++ )
+#pragma ivdep
+	    for( int i=m_ib ; i <= m_ie ; i++ )
+	       m_data[m_base+m_offc*c+m_offi*i+m_offj*j+m_offk*k] = -1.;
 }
 
 //-----------------------------------------------------------------------
 void Sarray::set_value( float_sw4 scalar )
 {
-#pragma omp parallel for
-   for( size_t i=0 ; i < m_npts ; i++ )
-      m_data[i] = scalar;
+   for( int c=1 ; c <= m_nc ; c++ )
+#pragma omp parallel for collapse(2)
+      for( int k=m_kb ; k <= m_ke ; k++ )
+	 for( int j=m_jb ; j <= m_je ; j++ )
+#pragma ivdep
+	    for( int i=m_ib ; i <= m_ie ; i++ )
+	       m_data[m_base+m_offc*c+m_offi*i+m_offj*j+m_offk*k] = scalar;
 }
 
 //-----------------------------------------------------------------------
