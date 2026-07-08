@@ -1206,7 +1206,7 @@ void EW::set_materials()
     if (m_useVelocityThresholds)
     {
       for (g=0; g<mNumberOfGrids; g++)
-#pragma omp parallel for
+#pragma omp parallel for collapse(2)
 	for (int k = m_kStart[g]; k <= m_kEnd[g]; k++)
 	    for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
 	      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
