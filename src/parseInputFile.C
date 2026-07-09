@@ -2048,6 +2048,14 @@ void EW::processDeveloper(char* buffer)
 	token += 12;
 	m_checkfornan = strcmp(token,"1")==0 || strcmp(token,"on")==0 || strcmp(token,"yes")==0;
      }
+     else if( startswith("failonnan=",token) )
+     {
+	token += 10;
+	m_failonnan = strcmp(token,"1")==0 || strcmp(token,"on")==0 || strcmp(token,"yes")==0;
+	// failonnan requires the NaN checks to actually run
+	if( m_failonnan )
+	   m_checkfornan = true;
+     }
 
 // //     if (startswith("update_processor_boundary=", token))
 // //     {
