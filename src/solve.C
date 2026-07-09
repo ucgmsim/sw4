@@ -2154,7 +2154,7 @@ void EW::check_displacement_continuity( Sarray& Uf, Sarray& Uc, int gf, int gc )
             l2err += (Uc(c,ic,jc,1)-Uf(c,i,j,nkf))*(Uc(c,ic,jc,1)-Uf(c,i,j,nkf));
          }
       }
-   MPI_Allreduce( &l2err, &l2err_global, 1, MPI_DOUBLE, MPI_SUM, m_cartesian_communicator );
+   MPI_Allreduce( &l2err, &l2err_global, 1, m_mpifloat, MPI_SUM, m_cartesian_communicator );
 
    l2err_global = sqrt(l2err_global);
 

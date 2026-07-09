@@ -75,6 +75,48 @@ void EW::check_materials()
   
   float_sw4 mins[8],maxs[8];
 
+  //---------------------------------------------------------------
+  // Exit early if the material contains any non-finite (NaN/Inf)
+  // values. The min/max reductions below do NOT catch these: every
+  // comparison against a NaN is false, so a NaN never becomes the
+  // running min or max and would silently pass the range checks.
+  // Scan explicitly and abort, reporting the first bad location.
+  //---------------------------------------------------------------
+  {
+    long long local_invalid = 0;
+    int gbad = -1, ibad = 0, jbad = 0, kbad = 0;
+    const char* fieldbad = "";
+    for( int g = 0 ; g < mNumberOfGrids ; g++ )
+      for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
+	for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+	  for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+	  {
+	    bool rbad = !std::isfinite(mRho[g](i,j,k));
+	    bool mbad = !std::isfinite(mMu[g](i,j,k));
+	    bool lbad = !std::isfinite(mLambda[g](i,j,k));
+	    if( rbad || mbad || lbad )
+	    {
+	      if( local_invalid == 0 )
+	      {
+		gbad = g; ibad = i; jbad = j; kbad = k;
+		fieldbad = rbad ? "rho" : (mbad ? "mu" : "lambda");
+	      }
+	      local_invalid++;
+	    }
+	  }
+    long long global_invalid = 0;
+    MPI_Allreduce(&local_invalid,&global_invalid,1,MPI_LONG_LONG,MPI_SUM,m_cartesian_communicator);
+    if( global_invalid > 0 )
+    {
+      if( local_invalid > 0 )
+	std::cout << "check_materials: rank " << m_myRank << " found " << local_invalid
+		  << " non-finite material value(s); first is " << fieldbad << " in grid " << gbad
+		  << " at (" << ibad << "," << jbad << "," << kbad << ")" << std::endl;
+      CHECK_INPUT( false, "check_materials found " << global_invalid
+		   << " non-finite (NaN/Inf) material value(s). Aborting." );
+    }
+  }
+
   float_sw4 lmin = localMin(mRho);
   MPI_Allreduce(&lmin,&mins[0],1,m_mpifloat,MPI_MIN,m_cartesian_communicator);
   lmin = localMinVp();  
@@ -290,15 +332,19 @@ void EW::check_materials()
        maxC_hat = sqrt(maxC_hat);
        
 // communicate min & max
-       MPI_Allreduce(&minCs,&mins[0],1,MPI_DOUBLE,MPI_MIN,m_cartesian_communicator);
-       MPI_Allreduce(&maxCs,&maxs[0],1,MPI_DOUBLE,MPI_MAX,m_cartesian_communicator);
-       MPI_Allreduce(&minC_hat,&mins[1],1,MPI_DOUBLE,MPI_MIN,m_cartesian_communicator);
-       MPI_Allreduce(&maxC_hat,&maxs[1],1,MPI_DOUBLE,MPI_MAX,m_cartesian_communicator);
+// Use double buffers here: minCs/minC_hat are double, but mins[]/maxs[] are
+// float_sw4. Reducing with MPI_DOUBLE straight into them writes 8 bytes into
+// 4-byte slots in single precision, printing garbage (and corrupting neighbors).
+       double dmins[2], dmaxs[2];
+       MPI_Allreduce(&minCs,   &dmins[0],1,MPI_DOUBLE,MPI_MIN,m_cartesian_communicator);
+       MPI_Allreduce(&maxCs,   &dmaxs[0],1,MPI_DOUBLE,MPI_MAX,m_cartesian_communicator);
+       MPI_Allreduce(&minC_hat,&dmins[1],1,MPI_DOUBLE,MPI_MIN,m_cartesian_communicator);
+       MPI_Allreduce(&maxC_hat,&dmaxs[1],1,MPI_DOUBLE,MPI_MAX,m_cartesian_communicator);
 // printout results
        if (mVerbose >=2 && proc_zero())
        {
 	 printf("Material model info, Grid g=%i: %e <= Cs <= %e, %e <= C-hat <= %e, h[g]/max(C-hat) = %e\n",
-		g, mins[0], maxs[0], mins[1], maxs[1], mGridSize[g]/maxs[1]);
+		g, dmins[0], dmaxs[0], dmins[1], dmaxs[1], mGridSize[g]/dmaxs[1]);
        }
      } // end for all grids
    }

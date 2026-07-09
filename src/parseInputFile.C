@@ -4851,8 +4851,8 @@ void EW::allocateCurvilinearArrays()
 // the mTopoGridExt array was allocated in allocateCartesianSolverArrays()   
    zMinLocal = -mTopoGridExt.maximum();
    zMaxLocal = -mTopoGridExt.minimum();
-   MPI_Allreduce( &zMinLocal, &zMinGlobal, 1, MPI_DOUBLE, MPI_MIN, m_cartesian_communicator);
-   MPI_Allreduce( &zMaxLocal, &zMaxGlobal, 1, MPI_DOUBLE, MPI_MAX, m_cartesian_communicator);
+   MPI_Allreduce( &zMinLocal, &zMinGlobal, 1, m_mpifloat, MPI_MIN, m_cartesian_communicator);
+   MPI_Allreduce( &zMaxLocal, &zMaxGlobal, 1, m_mpifloat, MPI_MAX, m_cartesian_communicator);
 
 
    //   for (i= imin ; i<=imax ; i++)
@@ -4927,10 +4927,10 @@ void EW::allocateCurvilinearArrays()
          if (d3h > maxd3z2h) maxd3z2h = d3h;
       }
    float_sw4 d2zh_global=0, d2z2h_global=0, d3zh_global=0, d3z2h_global=0;
-   MPI_Allreduce( &maxd2zh,  &d2zh_global,  1, MPI_DOUBLE, MPI_MIN, m_cartesian_communicator);
-   MPI_Allreduce( &maxd2z2h, &d2z2h_global, 1, MPI_DOUBLE, MPI_MIN, m_cartesian_communicator);
-   MPI_Allreduce( &maxd3zh,  &d3zh_global,  1, MPI_DOUBLE, MPI_MIN, m_cartesian_communicator);
-   MPI_Allreduce( &maxd3z2h, &d3z2h_global, 1, MPI_DOUBLE, MPI_MIN, m_cartesian_communicator);
+   MPI_Allreduce( &maxd2zh,  &d2zh_global,  1, m_mpifloat, MPI_MIN, m_cartesian_communicator);
+   MPI_Allreduce( &maxd2z2h, &d2z2h_global, 1, m_mpifloat, MPI_MIN, m_cartesian_communicator);
+   MPI_Allreduce( &maxd3zh,  &d3zh_global,  1, m_mpifloat, MPI_MIN, m_cartesian_communicator);
+   MPI_Allreduce( &maxd3z2h, &d3z2h_global, 1, m_mpifloat, MPI_MIN, m_cartesian_communicator);
 
    float_sw4 topo_zmax = m_gridGenerator->get_topo_zmax();
    if(proc_zero() )
@@ -8066,7 +8066,7 @@ void EW::processObservation( char* buffer, vector<vector<TimeSeries*> > & a_Glob
                        "processObservation: ERROR, sac file does not contain station coordinates " << sacfile1);
            fclose(fd);
         }
-        MPI_Bcast( latlon, 2, MPI_DOUBLE, 0, m_1d_communicator );
+        MPI_Bcast( latlon, 2, m_mpifloat, 0, m_1d_communicator );
         if( geoCoordSet && ( fabs(lat-latlon[0])<1e-10 && fabs(lon-latlon[1])<1e-10 ))
         {
            if( m_myRank == 0 )

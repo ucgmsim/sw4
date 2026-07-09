@@ -1056,7 +1056,7 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
     // nothing to do if nt1=nt2=nt3=0
     if (nt1<=0 && nt2<=0 && nt3<=0) continue;
 
-    if (world_rank == 0 && mVerbose >= 2)
+    if (world_rank == 0 && mVerbose >= 3)
     {
       printf("point #%i: lon=%g, lat=%g, dep=%g, stk=%g, dip=%g, area=%g, tinit=%g, dt=%g\n", 
              pts+1, lon, lat, dep, stk, dip, area, tinit, dt);
