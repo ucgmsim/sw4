@@ -183,8 +183,18 @@ float_sw4 SuperGrid::Psi0(float_sw4 xi) const
 // Skewed C4 fcn (p3)
 //    f = xi*xi*xi*xi*xi*(-14.0 + 70.0*xi - 90.0*xi*xi + 35.0*xi*xi*xi);
 // C5 function (currently the default stretching function)  (p1)
-     f =  xi*xi*xi*xi*xi*xi*(
-       462-1980*xi+3465*xi*xi-3080*xi*xi*xi+1386*xi*xi*xi*xi-252*xi*xi*xi*xi*xi);
+// Evaluated in double regardless of float_sw4: the bracketed polynomial sums
+// terms up to ~3465 that nearly cancel as xi->1, which in float32 loses
+// enough precision to make the "monotonically increasing" damping profile
+// non-monotonic (confirmed: ~4e-4 absolute error, small overshoot above 1).
+// This only runs at setup time to build the static per-axis stretching
+// arrays, so the extra double arithmetic has no runtime cost.
+   {
+      double xid = xi;
+      double fd =  xid*xid*xid*xid*xid*xid*(
+        462-1980*xid+3465*xid*xid-3080*xid*xid*xid+1386*xid*xid*xid*xid-252*xid*xid*xid*xid*xid);
+      f = (float_sw4)fd;
+   }
 // one-sided C5 fcn (p2)
 //     f =  xi*xi*xi*xi*xi*xi*(84.0 - 216.0*xi + 189.0*xi*xi - 56.0*xi*xi*xi);
    

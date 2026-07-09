@@ -6376,6 +6376,7 @@ void EW::extractTopographyFromGridFile(string a_topoFileName) {
     latv = new double[Nlat + 1];
     lonv = new double[Nlon + 1];
 
+    // TODO: "%le" writes 8 bytes into gridElev(1,i,j,1), which is float_sw4 (4 bytes in single precision, lonv/latv are genuinely double so those two are fine) -- read into a double temporary and assign.
     for (j = 1; j <= Nlat; j++)
       for (i = 1; i <= Nlon; i++)
         ret = fscanf(gridfile, "%le %le %le", &lonv[i], &latv[j],
@@ -6393,6 +6394,7 @@ void EW::extractTopographyFromGridFile(string a_topoFileName) {
 
     nr = read(fd, lonv, (Nlon + 1) * sizeof(double));
     nr = read(fd, latv, (Nlat + 1) * sizeof(double));
+    // TODO: gridElev's storage is float_sw4* (allocated Nlon*Nlat*sizeof(float_sw4) bytes), but this reads Nlon*Nlat*sizeof(double) bytes -- a 2x heap buffer overflow in single precision; read into a temporary double buffer and assign instead.
     nr = read(fd, gridElev.c_ptr(), Nlon * Nlat * sizeof(double));
     close(fd);
   }
@@ -6610,6 +6612,7 @@ void EW::extractTopographyFromCartesianFile(string a_topoFileName) {
   yv = new float_sw4[Ny + 1];
   xv = new float_sw4[Nx + 1];
 
+  // TODO: "%le" writes 8 bytes each into xv[i]/yv[j]/gridElev(1,i,j,1), which are all float_sw4 (4 bytes in single precision) -- read into double temporaries and assign.
   for (j = 1; j <= Ny; j++)
     for (i = 1; i <= Nx; i++)
       ret = fscanf(gridfile, "%le %le %le", &xv[i], &yv[j],
@@ -7049,6 +7052,11 @@ void EW::extractTopographyFromRfile(std::string a_topoFileName) {
 
     // ---------- origin on file
     float_sw4 lon0, lat0;
+    // TODO: rfile stores lon0/lat0 as 8-byte doubles on disk (see MaterialRfile.C's correct
+    // "double lon0,lat0; read(fd,&lon0,sizeof(double))"), but this reads only sizeof(float_sw4)
+    // (4 bytes in single precision) then checks nr!=sizeof(double), which always fails in single
+    // precision -- rfile topography silently fails to load in that build. Read into a double
+    // local (matching the file format, independent of float_sw4) and assign to lon0/lat0.
     nr = read(fd, &lon0, sizeof(float_sw4));
     if (nr != sizeof(double)) {
       cout << rname << " Error reading lon0, nr= " << nr << "bytes read"

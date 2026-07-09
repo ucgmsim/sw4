@@ -5746,6 +5746,7 @@ void EW::processSource(char* buffer, vector<vector<Source*> > & a_GlobalUniqueSo
      CHECK_INPUT( fd !=NULL , err << "Source time function file " << dfile << " not found" );
      float_sw4 t0, dt;
      int npts;
+     // TODO: "%lg" always fills a double, but t0/dt and par[] are float_sw4 (4 bytes in single precision) -- read into double temporaries/array and assign.
      ret = fscanf(fd," %lg %lg %i", &t0, &dt, &npts );
      par = new float_sw4[npts+1];
      par[0]  = t0;
@@ -6317,6 +6318,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	    token = strtok(buf, " \t");
 	  }
 //	  printf("token='%s'\n", token);
+	  // TODO: "%lg" always fills a double, but par[] is float_sw4 (4 bytes in single precision) -- read into a double temporary and assign.
 	  sscanf(token,"%lg", &par[i+1] );
 // read next token
 	  token = strtok(NULL, " \t");

@@ -1596,6 +1596,7 @@ void TimeSeries::readFile( EW *ew, bool ignore_utc )
 	    }
 	    float_sw4 tstart, dt, td, ux, uy, uz;
 	    int nlines = 0;
+	    // TODO: "%le"/"%lf" below always fill a double, but tstart/dt/td/ux/uy/uz are float_sw4 (4 bytes in single precision) -- read into double temporaries and assign (affects this counting pass and the read pass further down using the same fscanf pattern).
 	    if( fscanf(fd,"%le %le %le %le",&tstart,&ux,&uy,&uz) != EOF )
 	       nlines++;
 	    if( fscanf(fd,"%le %le %le %le",&dt,&ux,&uy,&uz) != EOF )
@@ -2148,6 +2149,7 @@ float_sw4 TimeSeries::compute_maxshift( TimeSeries& observed )
       }
       // 2. Use maximum from 1 to start Newton iteration for solving f'(tshift) = 0
       int maxit=15, it=0;
+      // TODO: tol=1e-12 is unattainable in float_sw4 (single precision, ~1.2e-7 floor) -- make it build-aware like EW.C's m_citol (sizeof(float_sw4)==4 ? looser value : 1e-12).
       float_sw4 tol=1e-12;
       float_sw4 err=tol+1;
       float_sw4 t1 = tmax;

@@ -412,6 +412,7 @@ bool GridGeneratorGeneral::inverse_grid_mapping_old( EW* a_ew,
          s = (z-m_topo_zmax)/h + Nz;
          float_sw4 z0  = m_topo_zmax - (Nz-1)*h + tau;
          float_sw4 izb = 1.0/(m_zetaBreak*(Nz-1));
+         // TODO: tol=1e-12 is unattainable in float_sw4 (single precision, ~1.2e-7 floor) and this loop MPI_Aborts on failure -- make it build-aware like EW.C's m_citol (sizeof(float_sw4)==4 ? looser value : 1e-12). Only used by the ncurv<=1 && !always_new path (single curvilinear grid, no internal refinement).
          float_sw4 tol = 1e-12;
          float_sw4 er = tol+1;
          int maxit = 10;

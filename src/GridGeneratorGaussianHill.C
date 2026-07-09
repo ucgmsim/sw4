@@ -114,6 +114,7 @@ bool GridGeneratorGaussianHill::inverse_grid_mapping( EW* a_ew, float_sw4 x, flo
          // z is in the curvilinear part, solve non-linear equation
             float_sw4 z0  = m_topo_zmax - (nz-1)*h + tau;
             float_sw4 izb = 1.0/(m_zetaBreak*(nz-1));
+            // TODO: tol=1e-12 is unattainable in float_sw4 (single precision, ~1.2e-7 floor) and this loop MPI_Aborts on failure -- make it build-aware like EW.C's m_citol (sizeof(float_sw4)==4 ? looser value : 1e-12). Only affects "topography style=gaussianhill" test cases.
             float_sw4 tol = 1e-12;
             float_sw4 er = tol+1;
             int maxit = 10;

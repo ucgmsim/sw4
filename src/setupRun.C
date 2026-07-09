@@ -451,6 +451,7 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
 //     printf("You can try to increase zmax or decrease order in the topography command\n");
 //     MPI_Abort(MPI_COMM_WORLD, 1);
 //   }
+// TODO: curvilinear4sgwind.C divides by the Jacobian every step with no live safety margin check (this one is disabled, and m_minJacobian is otherwise only computed inside EW::grid_information(), which nothing calls) -- that safety margin shrinks a lot in float_sw4/single precision near steep topography; wire grid_information() into setup (after mJ[g] is populated) to actually compute m_minJacobian, then re-enable this check.
 
 // // Allocate work space for one sided operators in time stepping loop
 //   int wksize=0;
