@@ -66,17 +66,17 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
    float_sw4 nuf = mDt*mDt/(cof*hf*hf); // cof=12 for the predictor, cof=1 for the corrector (argument to this routine)
    float_sw4 nuc = mDt*mDt/(cof*hc*hc);
    float_sw4 ihc = 1/hc, ihf=1/hf;
-   float_sw4 jacerr = m_citol+1,jacerr0;
+   double jacerr = m_citol+1, jacerr0;
    float_sw4 relax;
    int it = 0;
    relax = m_cirelfact;
- 
+
    icb = m_iStartInt[gc];
    ifb = m_iStartInt[gf];
 
    ice = m_iEndInt[gc];
    ife = m_iEndInt[gf];
-   
+
    jcb = m_jStartInt[gc];
    jfb = m_jStartInt[gf];
 
@@ -95,6 +95,12 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
             Bf(c,i,j,nkf) = Bf(c,i,j,nkf)/(strf_x(i)*strf_y(j));
          }
       }
+
+// Extents of the double-precision ghost-plane buffers (full local (i,j)
+// extent, one k-plane, 3 components), laid out as
+// [(i-iStart) + ni*(j-jStart) + ni*nj*(c-1)].
+   const int niF = m_iEnd[gf]-m_iStart[gf]+1, njF = m_jEnd[gf]-m_jStart[gf]+1;
+   const int niC = m_iEnd[gc]-m_iStart[gc]+1, njC = m_jEnd[gc]-m_jStart[gc]+1;
 
 #pragma omp parallel for
    for( int jc=m_jStart[gc] ; jc<=m_jEnd[gc] ; jc++ )
@@ -178,13 +184,32 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
          }
 }  // end for c=1,3
 
-// Allocate space for the updated values of Uf and Uc (ghost points only)
-   Sarray UcNew(3,m_iStart[gc],m_iEnd[gc],m_jStart[gc],m_jEnd[gc],0,0); // only one k-index
-   Sarray UfNew(3,m_iStart[gf], m_iEnd[gf],m_jStart[gf],m_jEnd[gf],nkf+1,nkf+1); // the k-index is arbitrary, 
+// Allocate space for the iterated values of Uf and Uc (ghost planes only).
+// The block-Jacobi iteration runs in double precision regardless of
+// float_sw4 ("double island", mirroring CurvilinearInterface2::impose_ic):
+// with float_sw4==float the residual otherwise stagnates at one float ULP,
+// above any usable tolerance, so the interface conditions stay
+// under-enforced, which breaks the energy estimate of the refinement
+// coupling and makes the solution grow exponentially. The converged planes
+// are rounded back into the float_sw4 arrays after the loop (the storage
+// precision floor, same as every other field).
+   std::vector<double> ufd((size_t)3*niF*njF), ufnewd((size_t)3*niF*njF);
+   std::vector<double> ucd((size_t)3*niC*njC), ucnewd((size_t)3*niC*njC);
+#pragma omp parallel for
+   for( int j=m_jStart[gf] ; j<=m_jEnd[gf] ; j++ )
+      for( int i=m_iStart[gf] ; i<=m_iEnd[gf] ; i++ )
+         for( int c=1 ; c<=3 ; c++ )
+            ufd[(i-m_iStart[gf]) + (size_t)niF*(j-m_jStart[gf]) + (size_t)niF*njF*(c-1)] = Uf(c,i,j,nkf+1);
+#pragma omp parallel for
+   for( int jc=m_jStart[gc] ; jc<=m_jEnd[gc] ; jc++ )
+      for( int ic=m_iStart[gc] ; ic<=m_iEnd[gc] ; ic++ )
+         for( int c=1 ; c<=3 ; c++ )
+            ucd[(ic-m_iStart[gc]) + (size_t)niC*(jc-m_jStart[gc]) + (size_t)niC*njC*(c-1)] = Uc(c,ic,jc,0);
+
 // Start iteration
    while( jacerr > m_citol && it < m_cimaxiter )
    {
-      float_sw4 rmax[6]={0,0,0,0,0,0};
+      double rmax[6]={0,0,0,0,0,0};
 //
 // REMARK: check jump condition in the presence of stretching function;
 // stretching function may be different in the fine and coarse grids!
@@ -193,11 +218,11 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
 
 //FTNC      if (m_croutines)// tmp
 // optimized version for updating odd i and odd j
-	oddIoddJinterpJacobiOpt(rmax, Uf.c_ptr(), UfNew.c_ptr(), Uc.c_ptr(), UcNew.c_ptr(), 
+	oddIoddJinterpJacobiOptD(rmax, ufd.data(), ufnewd.data(), ucd.data(), ucnewd.data(),
 				m_Mufs[gf].c_ptr(), m_Mlfs[gf].c_ptr(), m_Morc[gc].c_ptr(), m_Mlrc[gc].c_ptr(),
 				m_Mucs[gc].c_ptr(), m_Mlcs[gc].c_ptr(), m_Morf[gf].c_ptr(), m_Mlrf[gf].c_ptr(),
 				Unextf.c_ptr(), BfRestrict.c_ptr(), Unextc.c_ptr(), Bc.c_ptr(),
-				m_iStart.data(), m_iEnd.data(), m_jStart.data(), m_jEnd.data(), m_kStart.data(), m_kEnd.data(), 
+				m_iStart.data(), m_iEnd.data(), m_jStart.data(), m_jEnd.data(), m_kStart.data(), m_kEnd.data(),
 				m_iStartInt.data(), m_iEndInt.data(), m_jStartInt.data(), m_jEndInt.data(),
 				gf, gc, nkf, mDt, hf, hc, cof, relax,
 				m_sbop, m_ghcof);
@@ -216,11 +241,11 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
 //
 //FTNC      if (m_croutines) // tmp
 // optimized version for updating odd i and even j
-	oddIevenJinterpJacobiOpt(rmax, Uf.c_ptr(), UfNew.c_ptr(), Uc.c_ptr(), 
+	oddIevenJinterpJacobiOptD(rmax, ufd.data(), ufnewd.data(), ucd.data(),
 				 m_Morc[gc].c_ptr(), m_Mlrc[gc].c_ptr(),
 				 m_Morf[gf].c_ptr(), m_Mlrf[gf].c_ptr(),
 				 Unextf.c_ptr(), UnextcInterp.c_ptr(),
-				 m_iStart.data(), m_iEnd.data(), m_jStart.data(), m_jEnd.data(), m_kStart.data(), m_kEnd.data(), 
+				 m_iStart.data(), m_iEnd.data(), m_jStart.data(), m_jEnd.data(), m_kStart.data(), m_kEnd.data(),
 				 m_iStartInt.data(), m_iEndInt.data(), m_jStartInt.data(), m_jEndInt.data(),
 				 gf, gc, nkf, mDt, hf, hc, cof, relax,
 				 m_sbop, m_ghcof);
@@ -235,13 +260,13 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
 //FTNC			      m_sbop, m_ghcof);
 
 
-//FTNC      if (m_croutines) 
+//FTNC      if (m_croutines)
 // optimized version for updating even i and odd j
-	evenIoddJinterpJacobiOpt(rmax, Uf.c_ptr(), UfNew.c_ptr(), Uc.c_ptr(), 
+	evenIoddJinterpJacobiOptD(rmax, ufd.data(), ufnewd.data(), ucd.data(),
 			      m_Morc[gc].c_ptr(), m_Mlrc[gc].c_ptr(),
 			      m_Morf[gf].c_ptr(), m_Mlrf[gf].c_ptr(),
 			      Unextf.c_ptr(), UnextcInterp.c_ptr(),
-			      m_iStart.data(), m_iEnd.data(), m_jStart.data(), m_jEnd.data(), m_kStart.data(), m_kEnd.data(), 
+			      m_iStart.data(), m_iEnd.data(), m_jStart.data(), m_jEnd.data(), m_kStart.data(), m_kEnd.data(),
 			      m_iStartInt.data(), m_iEndInt.data(), m_jStartInt.data(), m_jEndInt.data(),
 			      gf, gc, nkf, mDt, hf, hc, cof, relax,
 			      m_sbop, m_ghcof);
@@ -257,11 +282,11 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
 
 //FTNC      if (m_croutines)
 // optimized version for updating even i and even j
-	evenIevenJinterpJacobiOpt(rmax, Uf.c_ptr(), UfNew.c_ptr(), Uc.c_ptr(), 
+	evenIevenJinterpJacobiOptD(rmax, ufd.data(), ufnewd.data(), ucd.data(),
 			       m_Morc[gc].c_ptr(), m_Mlrc[gc].c_ptr(),
 			       m_Morf[gf].c_ptr(), m_Mlrf[gf].c_ptr(),
 			       Unextf.c_ptr(), UnextcInterp.c_ptr(),
-			       m_iStart.data(), m_iEnd.data(), m_jStart.data(), m_jEnd.data(), m_kStart.data(), m_kEnd.data(), 
+			       m_iStart.data(), m_iEnd.data(), m_jStart.data(), m_jEnd.data(), m_kStart.data(), m_kEnd.data(),
 			       m_iStartInt.data(), m_iEndInt.data(), m_jStartInt.data(), m_jEndInt.data(),
 			       gf, gc, nkf, mDt, hf, hc, cof, relax,
 			       m_sbop, m_ghcof);
@@ -275,13 +300,13 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
 //FTNC			       gf, gc, nkf, mDt, hf, hc, cof, relax,
 //FTNC			       m_sbop, m_ghcof);
 
-      communicate_array_2d( Uf, gf, nkf+1 );
-      communicate_array_2d( Uc, gc, 0 );
-      float_sw4 jacerrtmp = 0;
+      communicate_plane_2d_d( ufd.data(), gf );
+      communicate_plane_2d_d( ucd.data(), gc );
+      double jacerrtmp = 0;
       for (int q=0; q<6; q++)
          jacerrtmp += rmax[q];
-      
-      MPI_Allreduce( &jacerrtmp, &jacerr, 1, m_mpifloat, MPI_MAX, m_cartesian_communicator );
+
+      MPI_Allreduce( &jacerrtmp, &jacerr, 1, MPI_DOUBLE, MPI_MAX, m_cartesian_communicator );
       if( it == 0 )
 	 jacerr0 = jacerr;
       if( jacerr0 > 1e-38 )
@@ -289,7 +314,19 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
       it++;
 
    } // end while jacerr > eps (Outer iteration)
-   
+
+// round the converged ghost planes back into the float_sw4 arrays
+#pragma omp parallel for
+   for( int j=m_jStart[gf] ; j<=m_jEnd[gf] ; j++ )
+      for( int i=m_iStart[gf] ; i<=m_iEnd[gf] ; i++ )
+         for( int c=1 ; c<=3 ; c++ )
+            Uf(c,i,j,nkf+1) = ufd[(i-m_iStart[gf]) + (size_t)niF*(j-m_jStart[gf]) + (size_t)niF*njF*(c-1)];
+#pragma omp parallel for
+   for( int jc=m_jStart[gc] ; jc<=m_jEnd[gc] ; jc++ )
+      for( int ic=m_iStart[gc] ; ic<=m_iEnd[gc] ; ic++ )
+         for( int c=1 ; c<=3 ; c++ )
+            Uc(c,ic,jc,0) = ucd[(ic-m_iStart[gc]) + (size_t)niC*(jc-m_jStart[gc]) + (size_t)niC*njC*(c-1)];
+
    if( jacerr > m_citol && proc_zero() )
    {
       cout << "EW::consintp, Warning, no convergence. err = " << jacerr << " tol= " << m_citol << endl;

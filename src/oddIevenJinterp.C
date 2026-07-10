@@ -439,3 +439,170 @@ void oddIevenJinterp(float_sw4 rmax[6], Sarray &Uf, Sarray &Muf, Sarray &Lambdaf
 #undef strf_x
 #undef strf_y
 } // end oddIevenJinterp
+
+// Double-precision variant of oddIevenJinterpJacobiOpt (see cf_interface.h).
+// a_uf/a_ufnew (Uf ghost plane at k=nkf+1) and a_uc (Uc ghost plane at k=0)
+// are double-precision single-plane buffers; the k-argument of the plane
+// macros is ignored. Uc is read-only here. Loop body identical to
+// oddIevenJinterpJacobiOpt.
+void oddIevenJinterpJacobiOptD(double rmax[6], double* __restrict__ a_uf,
+			      double* __restrict__ a_ufnew, double* __restrict__ a_uc,
+			      float_sw4* __restrict__ a_morc, float_sw4* __restrict__ a_mlrc,
+			      float_sw4* __restrict__ a_morf, float_sw4* __restrict__ a_mlrf,
+			      float_sw4* __restrict__ a_unextf, float_sw4* __restrict__ a_uncint,
+			      int a_iStart[], int a_iEnd[], int a_jStart[], int a_jEnd[], int a_kStart[], int a_kEnd[],
+			      int a_iStartInt[], int a_iEndInt[], int a_jStartInt[], int a_jEndInt[],
+			      int gf, int gc, int nkf, double a_Dt, double hf, double hc,
+			      double cof, double relax,
+			      float_sw4 a_sbop[], float_sw4 a_ghcof[])
+{  
+  const int iStartC = a_iStart[gc];
+  const int jStartC = a_jStart[gc];
+
+  const int iEndC = a_iEnd[gc];
+  const int jEndC = a_jEnd[gc];
+
+  const int iStartF = a_iStart[gf];
+  const int jStartF = a_jStart[gf];
+  const int iEndF = a_iEnd[gf];
+  const int jEndF = a_jEnd[gf];
+
+// Bf indexing
+  const int niF    = iEndF-iStartF+1;
+  const int nijF   = niF*(jEndF-jStartF+1);
+  const int nijk_bf = nijF*(1); // only one k-plane
+  const int base3_bf = (iStartF+niF*jStartF+nijF*nkf+nijk_bf); // only one k=nkf
+#define Unextf(c,i,j,k) a_unextf[-base3_bf+i+niF*(j)+nijF*(k)+nijk_bf*(c)] 
+
+  const int nijk_uncint = nijF*(1); // only one k-plane
+  const int base3_uncint = (iStartF+niF*jStartF+nijF*1+nijk_uncint); // only k=1
+#define UnextcInterp(c,i,j,k) a_uncint[-base3_uncint+i+niF*(j)+nijF*(k)+nijk_uncint*(c)]
+
+  const int base_mufs = (iStartF+niF*jStartF+nijF*nkf); // only one k=nkf
+#define Morf(i,j,k)     a_morf[-base_mufs+i+niF*(j)+nijF*(k)] // same size as Mufs
+#define Mlrf(i,j,k)     a_mlrf[-base_mufs+i+niF*(j)+nijF*(k)] // same size as Mufs
+ 
+  const int niC    = iEndC-iStartC+1;
+  const int nijC   = niC*(jEndC-jStartC+1);
+  const int base_morc = (iStartC+niC*jStartC+nijC*1); // only one k=1
+#define Morc(i,j,k)     a_morc[-base_morc+i+niC*(j)+nijC*(k)]
+#define Mlrc(i,j,k)     a_mlrc[-base_morc+i+niC*(j)+nijC*(k)] // same size as Morc
+
+// double-precision ghost planes: single k-plane over the full local (i,j)
+// extent, the k-argument is ignored; c-index has base=1
+  const int basep_uc = (iStartC+niC*jStartC+nijC*1);
+#define Uc(c,i,j,k)   a_uc[-basep_uc+i+niC*(j)+nijC*(c)]   
+
+  const int basep_uf = (iStartF+niF*jStartF+nijF*1);
+#define Uf(c,i,j,k)   a_uf[-basep_uf+i+niF*(j)+nijF*(c)]   
+#define UfNew(c,i,j,k)   a_ufnew[-basep_uf+i+niF*(j)+nijF*(c)]   
+
+// previous stuff  
+  int icb = a_iStartInt[gc];
+  int ifb = a_iStartInt[gf];
+  if (ifb % 2 == 0) ifb++; // make sure ifb is odd
+
+  int ice = a_iEndInt[gc];
+  int ife = a_iEndInt[gf];
+   
+  int jcb = a_jStartInt[gc];
+  int jfb = a_jStartInt[gf];
+  if (jfb % 2 == 1) jfb++; // make sure jfb is even
+  
+
+  int jce = a_jEndInt[gc];
+  int jfe = a_jEndInt[gf];
+
+  double nuf = a_Dt*a_Dt/(cof*hf*hf); // cof=12 for the predictor, cof=1 for the corrector (argument to this routine)
+  double nuc = a_Dt*a_Dt/(cof*hc*hc);
+  double ihc = 1/hc, ihf=1/hf;
+
+  const double i16 = 1.0/16;
+  const double i256 = 1.0/256;
+  const double i1024 = 1.0/1024;
+
+// residuals
+  double rmax1=0, rmax2=0, rmax3=0;
+
+#pragma omp parallel for reduction(max:rmax1,rmax2,rmax3)
+  for( int j=jfb ; j <= jfe ; j+=2 )
+#pragma omp simd
+    for( int i=ifb ; i <= ife ; i+=2 )
+    {
+      int ic, jc;
+      double b1, a11, r3;
+      ic = (i+1)/2;
+      jc = j/2;
+
+// Un-roll c-loop
+      int c=1;
+// All Uc terms
+      b1 = UnextcInterp(c,i,j,1) + nuc*a_ghcof[0]*i16*(   -Uc(c,ic,jc-1,0)*Morc(ic,jc-1,1) + 
+							  9*Uc(c,ic,jc  ,0)*Morc(ic,jc  ,1) + 
+							  9*Uc(c,ic,jc+1,0)*Morc(ic,jc+1,1)
+							  -Uc(c,ic,jc+2,0)*Morc(ic,jc+2,1) ) - Unextf(c,i,j,nkf); 
+
+      a11 = nuf*a_ghcof[0]*Morf(i,j,nkf);
+
+// update ghost point value Uf(c,i,j,nkf+1)
+      UfNew(c,i,j,nkf+1) = relax*b1/a11 + (1-relax)*Uf(c,i,j,nkf+1); 
+// change in ghost point value
+      r3 =  UfNew(c,i,j,nkf+1) - Uf(c,i,j,nkf+1);
+      rmax1 = rmax1 > fabs(r3) ? rmax1 : fabs(r3);
+
+      c=2;
+// All Uc terms
+      b1 = UnextcInterp(c,i,j,1) + nuc*a_ghcof[0]*i16*(   -Uc(c,ic,jc-1,0)*Morc(ic,jc-1,1) + 
+							  9*Uc(c,ic,jc  ,0)*Morc(ic,jc  ,1) + 
+							  9*Uc(c,ic,jc+1,0)*Morc(ic,jc+1,1)
+							  -Uc(c,ic,jc+2,0)*Morc(ic,jc+2,1) ) - Unextf(c,i,j,nkf); 
+
+      a11 = nuf*a_ghcof[0]*Morf(i,j,nkf);
+
+// update ghost point value Uf(c,i,j,nkf+1)
+      UfNew(c,i,j,nkf+1) = relax*b1/a11 + (1-relax)*Uf(c,i,j,nkf+1); 
+// change in ghost point value
+      r3 =  UfNew(c,i,j,nkf+1) - Uf(c,i,j,nkf+1);
+      rmax2 = rmax2 > fabs(r3) ? rmax2 : fabs(r3);
+               
+// work on component 3 of the ghost point value of Uf
+// All Uc terms
+// right hand side is mismatch in displacement                
+      b1 = UnextcInterp(3,i,j,1) + nuc*a_ghcof[0]*i16*(   - Uc(3,ic,jc-1,0)*Mlrc(ic,jc-1,1) + 
+				       9*Uc(3,ic,jc  ,0)*Mlrc(ic,jc  ,1) + 
+				       9*Uc(3,ic,jc+1,0)*Mlrc(ic,jc+1,1)
+				       -Uc(3,ic,jc+2,0)*Mlrc(ic,jc+2,1) ) - Unextf(3,i,j,nkf); 
+
+    a11 = nuf*a_ghcof[0]*Mlrf(i,j,nkf); // no str
+
+// solve for the ghost point value Uf(3,i,j,nkf+1)
+    UfNew(3,i,j,nkf+1) = relax* b1/a11 + (1-relax)* Uf(3,i,j,nkf+1);
+    r3 = UfNew(3,i,j,nkf+1) - Uf(3,i,j,nkf+1);
+    rmax3 = rmax3 > fabs(r3) ? rmax3 : fabs(r3);
+
+    } // end for i odd, j even
+
+// update Uf
+#pragma omp parallel
+  for( int c=1 ; c <= 3 ; c++ ) 
+#pragma omp for
+    for( int j=jfb ; j <= jfe ; j+=2 )
+#pragma omp simd
+      for( int i=ifb ; i <= ife ; i+=2 )
+      {
+	Uf(c,i,j,nkf+1) = UfNew(c,i,j,nkf+1);
+      }
+
+  rmax[3] = rmax1 > rmax[3] ? rmax1:rmax[3];
+  rmax[4] = rmax2 > rmax[4] ? rmax2:rmax[4];
+  rmax[5] = rmax3 > rmax[5] ? rmax3:rmax[5];
+#undef Unextf
+#undef UnextcInterp
+#undef Morf
+#undef Mlrf
+#undef Morc
+#undef Mlrc
+#undef Uc
+#undef Uf
+#undef UfNew
+} // end oddIevenJinterpJacobiOptD

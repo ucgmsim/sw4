@@ -414,6 +414,9 @@ void communicate_array( Sarray& u, int grid );
 void communicate_arrays( vector<Sarray>& u );
 void communicate_array_2dfinest( Sarray& u );
 void communicate_array_2d( Sarray& u, int g, int k );
+// double-precision 3-component k-plane exchange (see parallelStuff.C),
+// used by the mesh-refinement interface solve in consintp.C
+void communicate_plane_2d_d( double* u, int g );
 void communicate_array_2d_asym( Sarray& u, int g, int k );
 void communicate_array_2d_ext( Sarray& u );
 void communicate_array_2d_isurf( Sarray& u, int iSurf );

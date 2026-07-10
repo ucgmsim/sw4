@@ -561,12 +561,12 @@ EW::EW(const string &fileName, vector<vector<Source *>> &a_GlobalSources,
       m_filterobs_ptr(0),
 
       mPrintInterval(100), m_matrices_decomposed(false),
-      // Default consistent-interpolation tolerance. In double precision 1e-7 is
-      // achievable, but in single precision it sits at FLT_EPSILON (~1.19e-7),
-      // so the Jacobi iteration could never reach it and would exhaust
-      // m_cimaxiter. Use a looser default (~840*FLT_EPSILON) when float_sw4 is
-      // single precision.
-      m_citol(sizeof(float_sw4) == 4 ? 1e-4 : 1e-7), m_cimaxiter(20),
+      // Default consistent-interpolation tolerance. The interface Jacobi
+      // iteration in consintp.C runs in double precision internally (even
+      // when float_sw4 is single precision), so 1e-7 is attainable in both
+      // builds. Under-enforcing the interface conditions breaks the energy
+      // estimate of the refinement coupling, so this must not be loosened.
+      m_citol(1e-7), m_cimaxiter(20),
       m_cirelfact(0.94), m_mesh_refinements(false),
       //  m_intp_conservative(true),
       mMaterialExtrapolate(0),

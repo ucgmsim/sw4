@@ -563,6 +563,105 @@ void EW::communicate_array_2d( Sarray& u, int g, int k )
 }
 
 //-----------------------------------------------------------------------
+void EW::communicate_plane_2d_d( double* u, int g )
+{
+   // Ghost-point exchange for a 3-component double-precision k-plane laid
+   // out as u[(i-ib) + ni*(j-jb) + ni*nj*(c-1)] over this rank's full local
+   // (i,j) extent of grid g. Double-precision analog of communicate_array_2d
+   // (whose MPI datatypes are typed on float_sw4); used by the
+   // mesh-refinement interface solve in EW::consintp, which iterates the
+   // interface ghost planes in double precision.
+   int ib = m_iStart[g], ie = m_iEnd[g];
+   int jb = m_jStart[g], je = m_jEnd[g];
+   int ni = ie-ib+1, nj = je-jb+1;
+   const int nc = 3;
+   int pp = m_ppadding;
+
+   MPI_Status status;
+   int xtag1 = 345;
+   int xtag2 = 346;
+   int ytag1 = 347;
+   int ytag2 = 348;
+#define uplane(c,i,j) u[(i)-ib + ((size_t)ni)*((j)-jb) + ((size_t)ni)*nj*((c)-1)]
+   // X-direction communication, strips of pp columns over the full j-extent
+   {
+      size_t n = (size_t)pp*nj*nc;
+      std::vector<double> sbuf1(n), rbuf1(n), sbuf2(n), rbuf2(n);
+      size_t ind = 0;
+      for( int c=1 ; c <= nc ; c++ )
+	 for( int j=jb ; j <= je ; j++ )
+	    for( int i=ie-2*pp+1 ; i <= ie-pp ; i++ )
+	       sbuf1[ind++] = uplane(c,i,j);
+      ind = 0;
+      for( int c=1 ; c <= nc ; c++ )
+	 for( int j=jb ; j <= je ; j++ )
+	    for( int i=ib+pp ; i <= ib+2*pp-1 ; i++ )
+	       sbuf2[ind++] = uplane(c,i,j);
+      MPI_Sendrecv( sbuf1.data(), n, MPI_DOUBLE, m_neighbor[1], xtag1,
+		    rbuf1.data(), n, MPI_DOUBLE, m_neighbor[0], xtag1,
+		    m_cartesian_communicator, &status );
+      MPI_Sendrecv( sbuf2.data(), n, MPI_DOUBLE, m_neighbor[0], xtag2,
+		    rbuf2.data(), n, MPI_DOUBLE, m_neighbor[1], xtag2,
+		    m_cartesian_communicator, &status );
+      if( m_neighbor[0] != MPI_PROC_NULL )
+      {
+	 ind = 0;
+	 for( int c=1 ; c <= nc ; c++ )
+	    for( int j=jb ; j <= je ; j++ )
+	       for( int i=ib ; i <= ib+pp-1 ; i++ )
+		  uplane(c,i,j) = rbuf1[ind++];
+      }
+      if( m_neighbor[1] != MPI_PROC_NULL )
+      {
+	 ind = 0;
+	 for( int c=1 ; c <= nc ; c++ )
+	    for( int j=jb ; j <= je ; j++ )
+	       for( int i=ie-pp+1 ; i <= ie ; i++ )
+		  uplane(c,i,j) = rbuf2[ind++];
+      }
+   }
+   // Y-direction communication, strips of pp rows over the full i-extent
+   // (after the X-exchange, so corner ghost points get correct values)
+   {
+      size_t n = (size_t)ni*pp*nc;
+      std::vector<double> sbuf1(n), rbuf1(n), sbuf2(n), rbuf2(n);
+      size_t ind = 0;
+      for( int c=1 ; c <= nc ; c++ )
+	 for( int j=je-2*pp+1 ; j <= je-pp ; j++ )
+	    for( int i=ib ; i <= ie ; i++ )
+	       sbuf1[ind++] = uplane(c,i,j);
+      ind = 0;
+      for( int c=1 ; c <= nc ; c++ )
+	 for( int j=jb+pp ; j <= jb+2*pp-1 ; j++ )
+	    for( int i=ib ; i <= ie ; i++ )
+	       sbuf2[ind++] = uplane(c,i,j);
+      MPI_Sendrecv( sbuf1.data(), n, MPI_DOUBLE, m_neighbor[3], ytag1,
+		    rbuf1.data(), n, MPI_DOUBLE, m_neighbor[2], ytag1,
+		    m_cartesian_communicator, &status );
+      MPI_Sendrecv( sbuf2.data(), n, MPI_DOUBLE, m_neighbor[2], ytag2,
+		    rbuf2.data(), n, MPI_DOUBLE, m_neighbor[3], ytag2,
+		    m_cartesian_communicator, &status );
+      if( m_neighbor[2] != MPI_PROC_NULL )
+      {
+	 ind = 0;
+	 for( int c=1 ; c <= nc ; c++ )
+	    for( int j=jb ; j <= jb+pp-1 ; j++ )
+	       for( int i=ib ; i <= ie ; i++ )
+		  uplane(c,i,j) = rbuf1[ind++];
+      }
+      if( m_neighbor[3] != MPI_PROC_NULL )
+      {
+	 ind = 0;
+	 for( int c=1 ; c <= nc ; c++ )
+	    for( int j=je-pp+1 ; j <= je ; j++ )
+	       for( int i=ib ; i <= ie ; i++ )
+		  uplane(c,i,j) = rbuf2[ind++];
+      }
+   }
+#undef uplane
+}
+
+//-----------------------------------------------------------------------
 void EW::communicate_array_2d_ext( Sarray& u )
 {
    REQUIRE2( u.m_nc == 1, "Communicate array 2d ext, only implemented for one-component arrays" );
