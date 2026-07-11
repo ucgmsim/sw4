@@ -1378,6 +1378,33 @@ void EW::set_materials()
 	communicate_array( mMu[g], g );
 	communicate_array( mLambda[g], g );
      }
+     if( m_use_attenuation )
+     {
+	// Randomized Q model for the energy test. Qs, Qp must stay
+	// positive (check_materials aborts otherwise) and comfortably
+	// above the point where setup_viscoelastic's least-squares fit
+	// fails its sum(beta)<1 stability requirement, so use a modest
+	// physical range (Qs in [20,40)) rather than reusing the
+	// rho/mu/lambda amplitude, which is scaled for kg/m^3, Pa. Qp/Qs
+	// ratio fixed at 1.5, as commonly assumed when Qp is unmeasured.
+	for (g=0; g<mNumberOfGrids; g++)
+	{
+	   float_sw4* qs_ptr = mQs[g].c_ptr();
+	   float_sw4* qp_ptr = mQp[g].c_ptr();
+	   for( int i=0 ; i < (m_iEnd[g]-m_iStart[g]+1)*(m_jEnd[g]-m_jStart[g]+1)*(m_kEnd[g]-m_kStart[g]+1); i++ )
+	   {
+	      qs_ptr[i] = 20.0 + 20.0*drand48();
+	      qp_ptr[i] = 1.5*qs_ptr[i];
+	   }
+	}
+	material_ic( mQs );
+	material_ic( mQp );
+	for (g=0; g<mNumberOfGrids; g++)
+	{
+	   communicate_array( mQs[g], g );
+	   communicate_array( mQp[g], g );
+	}
+     }
   }
 
   check_materials( );

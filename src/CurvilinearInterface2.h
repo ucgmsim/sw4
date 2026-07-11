@@ -53,18 +53,9 @@ class CurvilinearInterface2
    float_sw4 m_sbop[6], m_sbop_no_gp[6], m_bop[24];
 
    void interface_block( Sarray& matrix );
-   void interface_lhs( Sarray& lhs, Sarray& uc );
-   void interface_rhs( Sarray& rhs, Sarray& uc, Sarray& uf, Sarray& fc, Sarray& ff,
-                       std::vector<Sarray>& Alpha_c, std::vector<Sarray>& Alpha_f );
    void compute_icstresses_curv( Sarray& a_Up, Sarray& B, int kic,
 				 Sarray& a_metric, Sarray& a_mu, Sarray& a_lambda,
 				 float_sw4* a_str_x, float_sw4* a_str_y, float_sw4* sbop, char op );
-   void lhs_icstresses_curv( Sarray& a_Up, Sarray& a_lhs, int kic,
-			     Sarray& a_metric, Sarray& a_mu, Sarray& a_lambda,
-			     float_sw4* a_str_x, float_sw4* a_str_y, float_sw4* sbop );
-   void lhs_Lu( Sarray& a_U, Sarray& a_lhs, Sarray& metric, Sarray& jac, 
-		Sarray& mu, Sarray& lambda, 
-		float_sw4* a_str_x, float_sw4* a_str_y, float_sw4 ghcof );
 
    void mat_icstresses_curv( int ib, int jb, Sarray& a_mat, int kic,
 			     Sarray& a_metric, Sarray& a_mu, Sarray& a_lambda,
@@ -84,10 +75,16 @@ class CurvilinearInterface2
    void init_arrays_att();
 
    // Double-precision variants of the interface ghost-point solve kernels
-   // (see DPlane above). Only the block-Jacobi solve for U_c's k=0 ghost
-   // plane uses these; everything else in the timestepping loop stays
-   // at float_sw4 precision.
+   // (see DPlane above). The block-Jacobi solve for U_c's k=0 ghost plane
+   // (interface_lhs_d) and the fixed forcing term it solves against
+   // (interface_rhs_d) both run in double; only the interior stencil
+   // evaluations they call (curvilinear4sgwind, compute_icstresses_curv,
+   // still float_sw4 -- see interface_rhs_d) touch data that is genuinely
+   // stored at float_sw4 precision elsewhere in the simulation. Everything
+   // else in the timestepping loop stays at float_sw4 precision.
    void interface_lhs_d( DPlane& lhsd, DPlane& xd );
+   void interface_rhs_d( DPlane& rhsd, Sarray& uc, Sarray& uf, Sarray& fc, Sarray& ff,
+                         std::vector<Sarray>& Alpha_c, std::vector<Sarray>& Alpha_f );
    void lhs_Lu_d( DPlane& xd, DPlane& lhsd );
    void lhs_icstresses_curv_d( DPlane& xd, DPlane& Bc );
    void prolongate2D_d( DPlane& Uc, DPlane& Uf );

@@ -490,26 +490,23 @@ void CurvilinearInterface2::impose_ic( std::vector<Sarray>& a_U, float_sw4 t,
    }
 // 4. Solve equation for stress continuity, formulated as lhs*x+rhs=0, where x are uc's ghost points at k=0.
 
-   // 4.a Form right hand side of equation
-   Sarray rhs(3,m_ib,m_ie,m_jb,m_je,1,1);
-   interface_rhs( rhs, U_c, U_f, F_c, F_f, Alpha_c, Alpha_f );
-
-   // 4.b Left hand side, lhs*x. The ghost-plane unknown (xd), rhs (rhsd),
-   // lhs (lhsd) and residual (resd) are held in double regardless of
-   // float_sw4, because the residual floor here is 1 ULP of float_sw4 --
-   // unattainable at the requested reltol/abstol in single precision (see
-   // convergence_plan.md). Coefficients (metric, jacobian, mu, lambda,
-   // rho, mass-block inverse) are read at their native float_sw4 precision
-   // and promoted; only the linear solve itself runs in double.
+   // 4.a-b The ghost-plane unknown (xd), fixed forcing term (rhsd), lhs
+   // (lhsd) and residual (resd) are held in double regardless of float_sw4,
+   // because the residual floor here is 1 ULP of float_sw4 -- unattainable
+   // at the requested reltol/abstol in single precision (see
+   // convergence_plan.md). Coefficients (metric, jacobian, mu, lambda, rho,
+   // mass-block inverse) are read at their native float_sw4 precision and
+   // promoted; rhsd is assembled by interface_rhs_d, which likewise
+   // promotes each interior float_sw4 result before combining it, so rhsd
+   // carries no additional float_sw4 rounding beyond what the underlying
+   // (float_sw4-stored) interior solution already has.
    DPlane xd(3,m_ib,m_ie,m_jb,m_je), rhsd(3,m_ib,m_ie,m_jb,m_je);
    DPlane lhsd(3,m_ib,m_ie,m_jb,m_je), resd(3,m_ib,m_ie,m_jb,m_je);
+   interface_rhs_d( rhsd, U_c, U_f, F_c, F_f, Alpha_c, Alpha_f );
    for( int c=1 ; c <= 3 ;c++)
       for( int j=m_jb ; j <= m_je ; j++ )
          for( int i=m_ib ; i <= m_ie ; i++ )
-         {
             xd(c,i,j)   = U_c(c,i,j,0);
-            rhsd(c,i,j) = rhs(c,i,j,1);
-         }
    interface_lhs_d( lhsd, xd );
 
    // Initial residual
@@ -741,13 +738,28 @@ void CurvilinearInterface2::interface_lhs_d( DPlane& lhsd, DPlane& xd )
 }
 
 //-----------------------------------------------------------------------
-void CurvilinearInterface2::interface_rhs( Sarray& rhs, Sarray& uc, Sarray& uf,
-                                           Sarray& fc, Sarray& ff,
+void CurvilinearInterface2::interface_rhs_d( DPlane& rhsd, Sarray& uc, Sarray& uf,
+                                             Sarray& fc, Sarray& ff,
                              vector<Sarray>& Alpha_c, vector<Sarray>& Alpha_f )
 {
+   // Assembles the fixed forcing term of lhs(x)+rhs=0 that interface_lhs_d
+   // solves against. The interior stencil evaluations (curvilinear4sgwind,
+   // compute_icstresses_curv) run at float_sw4 precision -- they read uc/uf,
+   // which are themselves stored at float_sw4 precision throughout the rest
+   // of the simulation, so recomputing them in double would only duplicate
+   // those kernels without reducing error. But once each float_sw4 result
+   // (L(uc)/rho, L(uf), B(uf), B(uc)) is produced, it is promoted to double
+   // immediately and all further interface-local assembly -- prolongation,
+   // restriction, the linear combination, and the accumulation into rhsd --
+   // runs in double via the same kernels used by interface_lhs_d
+   // (prolongate2D_d, restrict2D_d, bnd_zero_d), instead of rounding to
+   // float_sw4 at each intermediate step as the old float-only interface_rhs
+   // did. This keeps the fixed rhsd fed to the double Jacobi solve as
+   // accurate as the float_sw4 inputs allow.
    Sarray utmp(3,uc.m_ib,uc.m_ie,uc.m_jb,uc.m_je,0,0);
+   Sarray rhs(3,m_ib,m_ie,m_jb,m_je,1,1);
 
-   const float_sw4 w1=17.0/48;
+   const double w1=17.0/48;
 //  1. Set ghost points to zero, and save the old value to restore after, so
 //     that the routine does not change uc.
    for( int c=1 ; c <= 3; c++ )
@@ -759,7 +771,7 @@ void CurvilinearInterface2::interface_rhs( Sarray& rhs, Sarray& uc, Sarray& uf,
 	   }
 
    int onesided[6]={0,0,0,0,1,1};
-// 2. Compute L(uc)/rhoc
+// 2. Compute L(uc)/rhoc (float_sw4, unavoidable -- interior stencil on uc)
    curvilinear4sgwind( m_ib, m_ie, m_jb, m_je, m_kb, m_ke, 1, 1, uc.c_ptr(),
 		       m_mu_c.c_ptr(), m_lambda_c.c_ptr(),
                        m_met_c.c_ptr(), m_jac_c.c_ptr(), rhs.c_ptr(),
@@ -776,18 +788,22 @@ void CurvilinearInterface2::interface_rhs( Sarray& rhs, Sarray& uc, Sarray& uf,
    for( int c=1 ; c <= 3; c++ )
       for( int j=rhs.m_jb ; j <= rhs.m_je ; j++ )
          for( int i=rhs.m_ib ; i <= rhs.m_ie ; i++ )
-            //            rhs(c,i,j,1) = (rhs(c,i,j,1)+fc(c,i,j,1))/m_rho_c(i,j,1);
             rhs(c,i,j,1) /= m_rho_c(i,j,1);
 
+// Promote to double: no further rounding to float_sw4 happens from here on.
+   for( int c=1 ; c <= 3; c++ )
+      for( int j=rhs.m_jb ; j <= rhs.m_je ; j++ )
+         for( int i=rhs.m_ib ; i <= rhs.m_ie ; i++ )
+            rhsd(c,i,j) = rhs(c,i,j,1);
    if( !m_tw && !m_psource )
-      bnd_zero(rhs,m_nghost);
+      bnd_zero_d(rhsd,m_nghost);
 
-// 3. Compute prolrhs := p(L(uc)/rhoc)
-   Sarray prolrhs(3,m_ibf,m_ief,m_jbf,m_jef,m_nkf,m_nkf);
-   prolongate2D( rhs, prolrhs, 1, m_nkf );
+// 3. Compute prolrhsd := p(L(uc)/rhoc)  (double)
+   DPlane prolrhsd(3,m_ibf,m_ief,m_jbf,m_jef);
+   prolongate2D_d( rhsd, prolrhsd );
 
-// 4. Compute L(uf)
-   Sarray Luf(prolrhs);
+// 4. Compute L(uf) (float_sw4, unavoidable -- interior stencil on uf), promote to double
+   Sarray Luf(3,m_ibf,m_ief,m_jbf,m_jef,m_nkf,m_nkf);
    curvilinear4sgwind( m_ibf, m_ief, m_jbf, m_jef, m_kbf, m_kef, m_nkf, m_nkf, uf.c_ptr(),
 		       m_mu_f.c_ptr(), m_lambda_f.c_ptr(), m_met_f.c_ptr(), m_jac_f.c_ptr(), Luf.c_ptr(),
                        onesided, m_acof, m_bope, m_ghcof, m_acof_no_gp,
@@ -795,13 +811,19 @@ void CurvilinearInterface2::interface_rhs( Sarray& rhs, Sarray& uc, Sarray& uf,
    if( m_use_attenuation )
       for( int a=0 ; a < m_number_mechanisms ; a++ )
          curvilinear4sgwind( m_ibf, m_ief, m_jbf, m_jef, m_kbf, m_kef, m_nkf, m_nkf, Alpha_f[a].c_ptr(),
-		       m_muve_f[a].c_ptr(), m_lambdave_f[a].c_ptr(), m_met_f.c_ptr(), 
+		       m_muve_f[a].c_ptr(), m_lambdave_f[a].c_ptr(), m_met_f.c_ptr(),
                        m_jac_f.c_ptr(), Luf.c_ptr(),
                        onesided, m_acof_no_gp, m_bope, m_ghcof_no_gp, m_acof_no_gp,
                        m_ghcof_no_gp, m_strx_f, m_stry_f, m_nkf, '-');
 
-// 5. Compute B(uf)
-   Sarray Bf(prolrhs);
+   DPlane lufd(3,m_ibf,m_ief,m_jbf,m_jef);
+   for( int c=1 ; c <= 3 ;c++)
+      for( int j=Luf.m_jb ; j <= Luf.m_je ; j++ )
+         for( int i=Luf.m_ib ; i <= Luf.m_ie ; i++ )
+            lufd(c,i,j) = Luf(c,i,j,m_nkf);
+
+// 5. Compute B(uf) (float_sw4, unavoidable -- interior stencil on uf), promote to double
+   Sarray Bf(3,m_ibf,m_ief,m_jbf,m_jef,m_nkf,m_nkf);
    compute_icstresses_curv( uf, Bf, m_nkf, m_met_f, m_mu_f, m_lambda_f,
 			    m_strx_f, m_stry_f, m_sbop_no_gp, '=' );
    if( m_use_attenuation )
@@ -809,18 +831,24 @@ void CurvilinearInterface2::interface_rhs( Sarray& rhs, Sarray& uc, Sarray& uf,
          compute_icstresses_curv( Alpha_f[a], Bf, m_nkf, m_met_f, m_muve_f[a], m_lambdave_f[a],
                                   m_strx_f, m_stry_f, m_sbop_no_gp, '-' );
 
-// 6. Form term prolrhs := r(w1*J[gf]*(rhof*p(L(uc)/rhoc-L(uf))+B(uf))
+   DPlane bfd(3,m_ibf,m_ief,m_jbf,m_jef);
    for( int c=1 ; c <= 3 ;c++)
-      for( int j=prolrhs.m_jb ; j <= prolrhs.m_je ; j++ )
-         for( int i=prolrhs.m_ib ; i <= prolrhs.m_ie ; i++ )
-            prolrhs(c,i,j,m_nkf) = w1*m_jac_f(i,j,m_nkf)*( m_rho_f(i,j,m_nkf)*prolrhs(c,i,j,m_nkf)-
-Luf(c,i,j,m_nkf))/(m_strx_f[i-m_ibf]*m_stry_f[j-m_jbf])+Bf(c,i,j,m_nkf);
-                                                           //                 Luf(c,i,j,m_nkf)-ff(c,i,j,m_nkf))/(m_strx_f[i-m_ibf]*m_stry_f[j-m_jbf])+Bf(c,i,j,m_nkf);   
-   if( !m_tw && !m_psource )
-      bnd_zero(prolrhs,m_nghost);
-   restrict2D( rhs, prolrhs, 1, m_nkf );
+      for( int j=Bf.m_jb ; j <= Bf.m_je ; j++ )
+         for( int i=Bf.m_ib ; i <= Bf.m_ie ; i++ )
+            bfd(c,i,j) = Bf(c,i,j,m_nkf);
 
-// 7. Compute B(uc), and form rhs := rhs - B(uc) = r(w1*J[gf]*(rhof*p(L(uc)/rhoc-L(uf))+B(uf))-B(uc)
+// 6. Form term prolrhsd := r(w1*J[gf]*(rhof*p(L(uc)/rhoc)-L(uf))+B(uf))  (double)
+   for( int c=1 ; c <= 3 ;c++)
+      for( int j=prolrhsd.jb ; j <= prolrhsd.je ; j++ )
+         for( int i=prolrhsd.ib ; i <= prolrhsd.ie ; i++ )
+            prolrhsd(c,i,j) = w1*(double)m_jac_f(i,j,m_nkf)*( (double)m_rho_f(i,j,m_nkf)*prolrhsd(c,i,j)-
+	       lufd(c,i,j))/((double)m_strx_f[i-m_ibf]*(double)m_stry_f[j-m_jbf])+bfd(c,i,j);
+   if( !m_tw && !m_psource )
+      bnd_zero_d(prolrhsd,m_nghost);
+   restrict2D_d( rhsd, prolrhsd );
+
+// 7. Compute B(uc) (float_sw4, unavoidable -- interior stencil on uc), and
+//    form rhsd := rhsd - B(uc) = r(w1*J[gf]*(rhof*p(L(uc)/rhoc)-L(uf))+B(uf))-B(uc)  (double)
    Sarray Bc(rhs);
    compute_icstresses_curv( uc, Bc, 1,  m_met_c, m_mu_c, m_lambda_c,
 			    m_strx_c, m_stry_c, m_sbop, '=' );
@@ -830,9 +858,9 @@ Luf(c,i,j,m_nkf))/(m_strx_f[i-m_ibf]*m_stry_f[j-m_jbf])+Bf(c,i,j,m_nkf);
                                   m_strx_c, m_stry_c, m_sbop_no_gp, '-' );
 
    for( int c=1 ; c <= 3 ;c++)
-      for( int j=rhs.m_jb ; j <= rhs.m_je ; j++ )
-         for( int i=rhs.m_ib ; i <= rhs.m_ie ; i++ )
-	   rhs(c,i,j,1) -=  Bc(c,i,j,1);
+      for( int j=rhsd.jb ; j <= rhsd.je ; j++ )
+         for( int i=rhsd.ib ; i <= rhsd.ie ; i++ )
+	   rhsd(c,i,j) -= (double)Bc(c,i,j,1);
 
 // 8. Restore ghost point values to U.
    for( int c=1 ; c <= 3; c++ )
