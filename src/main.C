@@ -44,6 +44,9 @@
 #include <omp.h>
 #endif
 #include "version.h"
+#ifdef USE_HDF5
+#include "sachdf5.h"
+#endif
 
 #ifdef USE_ZFP
 #include "H5Zzfp_lib.h"
@@ -238,15 +241,22 @@ main(int argc, char **argv)
 	GlobalTimeSeries[0][ts]->writeFile();
 #ifdef USE_HDF5
         myWriteTime += GlobalTimeSeries[0][ts]->getWriteTime();
-        if( ts == GlobalTimeSeries[0].size()-1) {
-	  GlobalTimeSeries[0][ts]->closeHDF5File();
-
-          MPI_Reduce(&myWriteTime, &allWriteTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-          if( myRank == 0 )
-            cout << "  ==> Max wallclock time to write time-series data is " << allWriteTime << " seconds." << endl;
-        }
 #endif
       }
+
+#ifdef USE_HDF5
+      if( GlobalTimeSeries[0].size() > 0 )
+      {
+        // Every rank has finished its waveform writes, so the small per-station
+        // scalars can now be gathered and written by a single rank. This also
+        // closes the shared file handles on every rank.
+        writeStationMetadataHDF5( GlobalTimeSeries[0], &simulation, "" );
+
+        MPI_Reduce(&myWriteTime, &allWriteTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        if( myRank == 0 )
+          cout << "  ==> Max wallclock time to write time-series data is " << allWriteTime << " seconds." << endl;
+      }
+#endif
 
       if( myRank == 0 )
       {

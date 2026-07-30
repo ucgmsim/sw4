@@ -128,7 +128,6 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
 #ifdef USE_HDF5
   m_sta_z(depth),
   m_fid_ptr(NULL),
-  m_isMetaWritten(false),
   m_isIncAzWritten(false),
   m_nptsWritten(0),
   m_nsteps(0),
@@ -626,8 +625,6 @@ void TimeSeries::writeFile( string suffix )
   // Open the output HDF5 file if not already opened
   std::string h5fname, fidName;
   hid_t fid, grp = 0; 
-  double stlalodp[3], stxyz[3], dist;
-  float origintime, windows[4];
   int myRank;
   MPI_Comm_rank(m_ew->m_1d_communicator, &myRank);
 
@@ -645,41 +642,15 @@ void TimeSeries::writeFile( string suffix )
     else 
     {
       grp = H5Gopen(fid, const_cast<char*>(m_staName.c_str()), H5P_DEFAULT);
-      if (grp < 0) 
+      if (grp < 0)
         printf("TimeSeries::writeFile Error opening group [%s]\n", m_staName.c_str());
 
-      if (grp > 0 && !m_isMetaWritten) {
-        stlalodp[0] = double(m_rec_lat);
-        stlalodp[1] = double(m_rec_lon);
-        stlalodp[2] = double(m_sta_z);
-
-        openWriteAttr(grp, "STLA,STLO,STDP", H5T_NATIVE_DOUBLE, stlalodp);
-
-        stxyz[0] = double(mX);
-        stxyz[1] = double(mY);
-        stxyz[2] = double(m_sta_z);
-        openWriteAttr(grp, "STX,STY,STZ", H5T_NATIVE_DOUBLE, stxyz);
-
-        origintime = float(m_epi_time_offset);
-        openWriteAttr(fid, "ORIGINTIME", H5T_NATIVE_FLOAT, &origintime);
-
-        // Actual location in SW4
-        stlalodp[0] = double(m_rec_gp_lat);
-        stlalodp[1] = double(m_rec_gp_lon);
-        stlalodp[2] = double(m_sta_z);
-        openWriteAttr(grp, "ACTUALSTLA,STLO,STDP", H5T_NATIVE_DOUBLE, stlalodp);
-
-        // Distance
-        dist = sqrt( (mX-mGPX)*(mX-mGPX)+(mY-mGPY)*(mY-mGPY) );
-        openWriteAttr(grp, "DISTFROMACTUAL", H5T_NATIVE_DOUBLE, &dist);
-
-        stxyz[0] = double(mGPX);
-        stxyz[1] = double(mGPY);
-        stxyz[2] = double(mGPZ);
-        openWriteAttr(grp, "ACTUALSTX,STY,STZ", H5T_NATIVE_DOUBLE, stxyz);
-
-        m_isMetaWritten = true;
-      }
+      // The per-station scalars (STLA/STX/ACTUAL*/DISTFROMACTUAL) and the
+      // file-level ORIGINTIME used to be written here by whichever rank owns
+      // the station. They are small enough to share a filesystem block with
+      // other stations' scalars, so concurrent independent writes from
+      // different ranks silently lost each other's updates. They are now
+      // written by a single rank in writeStationMetadataHDF5().
     }
   }
 
@@ -1336,9 +1307,11 @@ write_hdf5_format(int npts, hid_t grp, float *y, float btime, float dt, char *va
     fflush(stdout);
   }
 
-  if (count > 0) 
-    ret = openWriteData(grp, var, H5T_NATIVE_FLOAT, (void*)write_data, 1, &start, &count, write_npts, btime, cmpinc, cmpaz, m_isIncAzWritten, isLast);
+  if (count > 0)
+    ret = openWriteData(grp, var, H5T_NATIVE_FLOAT, (void*)write_data, 1, &start, &count, write_npts, btime, cmpinc, cmpaz, m_isIncAzWritten);
 
+  // isLast marks the final component of this station, so the cursor advances
+  // once all components have been written from the same starting offset.
   if (isLast && ret == 1) {
     m_nptsWritten += count;
     // H5Gflush(grp);
@@ -4046,9 +4019,60 @@ int TimeSeries::closeHDF5File()
 void TimeSeries::resetHDF5file()
 {
   m_nptsWritten = 0;
-  m_isMetaWritten = m_isIncAzWritten = false;
+  m_isIncAzWritten = false;
   closeHDF5File();
   return;
+}
+
+//-----------------------------------------------------------------------
+std::string TimeSeries::hdf5FileName(std::string suffix)
+{
+  std::string filename;
+
+  if( m_path != "." )
+    filename = m_path;
+
+  filename.append(m_hdf5Name);
+  filename.append(suffix);
+
+  if (m_hdf5Name.find(".hdf5") == string::npos && m_hdf5Name.find(".h5") == string::npos)
+    filename.append(".hdf5");
+
+  return filename;
+}
+
+//-----------------------------------------------------------------------
+// Pack the small scalars this station contributes to the single-writer
+// metadata pass. The layout matches the on-disk dataset order used by
+// writeStationMetadataHDF5().
+void TimeSeries::packHDF5Metadata(int& npts, double* meta)
+{
+  npts = m_nptsWritten;
+
+  meta[0]  = double(m_rec_lat);      // STLA,STLO,STDP
+  meta[1]  = double(m_rec_lon);
+  meta[2]  = double(m_sta_z);
+
+  meta[3]  = double(mX);             // STX,STY,STZ
+  meta[4]  = double(mY);
+  meta[5]  = double(m_sta_z);
+
+  meta[6]  = double(m_rec_gp_lat);   // ACTUALSTLA,STLO,STDP
+  meta[7]  = double(m_rec_gp_lon);
+  meta[8]  = double(m_sta_z);
+
+  meta[9]  = sqrt( (mX-mGPX)*(mX-mGPX)+(mY-mGPY)*(mY-mGPY) ); // DISTFROMACTUAL
+
+  meta[10] = double(mGPX);           // ACTUALSTX,STY,STZ
+  meta[11] = double(mGPY);
+  meta[12] = double(mGPZ);
+
+  // ORIGINTIME is file-level, but it is derived per station so that stations
+  // belonging to different events resolve their own origin time, as the
+  // previous per-owner write did.
+  float_sw4 epiLat, epiLon, epiDepth, earliestTime;
+  m_ew->get_epicenter( epiLat, epiLon, epiDepth, earliestTime, m_event );
+  meta[13] = double(earliestTime);
 }
 
 //-----------------------------------------------------------------------
@@ -4058,22 +4082,12 @@ hid_t TimeSeries::openHDF5File(std::string suffix)
   bool is_debug = false;
   /* is_debug = true; */
 
-  std::string filename;
-
   if (NULL == m_fid_ptr) {
-    printf("%s Error! No HDF5 fid allocated!\n", __func__); 
+    printf("%s Error! No HDF5 fid allocated!\n", __func__);
     return 0;
   }
 
-  // Build the file name
-  if( m_path != "." )
-    filename = m_path;
-
-  filename.append(m_hdf5Name);
-  filename.append(suffix);
-
-  if (m_hdf5Name.find(".hdf5") == string::npos && m_hdf5Name.find(".h5") == string::npos) 
-    filename.append(".hdf5");
+  std::string filename = hdf5FileName(suffix);
 
   if (*m_fid_ptr >=0 && this->m_ts0Ptr && filename.compare(this->m_ts0Ptr->m_fidName) == 0) {
     // If file is alread open, no need to open it again
