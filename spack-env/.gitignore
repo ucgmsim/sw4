@@ -5,3 +5,6 @@
 
 # spack.lock is deliberately NOT ignored: committing it pins the entire
 # concrete DAG, which is the strongest reproducibility guarantee available.
+
+# Spack byte-compiles recipes in place.
+__pycache__/

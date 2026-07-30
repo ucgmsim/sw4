@@ -58,6 +58,7 @@ MODULES=""
 MPI_SPEC=""
 MPI_PREFIX=""
 MPI_PKG=""
+MPI_MODULE=""
 COMPILER_SPEC=""
 COMPILER_PKG=""
 INSTALL_ROOT=""
@@ -87,6 +88,11 @@ Usage: ./install.sh [options]
                        Default: the newest GCC that \`spack compiler find\` locates.
   --mpi-spec SPEC      Skip MPI auto-detection, e.g. --mpi-spec "cray-mpich@8.1.29"
   --mpi-prefix DIR     Prefix for --mpi-spec (default: derived from mpicc)
+  --mpi-module NAME    Environment module providing MPI, recorded on the external
+                       so Spack reloads it for every dependent build. Auto-detected
+                       from \$LOADEDMODULES; required on clusters where MPI's own
+                       dependencies (PMIx, hwloc, libevent, UCX) live in sibling
+                       module prefixes.
   --variants "..."     Extra variants for the sw4 spec,
                        e.g. --variants "precision=single +native ~fftw"
   --sw4-version V      Build a declared package version (e.g. $SW4_REF_VERSION) instead
@@ -118,6 +124,7 @@ while [[ $# -gt 0 ]]; do
         --compiler)       COMPILER_SPEC="$2"; shift 2 ;;
         --mpi-spec)       MPI_SPEC="$2"; shift 2 ;;
         --mpi-prefix)     MPI_PREFIX="$2"; shift 2 ;;
+        --mpi-module)     MPI_MODULE="$2"; shift 2 ;;
         --variants)       SW4_VARIANTS="$2"; shift 2 ;;
         --sw4-version)    SW4_SPEC_VERSION="$2"; shift 2 ;;
         --allow-unpushed) ALLOW_UNPUSHED=1; shift ;;
@@ -325,7 +332,53 @@ detect_mpi() {
         fi
     fi
 
-    log "Host MPI: $MPI_SPEC at $MPI_PREFIX"
+    detect_mpi_module
+
+    log "Host MPI: $MPI_SPEC at $MPI_PREFIX${MPI_MODULE:+ (module $MPI_MODULE)}"
+}
+
+# Spack's clean_environment() unsets LD_LIBRARY_PATH, LIBRARY_PATH and CPATH before
+# every build. Spack does pass -L<mpi prefix>/lib for the external, but that is not
+# enough on a module-based cluster: libmpi.so has DT_NEEDED entries for PMIx, hwloc,
+# libevent and friends which live in *sibling* module prefixes, so ld cannot resolve
+# them and configure checks fail with "could not find mpi library for --enable-mpi".
+#
+# Recording the module on the external makes Spack call load_external_modules() for
+# every dependent build, which runs after the scrub and restores the whole set.
+detect_mpi_module() {
+    if [[ -n "$MPI_MODULE" ]]; then
+        return 0
+    fi
+    [[ -n "${LOADEDMODULES:-}" ]] || return 0
+
+    local -a patterns
+    case "$MPI_PKG" in
+        openmpi)          patterns=(openmpi) ;;
+        mpich)            patterns=(mpich) ;;
+        mvapich2|mvapich) patterns=(mvapich) ;;
+        intel-oneapi-mpi) patterns=(inteloneapimpi intelmpi impi) ;;
+        cray-mpich)       patterns=(craympich craympt) ;;
+        *)                patterns=("$(printf '%s' "$MPI_PKG" | tr -cd 'a-z0-9')") ;;
+    esac
+
+    local mod norm pat
+    while IFS= read -r mod; do
+        [[ -n "$mod" ]] || continue
+        # EasyBuild/Lmod names look like OpenMPI/5.0.8-GCC-14.3.0; some sites use a
+        # single flat name like openmpi-4.1.5-gcc. Normalise and prefix-match.
+        norm="$(printf '%s' "${mod%%/*}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')"
+        for pat in "${patterns[@]}"; do
+            if [[ "$norm" == "$pat"* ]]; then
+                MPI_MODULE="$mod"
+                return 0
+            fi
+        done
+    done < <(tr ':' '\n' <<<"$LOADEDMODULES")
+
+    case "$MPI_PREFIX" in
+        /usr|/usr/*|/lib|/lib64) ;;
+        *) warn "MPI is at a non-system prefix but no providing module was identified. If a dependent build fails with \"could not find mpi library\", pass --mpi-module with the module name." ;;
+    esac
 }
 
 # Which sw4 source to build: by default the commit checked out right here, so
@@ -384,6 +437,9 @@ write_host_config() {
         echo "    externals:"
         echo "    - spec: \"$MPI_SPEC\""
         echo "      prefix: $MPI_PREFIX"
+        if [[ -n "$MPI_MODULE" ]]; then
+            echo "      modules: [$MPI_MODULE]"
+        fi
         echo "  sw4:"
         echo "    require:"
         echo "    - \"$SW4_VERSION_CONSTRAINT\""
