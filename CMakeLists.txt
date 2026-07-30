@@ -66,6 +66,9 @@ endif()
 option(USE_FFTW3 "Use FFTW3." OFF)
 if(USE_FFTW3)
   find_package(FFTW3 REQUIRED)
+  if(NOT FFTW3_MPI_LIBRARIES)
+    message(SEND_ERROR "FFTW3 MPI library (fftw3_mpi) is required when USE_FFTW3=ON")
+  endif()
 endif()
 
 find_package(BLAS REQUIRED)
@@ -78,8 +81,8 @@ FortranCInterface_HEADER(FC.h MACRO_NAMESPACE "FC_")
 
 option(USE_DOUBLE "Use double precision" ON)
 
-set(SW4_ARCH_FLAGS "-march=native -mtune=native" CACHE STRING
-    "Architecture-specific compiler flags used in Release/RelWithDebInfo builds")
+set(SW4_ARCH_FLAGS "" CACHE STRING
+    "Architecture-specific compiler flags (e.g. -march=native -mtune=native)")
 set(SW4_EXTRA_RELEASE_FLAGS "-funroll-loops" CACHE STRING
     "Additional Release-mode optimization flags")
 
@@ -160,10 +163,6 @@ if(USE_SZ AND SZ_FOUND)
   target_include_directories(sw4 PRIVATE ${SZ_INCLUDE_DIR})
 endif()
 
-if(USE_FFTW3 AND FFTW3_FOUND)
-  target_include_directories(sw4 PRIVATE ${FFTW3_INCLUDE_DIR})
-endif()
-
 target_compile_options(sw4 PRIVATE
     "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Debug>>:SHELL:-O0>"
     "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:SHELL:${SW4_ARCH_FLAGS} ${SW4_EXTRA_RELEASE_FLAGS}>"
@@ -192,10 +191,13 @@ if(USE_ZFP)
 endif()
 
 if(USE_FFTW3 AND FFTW3_FOUND)
-  target_link_libraries(sw4 PRIVATE fftw3)
+  target_link_libraries(sw4 PRIVATE FFTW3::FFTW3 FFTW3::FFTW3_MPI)
 endif()
 
 add_custom_command(TARGET sw4 POST_BUILD COMMAND cat ${CMAKE_SOURCE_DIR}/wave.txt)
+
+include(GNUInstallDirs)
+install(TARGETS sw4 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 set(TESTING_LEVEL 0 CACHE STRING "Level of testing thoroughness: 0=short tests (<1 minute each), 2=all tests (may take an hour)")
 set(MPI_NUM_TEST_PROCS 4 CACHE STRING "Number of MPI processes to use in tests")
