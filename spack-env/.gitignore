@@ -1,0 +1,7 @@
+# Spack's per-environment state, and the host-discovered config that
+# install.sh regenerates on every machine.
+/.spack-env/
+/host/
+
+# spack.lock is deliberately NOT ignored: committing it pins the entire
+# concrete DAG, which is the strongest reproducibility guarantee available.
