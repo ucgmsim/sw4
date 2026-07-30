@@ -1034,7 +1034,7 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
   // read all point sources
   for (int pts=0; pts<npts; pts++) 
   {
-    double lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, slip2, slip3;
+    double lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, slip2, slip3, vs, den;
     int nt1, nt2, nt3;
 
     lon = (double)point_data[pts].lon;
@@ -1110,7 +1110,7 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
       {
          printf("INFO: SRF file: dt*sum(slip_vel)=%e [m], total slip (from header)=%e [m]\n", slip_sum, slip_m);
       }
-      float_sw4 slip_sum_tol = 1e-12;
+      float_sw4 slip_sum_tol = sizeof(float_sw4) == sizeof(float) ? 1e-4 : 1e-12;
       bool skip_zero_slip_point = false;
       if( slip_sum > -slip_sum_tol && slip_sum < slip_sum_tol )
       {
