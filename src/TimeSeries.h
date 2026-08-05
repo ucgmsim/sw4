@@ -166,6 +166,14 @@ hid_t openHDF5File(std::string suffix);
 void  write_hdf5_format( int npts, hid_t loc, float *y, float btime, float dt, char *var,
 		       float cmpinc, float cmpaz, bool makeCopy=false, bool isLast=false);
 double getWriteTime() {return m_writeTime;};
+
+// Resolve this station's output file name (path + name + suffix + extension).
+std::string hdf5FileName( std::string suffix );
+// Number of doubles packed by packHDF5Metadata, in on-disk dataset order.
+static const int s_nMetaDoubles = 14;
+// Pack this station's small scalars for the single-writer metadata pass.
+void  packHDF5Metadata( int& npts, double* meta );
+int   getNptsWritten() {return m_nptsWritten;};
 #endif
 double getReadTime() {return m_readTime;};
 void addReadTime(double t) {m_readTime += t;};
@@ -285,7 +293,6 @@ float_sw4 m_scalefactor;
 #ifdef USE_HDF5
    float_sw4 m_sta_z;
    hid_t *m_fid_ptr;
-   bool m_isMetaWritten;
    bool m_isIncAzWritten;
    int  m_nptsWritten;
    int  m_nsteps;

@@ -1023,6 +1023,13 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
        {
          a_TimeSeries[ts]->writeFile();
        }
+#ifdef USE_HDF5
+       // The on-disk NPTS must be consistent here: a restart seeds its write
+       // offset from it (see TimeSeries::readSACHDF5), so a stale value would
+       // make the restarted run overwrite good data. All ranks reach this point
+       // together, so the scalars can be written collectively.
+       writeStationMetadataHDF5( a_TimeSeries, this, "" );
+#endif
 	     double time_chkpt_timeseries_tmp=MPI_Wtime()-time_chkpt_timeseries;
        if( m_output_detailed_timing )
        {

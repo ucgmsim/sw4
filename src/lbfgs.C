@@ -633,6 +633,9 @@ void lbfgs( EW& simulation, int nspar, int nmpars, double* xs,
 #endif
        for( int m = 0; m < GlobalTimeSeries[e].size(); m++ )
 		    GlobalTimeSeries[e][m]->writeFile( "_ini" );
+#ifdef USE_HDF5
+       writeStationMetadataHDF5( GlobalTimeSeries[e], &simulation, "_ini" );
+#endif
      }
    }
    if( myRank == 0 )

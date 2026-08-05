@@ -41,6 +41,10 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <ctime>
+#include <map>
+#include <vector>
+#include <string>
+#include <functional>
 
 #include "Require.h"
 #include "EW.h"
@@ -186,8 +190,15 @@ int createWriteAttrStr(hid_t loc, const char *name, const char* str)
     return 1;
 }
 
-int openWriteData(hid_t loc, const char *name, hid_t type_id, void *data, int ndim, hsize_t *start, hsize_t *count, int total_npts, 
-                  float btime, float cmpinc, float cmpaz, bool isIncAzWritten, bool isLast)
+// Writes one waveform slab. Note that this deliberately writes *only* the bulk
+// waveform data: the small per-station scalars (NPTS and friends) are packed
+// below the file's alignment threshold, so several stations' scalars share one
+// filesystem block. Ranks own different stations but write independently into
+// the same shared file, so a read-modify-write of such a block loses whichever
+// neighbouring update it did not see. All those scalars are therefore written
+// by a single rank in writeStationMetadataHDF5() instead.
+int openWriteData(hid_t loc, const char *name, hid_t type_id, void *data, int ndim, hsize_t *start, hsize_t *count, int total_npts,
+                  float btime, float cmpinc, float cmpaz, bool isIncAzWritten)
 {
     bool is_debug = false;
     /* is_debug = true; */
@@ -224,9 +235,6 @@ int openWriteData(hid_t loc, const char *name, hid_t type_id, void *data, int nd
     }
 
     /* etime = MPI_Wtime(); */
-
-    if (isLast) 
-        openWriteAttr(loc, "NPTS", H5T_NATIVE_INT, &total_npts);
 
     /* etime1 = MPI_Wtime(); */
 
@@ -577,6 +585,167 @@ int createTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, int totalSteps, f
   printf("Created SAC HDF5 file [%s] time %e seconds\n", filename.c_str(), elapsed_time);
   fflush(stdout);
   return 1;
+}
+
+//-----------------------------------------------------------------------
+// Write every station's small scalars (NPTS, the station/actual coordinates,
+// DISTFROMACTUAL) plus the file-level ORIGINTIME from a single rank.
+//
+// These datasets are only a few bytes each and fall below the file's alignment
+// threshold (see H5Pset_alignment in createTimeSeriesHDF5File), so scalars
+// belonging to different stations share a filesystem block. Because every rank
+// opens the shared output file with MPI_COMM_SELF and writes independently,
+// two ranks updating neighbouring scalars each read-modify-write the same
+// block and silently drop the other's update. Gathering the values and writing
+// them from one rank removes the concurrency entirely; the bulk waveform
+// datasets are large enough to be block-aligned and keep their parallel path.
+//
+// Collective: must be called by all ranks in ew->m_1d_communicator.
+int writeStationMetadataHDF5(vector<TimeSeries*> & a_TimeSeries, EW *ew, string suffix)
+{
+  MPI_Comm comm = ew->m_1d_communicator;
+  int rank = 0;
+  MPI_Comm_rank(comm, &rank);
+
+  const int nmeta = TimeSeries::s_nMetaDoubles;
+
+  // Restrict to stations that actually produce HDF5 output. m_hdf5Format comes
+  // from the input command and is identical on every rank, so this filter -
+  // and therefore the indexing below - is consistent across ranks.
+  vector<int> idx;
+  for (int s = 0; s < (int)a_TimeSeries.size(); s++)
+    if (a_TimeSeries[s]->getUseHDF5())
+      idx.push_back(s);
+
+  int total = (int)idx.size();
+  if (total == 0)
+    return 1;
+
+  // The gather is indexed by position, which assumes every rank holds the same
+  // stations in the same order. That holds for both construction paths today
+  // (the bulk rechdf5 path Allgathers a single global list; the rec/sac path
+  // has every rank parse the same input file). Verify it rather than trust it:
+  // a mismatch would silently write one station's metadata onto another.
+  {
+    string names;
+    for (int s = 0; s < total; s++) {
+      names += a_TimeSeries[idx[s]]->getStationName();
+      names += '\0';
+    }
+    std::hash<string> hasher;
+    unsigned long myhash = (unsigned long)hasher(names);
+    unsigned long roothash = myhash;
+    MPI_Bcast(&roothash, 1, MPI_UNSIGNED_LONG, 0, comm);
+    int agree = (myhash == roothash) ? 1 : 0, allagree = 0;
+    MPI_Allreduce(&agree, &allagree, 1, MPI_INT, MPI_MIN, comm);
+    if (allagree == 0) {
+      if (rank == 0) {
+        printf("%s: ERROR, station lists differ between ranks; "
+               "skipping metadata write to avoid corrupting the output.\n", __func__);
+        fflush(stdout);
+      }
+      return -1;
+    }
+  }
+
+  // Each rank contributes real values only for the stations it owns. Sentinels
+  // are below any physical value, so an elementwise MPI_MAX picks out the
+  // owner's contribution; coordinates are routinely negative, so a zero
+  // sentinel would not be safe here.
+  const double dsentinel = -1e38;
+  vector<int>    lnpts(total, -1),   gnpts(total, -1);
+  vector<double> lmeta(total*nmeta, dsentinel), gmeta(total*nmeta, dsentinel);
+
+  for (int s = 0; s < total; s++) {
+    if (a_TimeSeries[idx[s]]->myPoint())
+      a_TimeSeries[idx[s]]->packHDF5Metadata(lnpts[s], &lmeta[(size_t)s*nmeta]);
+  }
+
+  // Two batched reductions over the whole station list, rather than a pair of
+  // collectives per station (cf. the batched Allreduces in readStationHDF5).
+  MPI_Reduce(lnpts.data(), gnpts.data(), total, MPI_INT, MPI_MAX, 0, comm);
+  MPI_Reduce(lmeta.data(), gmeta.data(), total*nmeta, MPI_DOUBLE, MPI_MAX, 0, comm);
+
+  // Nobody may hold the file open while the writer works.
+  for (int s = 0; s < total; s++)
+    a_TimeSeries[idx[s]]->closeHDF5File();
+  MPI_Barrier(comm);
+
+  int ret = 1;
+  if (rank == 0) {
+    double start_time = MPI_Wtime();
+
+    // Stations may be directed to different output files, so group by the
+    // resolved file name and open each one once.
+    std::map<string, vector<int> > byfile;
+    for (int s = 0; s < total; s++)
+      byfile[a_TimeSeries[idx[s]]->hdf5FileName(suffix)].push_back(s);
+
+    int nunowned = 0;
+    for (std::map<string, vector<int> >::iterator it = byfile.begin(); it != byfile.end(); ++it) {
+      hid_t fid = H5Fopen(it->first.c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+      if (fid < 0) {
+        printf("%s: Error opening file [%s]\n", __func__, it->first.c_str());
+        ret = -1;
+        continue;
+      }
+
+      // ORIGINTIME is file-level; take it from the first owned station in this
+      // file, matching what the old per-owner write left behind.
+      for (size_t k = 0; k < it->second.size(); k++) {
+        int s = it->second[k];
+        if (gnpts[s] >= 0) {
+          float origintime = float(gmeta[(size_t)s*nmeta + 13]);
+          openWriteAttr(fid, "ORIGINTIME", H5T_NATIVE_FLOAT, &origintime);
+          break;
+        }
+      }
+
+      for (size_t k = 0; k < it->second.size(); k++) {
+        int s = it->second[k];
+        // No rank claimed this station, so there is nothing trustworthy to
+        // write. Leaving it unwritten is meaningful: the datasets are created
+        // with H5D_FILL_TIME_NEVER, so a bogus zero would be indistinguishable
+        // from a real value.
+        if (gnpts[s] < 0) {
+          nunowned++;
+          continue;
+        }
+
+        string sname = a_TimeSeries[idx[s]]->getStationName();
+        hid_t grp = H5Gopen(fid, sname.c_str(), H5P_DEFAULT);
+        if (grp < 0) {
+          printf("%s: Error opening group [%s]\n", __func__, sname.c_str());
+          ret = -1;
+          continue;
+        }
+
+        double *m = &gmeta[(size_t)s*nmeta];
+        openWriteAttr(grp, "NPTS",                 H5T_NATIVE_INT,    &gnpts[s]);
+        openWriteAttr(grp, "STLA,STLO,STDP",       H5T_NATIVE_DOUBLE, &m[0]);
+        openWriteAttr(grp, "STX,STY,STZ",          H5T_NATIVE_DOUBLE, &m[3]);
+        openWriteAttr(grp, "ACTUALSTLA,STLO,STDP", H5T_NATIVE_DOUBLE, &m[6]);
+        openWriteAttr(grp, "DISTFROMACTUAL",       H5T_NATIVE_DOUBLE, &m[9]);
+        openWriteAttr(grp, "ACTUALSTX,STY,STZ",    H5T_NATIVE_DOUBLE, &m[10]);
+
+        H5Gclose(grp);
+      }
+      H5Fclose(fid);
+    }
+
+    if (nunowned > 0) {
+      printf("%s: WARNING, %d of %d stations have no owning rank; "
+             "their metadata was left unwritten\n", __func__, nunowned, total);
+    }
+    if (ew->getVerbosity() > 0) {
+      printf("Wrote station metadata for %d stations in %d file(s), %e seconds\n",
+             total, (int)byfile.size(), MPI_Wtime() - start_time);
+    }
+    fflush(stdout);
+  }
+
+  MPI_Barrier(comm);
+  return ret;
 }
 
 int readAttrStr(hid_t loc, const char *name, char* str)
