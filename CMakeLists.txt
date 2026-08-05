@@ -88,7 +88,7 @@ set(SW4_EXTRA_RELEASE_FLAGS "-funroll-loops" CACHE STRING
 
 file(GLOB SW4_QUADPACK_SRC_FILES CONFIGURE_DEPENDS src/quadpack/*.f)
 
-set(SW4_SRC_C_FILES src/main.C src/EW.C src/Sarray.C src/version.C src/parseInputFile.C
+set(SW4_SRC_C_FILES src/EW.C src/Sarray.C src/version.C src/parseInputFile.C
     src/ForcingTwilight.C src/curvilinearGrid.C src/parallelStuff.C src/Source.C
     src/MaterialProperty.C src/MaterialData.C src/material.C src/setupRun.C
     src/solve.C src/Parallel_IO.C src/Image.C src/GridPointSource.C src/MaterialBlock.C
@@ -113,9 +113,18 @@ set(SW4_SRC_C_FILES src/main.C src/EW.C src/Sarray.C src/version.C src/parseInpu
 
 set(SW4_SRC_F_FILES src/rayleighfort.f src/lamb_exact_numquad.f)
 
-add_executable(sw4 ${SW4_SRC_C_FILES} ${SW4_SRC_F_FILES} ${SW4_QUADPACK_SRC_FILES})
+# Sources specific to the material optimization driver (sw4mopt)
+set(SW4_SRC_MOPT_FILES src/moptmain.C src/solve-backward-allpars.C src/lbfgs.C src/nlcg.C
+    src/ProjectMtrl.C src/MaterialParameterization.C src/Mopt.C src/MaterialParCartesian.C
+    src/InterpolateMaterial.C src/MaterialParCartesianVels.C src/MaterialParCartesianVp.C
+    src/MParGridFile.C src/MaterialParCartesianVsVp.C src/MaterialParAllpts.C
+    src/MaterialParCart.C src/solve-dudp.C src/MaterialParCurv.C
+)
 
-target_compile_definitions(sw4 PRIVATE
+# Interface target carrying the compile/link settings shared by every SW4 target
+add_library(sw4_config INTERFACE)
+
+target_compile_definitions(sw4_config INTERFACE
     EW_MADEBY="${USERNAME}"
     EW_OPT_LEVEL="${CMAKE_BUILD_TYPE}"
     EW_COMPILER="${CMAKE_CXX_COMPILER}"
@@ -127,50 +136,50 @@ target_compile_definitions(sw4 PRIVATE
 )
 
 if(USE_PROJ AND PROJ_FOUND)
-  target_compile_definitions(sw4 PRIVATE ENABLE_PROJ)
+  target_compile_definitions(sw4_config INTERFACE ENABLE_PROJ)
 endif()
 
 if(USE_HDF5 AND HDF5_FOUND)
-  target_compile_definitions(sw4 PRIVATE USE_HDF5)
+  target_compile_definitions(sw4_config INTERFACE USE_HDF5)
 endif()
 
 if(USE_ZFP)
-  target_compile_definitions(sw4 PRIVATE USE_ZFP)
+  target_compile_definitions(sw4_config INTERFACE USE_ZFP)
 endif()
 
 if(USE_SZ AND SZ_FOUND)
-  target_compile_definitions(sw4 PRIVATE USE_SZ)
+  target_compile_definitions(sw4_config INTERFACE USE_SZ)
 endif()
 
 if(USE_FFTW3 AND FFTW3_FOUND)
-  target_compile_definitions(sw4 PRIVATE USE_FFTW)
+  target_compile_definitions(sw4_config INTERFACE USE_FFTW)
 endif()
 
-target_include_directories(sw4 PRIVATE
+target_include_directories(sw4_config INTERFACE
     "${PROJECT_BINARY_DIR}"
     "${PROJECT_SOURCE_DIR}/src"
 )
 
 if(USE_DOUBLE)
-  target_include_directories(sw4 PRIVATE "${PROJECT_SOURCE_DIR}/src/double")
+  target_include_directories(sw4_config INTERFACE "${PROJECT_SOURCE_DIR}/src/double")
   message(STATUS "Precision: double (USE_DOUBLE=ON)")
 else()
-  target_include_directories(sw4 PRIVATE "${PROJECT_SOURCE_DIR}/src/float")
+  target_include_directories(sw4_config INTERFACE "${PROJECT_SOURCE_DIR}/src/float")
   message(STATUS "Precision: single/float (USE_DOUBLE=OFF)")
 endif()
 
 if(USE_SZ AND SZ_FOUND)
-  target_include_directories(sw4 PRIVATE ${SZ_INCLUDE_DIR})
+  target_include_directories(sw4_config INTERFACE ${SZ_INCLUDE_DIR})
 endif()
 
-target_compile_options(sw4 PRIVATE
+target_compile_options(sw4_config INTERFACE
     "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Debug>>:SHELL:-O0>"
     "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:SHELL:${SW4_ARCH_FLAGS} ${SW4_EXTRA_RELEASE_FLAGS}>"
     "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:RelWithDebInfo>>:SHELL:-O3 ${SW4_ARCH_FLAGS}>"
     "$<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:Release>>:SHELL:${SW4_ARCH_FLAGS}>"
 )
 
-target_link_libraries(sw4 PRIVATE
+target_link_libraries(sw4_config INTERFACE
     MPI::MPI_C
     MPI::MPI_CXX
     BLAS::BLAS
@@ -179,25 +188,48 @@ target_link_libraries(sw4 PRIVATE
 )
 
 if(USE_PROJ AND PROJ_FOUND)
-  target_link_libraries(sw4 PRIVATE PROJ::proj)
+  target_link_libraries(sw4_config INTERFACE PROJ::proj)
 endif()
 
 if(USE_HDF5 AND HDF5_FOUND)
-  target_link_libraries(sw4 PRIVATE HDF5::HDF5)
+  target_link_libraries(sw4_config INTERFACE HDF5::HDF5)
 endif()
 
 if(USE_ZFP)
-  target_link_libraries(sw4 PRIVATE h5z_zfp::h5z_zfp)
+  target_link_libraries(sw4_config INTERFACE h5z_zfp::h5z_zfp)
 endif()
 
 if(USE_FFTW3 AND FFTW3_FOUND)
-  target_link_libraries(sw4 PRIVATE FFTW3::FFTW3 FFTW3::FFTW3_MPI)
+  target_link_libraries(sw4_config INTERFACE FFTW3::FFTW3 FFTW3::FFTW3_MPI)
 endif()
+
+# Objects shared by sw4 and sw4mopt; compiled once, linked into both drivers
+add_library(sw4_common OBJECT ${SW4_SRC_C_FILES} ${SW4_SRC_F_FILES} ${SW4_QUADPACK_SRC_FILES})
+target_link_libraries(sw4_common PUBLIC sw4_config)
+
+add_executable(sw4 src/main.C)
+target_link_libraries(sw4 PRIVATE sw4_common)
 
 add_custom_command(TARGET sw4 POST_BUILD COMMAND cat ${CMAKE_SOURCE_DIR}/wave.txt)
 
+# The sw4mopt sources have not been ported to single precision: they still use
+# raw double* where the solver now expects float_sw4*, so they only compile when
+# USE_DOUBLE=ON. Default the target on accordingly.
+option(BUILD_SW4MOPT "Build the sw4mopt material optimization driver (requires USE_DOUBLE)." ${USE_DOUBLE})
+if(BUILD_SW4MOPT AND NOT USE_DOUBLE)
+  message(SEND_ERROR "BUILD_SW4MOPT requires USE_DOUBLE=ON: the sw4mopt sources are not single-precision clean.")
+endif()
+
+if(BUILD_SW4MOPT)
+  add_executable(sw4mopt ${SW4_SRC_MOPT_FILES})
+  target_link_libraries(sw4mopt PRIVATE sw4_common)
+endif()
+
 include(GNUInstallDirs)
 install(TARGETS sw4 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(BUILD_SW4MOPT)
+  install(TARGETS sw4mopt RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 set(TESTING_LEVEL 0 CACHE STRING "Level of testing thoroughness: 0=short tests (<1 minute each), 2=all tests (may take an hour)")
 set(MPI_NUM_TEST_PROCS 4 CACHE STRING "Number of MPI processes to use in tests")
