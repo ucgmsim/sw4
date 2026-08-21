@@ -27,6 +27,9 @@ REPS=5
 RANKS=1
 THREADS=""
 CASES="cart,cart-mr,curvi,curvi-mr"
+STEPS=200
+NX_OVERRIDE=""
+T_OVERRIDE=""
 OUTDIR=""
 LAUNCHER=""
 DO_BUILD=1
@@ -46,7 +49,10 @@ Options
                      hpc3-milan, frontera, stampede3, stampede3-spr, vista,
                      native, generic, auto                 (default: $TARGET)
   --strict-fp        build both sides with SW4_STRICT_FP=ON (bit-reproducible)
-  --size S|M|L|XL    case size                 (default: $SIZE)
+  --size S|M|L|XL    points PER RANK: 200k/800k/3.2M/12.8M (default: $SIZE)
+  --steps N          timesteps per run        (default: $STEPS)
+  --nx N             fixed grid instead of per-rank scaling
+  --time T           simulated time, with --nx
   --reps N           timed repetitions, interleaved         (default: $REPS)
   --ranks N          MPI ranks                 (default: $RANKS)
   --threads N        OMP_NUM_THREADS           (default: cores/ranks)
@@ -85,6 +91,9 @@ while [[ $# -gt 0 ]]; do
     --ranks) RANKS="$2"; shift 2;;
     --threads) THREADS="$2"; shift 2;;
     --cases) CASES="$2"; shift 2;;
+    --steps) STEPS="$2"; shift 2;;
+    --nx) NX_OVERRIDE="$2"; shift 2;;
+    --time) T_OVERRIDE="$2"; shift 2;;
     --launcher) LAUNCHER="$2"; shift 2;;
     --jobs) JOBS="$2"; shift 2;;
     --cmake) EXTRA_CMAKE="$2"; shift 2;;
@@ -132,13 +141,30 @@ fi
 # and XL saturates a server socket.  Every case turns on reporttiming, and the
 # twilight forcing gives an analytic error norm to check correctness against.
 # ---------------------------------------------------------------------------
+# Sizes express points PER RANK, not a fixed global grid. A fixed grid divided
+# over a growing rank count collapses the per-rank work: an earlier 16/32/64-rank
+# sweep at a fixed nx=161 produced total runtimes of 2.2s, 0.73s and 0.48s, where
+# startup and jitter dominate and nothing is measurable. The untouched `forcing`
+# phase varied +/-8% across those rounds, which is the noise floor they were
+# being read against.
 case "$SIZE" in
-  S)  NX=41;  T=0.10;;
-  M)  NX=81;  T=0.15;;
-  L)  NX=161; T=0.15;;
-  XL) NX=241; T=0.20;;
+  S)  PPR=200000    ;;
+  M)  PPR=800000    ;;
+  L)  PPR=3200000   ;;
+  XL) PPR=12800000  ;;
   *)  echo "bad --size: $SIZE" >&2; exit 2;;
 esac
+if [[ -n "$NX_OVERRIDE" ]]; then
+  NX="$NX_OVERRIDE"; T="${T_OVERRIDE:-0.15}"
+else
+  # dt/h ~= 0.349 for the twilight material (measured: nx=101 t=0.15 -> 43
+  # steps), so holding the step count fixed means t scales as 1/nx.
+  NX=$(python3 -c "print(round((${PPR}*${RANKS})**(1/3))+1)")
+  T=$(python3 -c "print(f'{${STEPS}*0.349/(${NX}-1):.6g}')")
+fi
+EST_PT=$(( PPR * STEPS ))
+echo "  derived: nx=$NX t=$T  (~${PPR} pts/rank x ${STEPS} steps"
+echo "           ~$(python3 -c "print(f'{$EST_PT*8.75e-9:.1f}')")s/run/side estimated at 4 threads/rank)"
 
 emit_case() {  # $1=name  -> writes $OUTDIR/cases/$1.in
   local n="$1" f="$OUTDIR/cases/$1.in"
@@ -356,12 +382,19 @@ python3 - "$CSV" "$OUTDIR/summary.txt" "$BASE_SHA" "$HEAD_SHA" <<'PYEOF'
 import csv, sys, collections
 csvp, outp, base_sha, head_sha = sys.argv[1:5]
 COLS = ["total","divstress","forcing","bc","sg","comm","mr","img_tseries","updates","essi","wall"]
+# forcing and bc are not touched by any change under test, so their measured
+# A/B ratio IS the noise floor for that configuration. Reporting it turns
+# "is 1.05x real?" from a judgement call into arithmetic.
+UNTOUCHED = ["forcing", "bc"]
+MIN_TRUSTWORTHY_SECONDS = 5.0
+
 rows = list(csv.DictReader(open(csvp)))
 def f(x):
     try: return float(x)
     except: return None
-best = collections.defaultdict(dict)     # (case,prec,side) -> col -> min
-norm = collections.defaultdict(set)      # (case,prec,side) -> {(linf,l2)}
+
+best = collections.defaultdict(dict)
+norm = collections.defaultdict(list)
 for r in rows:
     k = (r["case"], r["precision"], r["side"])
     for c in COLS:
@@ -369,48 +402,87 @@ for r in rows:
         if v is not None and v > 0:
             best[k][c] = min(best[k].get(c, 1e18), v)
     if r["linf"] or r["l2"]:
-        norm[k].add((r["linf"], r["l2"]))
+        norm[k].append((r["linf"], r["l2"]))
 
-out = []
-out.append(f"A = {base_sha} (base)      B = {head_sha} (head)")
-out.append("min-of-reps per phase, seconds.  speedup = A/B, >1 means B is faster.")
-out.append("")
+out = [f"A = {base_sha} (base)      B = {head_sha} (head)",
+       "min-of-reps per phase, seconds.  speedup = A/B, >1 means B is faster.", ""]
 hdr = f"{'case':<10} {'prec':<7} {'phase':<12} {'A':>10} {'B':>10} {'speedup':>8}"
+
 for (case, prec) in sorted({(r['case'], r['precision']) for r in rows}):
-    a, b = best.get((case,prec,'base'),{}), best.get((case,prec,'head'),{})
+    a = best.get((case,prec,'base'), {}); b = best.get((case,prec,'head'), {})
     if not a or not b: continue
+
+    # --- noise floor from the phases nothing under test touches --------------
+    devs = [abs(a[c]/b[c] - 1.0) for c in UNTOUCHED if c in a and c in b and b[c] > 1e-6]
+    floor = max(devs) if devs else None
+
     out.append(hdr); out.append("-"*len(hdr))
     for c in COLS:
         if c in a and c in b and a[c] > 1e-4:
-            out.append(f"{case:<10} {prec:<7} {c:<12} {a[c]:>10.4g} {b[c]:>10.4g} {a[c]/b[c]:>8.3f}")
-    # Internal consistency: SW4's own `total` phase column and the wall-clock
-    # line measure the same interval, so they must agree. If they do not, one of
-    # the two parses is broken and neither number should be trusted -- this
-    # check is what caught the minutes-format bug.
+            sp = a[c]/b[c]
+            tag = ""
+            if floor is not None and c not in UNTOUCHED:
+                tag = "  <- within noise" if abs(sp-1.0) <= floor else ""
+            out.append(f"{case:<10} {prec:<7} {c:<12} {a[c]:>10.4g} {b[c]:>10.4g} {sp:>8.3f}{tag}")
+
+    if floor is not None:
+        out.append(f"{'':<10} {'':<7} noise floor: +/-{floor*100:.1f}% "
+                   f"(from {'/'.join(UNTOUCHED)}, which nothing under test changes)")
+
+    # --- is the run even long enough to mean anything? -----------------------
+    shortest = min([x for x in (a.get("total"), b.get("total")) if x] or [0])
+    if shortest and shortest < MIN_TRUSTWORTHY_SECONDS:
+        out.append(f"{'':<10} {'':<7} WARNING: shortest run {shortest:.2f}s is under "
+                   f"{MIN_TRUSTWORTHY_SECONDS}s -- startup and jitter dominate. "
+                   f"Re-run with a larger --size.")
+
+    # --- correctness, tolerant of a non-deterministic threaded reduction -----
+    na, nb = norm.get((case,prec,'base'), []), norm.get((case,prec,'head'), [])
+    if na and nb:
+        sa, sb = set(na), set(nb)
+        def spread(vals):
+            xs = [f(v[1]) for v in vals if f(v[1]) is not None]
+            if len(xs) < 2 or not max(xs): return 0.0
+            return (max(xs)-min(xs))/abs(max(xs))
+        ra, rb = spread(na), spread(nb)
+        if sa == sb and len(sa) == 1:
+            out.append(f"{'':<10} {'':<7} correctness: BIT-EXACT (Linf and L2)")
+        elif ra or rb:
+            # Each side varies run to run: the error-norm reduction is threaded,
+            # so in single precision the summation order is not reproducible.
+            # Compare the difference between sides against that spread instead
+            # of demanding equality it cannot deliver.
+            la = [f(v[1]) for v in na if f(v[1]) is not None]
+            lb = [f(v[1]) for v in nb if f(v[1]) is not None]
+            gap = abs(sum(la)/len(la) - sum(lb)/len(lb)) / max(abs(sum(la)/len(la)), 1e-300)
+            band = max(ra, rb)
+            verdict = ("CONSISTENT within run-to-run spread" if gap <= band
+                       else "DIFFERS BEYOND SPREAD -- investigate")
+            out.append(f"{'':<10} {'':<7} correctness: {verdict} "
+                       f"(A/B L2 gap {gap:.1e}, own spread {band:.1e})")
+            out.append(f"{'':<10} {'':<7}   note: the L2/Linf reduction is threaded, so it is "
+                       f"not bit-reproducible in single precision; re-run with "
+                       f"--threads 1 for an exact check.")
+        else:
+            (la,l2a), (lb,l2b) = next(iter(sa)), next(iter(sb))
+            try:
+                d = max(abs(float(la)-float(lb))/abs(float(la)),
+                        abs(float(l2a)-float(l2b))/abs(float(l2a)))
+                out.append(f"{'':<10} {'':<7} correctness: DIFFERS, max rel {d:.1e} "
+                           f"(A Linf={la} L2={l2a} / B Linf={lb} L2={l2b})")
+            except Exception:
+                out.append(f"{'':<10} {'':<7} correctness: DIFFERS A=({la},{l2a}) B=({lb},{l2b})")
+
+    # --- wall vs total consistency (catches the minutes-format class of bug) --
     for side, d in (("A", a), ("B", b)):
         if "total" in d and "wall" in d and d["total"] > 1e-6:
             skew = abs(d["wall"] - d["total"]) / d["total"]
             if skew > 0.05:
-                out.append(f"{'':<10} {'':<7} WARNING: {side} wall={d['wall']:.4g}s "
-                           f"disagrees with total={d['total']:.4g}s by {skew*100:.0f}% "
-                           f"-- parse error, do not trust these figures")
-    # correctness
-    na, nb = norm.get((case,prec,'base'), set()), norm.get((case,prec,'head'), set())
-    if na and nb:
-        if len(na) > 1 or len(nb) > 1:
-            verdict = "NON-DETERMINISTIC across reps (thread reduction order?)"
-        elif na == nb:
-            verdict = "BIT-EXACT (Linf and L2)"
-        else:
-            (la,l2a), (lb,l2b) = next(iter(na)), next(iter(nb))
-            try:
-                d = max(abs(float(la)-float(lb))/abs(float(la)),
-                        abs(float(l2a)-float(l2b))/abs(float(l2a)))
-                verdict = f"DIFFERS, max rel {d:.1e}  (A Linf={la} L2={l2a} / B Linf={lb} L2={l2b})"
-            except Exception:
-                verdict = f"DIFFERS  A=({la},{l2a})  B=({lb},{l2b})"
-        out.append(f"{'':<10} {'':<7} correctness: {verdict}")
+                out.append(f"{'':<10} {'':<7} WARNING: {side} wall={d['wall']:.4g}s vs "
+                           f"total={d['total']:.4g}s, {skew*100:.0f}% skew -- parse error, "
+                           f"do not trust these figures")
     out.append("")
+
 txt = "\n".join(out)
 open(outp,"w").write(txt + "\n")
 print(txt)
