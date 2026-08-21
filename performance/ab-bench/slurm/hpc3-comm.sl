@@ -1,23 +1,30 @@
 #!/bin/bash
 #SBATCH --job-name=sw4-comm
 #SBATCH --nodes=4
-#SBATCH --exclusive
-#SBATCH --mem=0
-# --mem=0 means "all memory on the node". Without it Slurm applies the site
-# default (512M on NeSI), which is below what a single compile of
-# rhs4th3fortc.C needs at --param=max-completely-peeled-insns=4000 (~513MB
-# peak RSS) -- the build OOMs before any measurement happens.
+# Deliberately NOT --exclusive, and no --mem here. Both are passed at submit
+# time, because the right choice depends on what you are measuring and on how
+# long you are willing to queue:
 #
-# --exclusive alone does NOT get you the node's cores in the allocation on
-# every Slurm configuration: it grants exclusive ACCESS while the allocation
-# still reflects what was requested, so squeue shows CPUS=1 and
-# SLURM_CPUS_ON_NODE reports 1. Pass the core count explicitly at submit time,
-# because it differs per partition and cannot be baked in here:
+#   Shared node, fast to schedule (recommended for a first look):
+#     sbatch -p genoa --ntasks=2 --cpus-per-task=32 --mem-per-cpu=2G \\
+#            --hint=nomultithread <this script>
 #
-#   sbatch -p genoa --ntasks=2 --cpus-per-task=84 ...   # 168-core nodes
-#   sbatch -p milan --ntasks=2 --cpus-per-task=63 ...   # 126-core nodes
+#   Whole node, slow to schedule, needed for the bandwidth question:
+#     sbatch -p genoa --exclusive --mem=0 --ntasks=2 --cpus-per-task=84 \\
+#            --hint=nomultithread <this script>
 #
-# The script cross-checks and refuses to run a degenerate allocation.
+# A shared-node run gives each core several times more memory bandwidth than a
+# full node does, so for the memory-bound Cartesian kernel its speedups are an
+# UPPER bound on what a production full-node run will show. The curvilinear
+# kernel is compute-bound at every occupancy, so its numbers transfer directly.
+# The job output records which mode it ran in so the caveat travels with the
+# result.
+#
+# --hint=nomultithread keeps threads on physical cores; these nodes present 2
+# hardware threads per core and letting OpenMP land on siblings halves the
+# effective vector throughput.
+#
+# The script refuses to run an allocation below 8 CPUs -- see the guard below.
 #SBATCH --time=02:00:00
 #SBATCH --output=sw4-comm-%x-%j.out
 ##SBATCH --account=CHANGE_ME

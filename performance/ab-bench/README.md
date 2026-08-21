@@ -104,25 +104,25 @@ which matters where login requires a portal/MFA round trip.
 # commits, so a source-only copy cannot work.
 rsync -az --exclude 'build*' --exclude 'ab-*' sw4/ hpc3:~/sw4-ab/
 
-# State the layout explicitly. --exclusive grants exclusive ACCESS to the node
-# but on many Slurm configurations the allocation still reflects only what was
-# requested -- squeue then shows CPUS=1 and SLURM_CPUS_ON_NODE reports 1, which
-# would silently benchmark a 168-core node on one core. The scripts refuse to
-# run a sub-8-CPU allocation rather than produce plausible nonsense.
+# State the layout explicitly. --exclusive is NOT in the script headers,
+# because whether you want it depends on what you are measuring:
 #
-# Core counts differ per partition and cannot be baked into the script:
-#   HPC3/Mahuika genoa  168 cores  -> --cpus-per-task=84
-#   HPC3/Mahuika milan  126 cores  -> --cpus-per-task=63
-# Check yours with `sinfo -p <partition> -o '%n %c %m'` first.
+#   Shared node -- schedules in minutes rather than a day, since a whole free
+#   node is rare. Good enough for the vectorisation and thread-scaling
+#   questions. Confirm core counts first: sinfo -p <part> -o '%n %c %m'
+sbatch -p genoa --ntasks=2 --cpus-per-task=32 --mem-per-cpu=2G \
+       --hint=nomultithread performance/ab-bench/slurm/hpc3-ab.sl
+sbatch -p milan --ntasks=2 --cpus-per-task=32 --mem-per-cpu=2G \
+       --hint=nomultithread performance/ab-bench/slurm/hpc3-ab.sl
 
-sbatch -p genoa --ntasks=2 --cpus-per-task=84 --mem=0 \
-       performance/ab-bench/slurm/hpc3-ab.sl
-sbatch -p milan --ntasks=2 --cpus-per-task=63 --mem=0 \
-       performance/ab-bench/slurm/hpc3-ab.sl
+#   Whole node -- needed for the bandwidth-saturation question, and only that.
+sbatch -p genoa --exclusive --mem=0 --ntasks=2 --cpus-per-task=84 \
+       --hint=nomultithread performance/ab-bench/slurm/hpc3-ab.sl
 
-# Multi-node, for the halo exchange. Defaults to isolating 5374160 -> 668bd37,
-# where nothing but parallelStuff.C differs.
-sbatch -p genoa --nodes=4 --ntasks-per-node=2 --cpus-per-task=84 --mem=0 \
+#   Multi-node halo exchange. Defaults to isolating 5374160 -> 668bd37, where
+#   nothing but parallelStuff.C differs.
+sbatch -p genoa --nodes=4 --ntasks-per-node=2 --cpus-per-task=32 \
+       --mem-per-cpu=2G --hint=nomultithread \
        performance/ab-bench/slurm/hpc3-comm.sl
 ```
 
@@ -215,6 +215,24 @@ git clone <repo> sw4 && cd sw4
 `SW4CK` (github.com/LLNL/SW4CK) is a mini-app of five SW4 stencil kernels
 covering roughly half of solve time. On a small instance it isolates the kernels
 without needing a full simulation, which may be a better fit than this harness.
+
+## Reading a shared-node result
+
+A shared-node run gives each core several times the memory bandwidth it would
+get on a full node. That matters because the two kernels sit on opposite sides
+of the roofline:
+
+* **Curvilinear** (`curvi`, `curvi-mr`) is compute-bound at every occupancy
+  (AI 32.3 flop/B against a machine balance of 14-25). Its speedups transfer
+  directly to a full node.
+* **Cartesian** (`cart`, `cart-mr`) is memory-bound on x86 by 1.15-1.40x at full
+  occupancy and comfortably compute-bound at one-third occupancy. Its
+  shared-node speedups are therefore an **upper bound** -- expect them to
+  compress on a full node.
+
+Neighbouring jobs also contend for bandwidth. The A/B interleaving and
+min-of-reps mitigate that but cannot remove it, so treat a shared-node number as
+a range rather than a point. The job output prints which mode it ran in.
 
 ## What to expect, and what would falsify it
 

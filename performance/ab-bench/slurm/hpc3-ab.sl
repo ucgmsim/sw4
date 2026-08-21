@@ -1,23 +1,30 @@
 #!/bin/bash
 #SBATCH --job-name=sw4-ab
 #SBATCH --nodes=1
-#SBATCH --exclusive
-#SBATCH --mem=0
-# --mem=0 means "all memory on the node". Without it Slurm applies the site
-# default (512M on NeSI), which is below what a single compile of
-# rhs4th3fortc.C needs at --param=max-completely-peeled-insns=4000 (~513MB
-# peak RSS) -- the build OOMs before any measurement happens.
+# Deliberately NOT --exclusive, and no --mem here. Both are passed at submit
+# time, because the right choice depends on what you are measuring and on how
+# long you are willing to queue:
 #
-# --exclusive alone does NOT get you the node's cores in the allocation on
-# every Slurm configuration: it grants exclusive ACCESS while the allocation
-# still reflects what was requested, so squeue shows CPUS=1 and
-# SLURM_CPUS_ON_NODE reports 1. Pass the core count explicitly at submit time,
-# because it differs per partition and cannot be baked in here:
+#   Shared node, fast to schedule (recommended for a first look):
+#     sbatch -p genoa --ntasks=2 --cpus-per-task=32 --mem-per-cpu=2G \\
+#            --hint=nomultithread <this script>
 #
-#   sbatch -p genoa --ntasks=2 --cpus-per-task=84 ...   # 168-core nodes
-#   sbatch -p milan --ntasks=2 --cpus-per-task=63 ...   # 126-core nodes
+#   Whole node, slow to schedule, needed for the bandwidth question:
+#     sbatch -p genoa --exclusive --mem=0 --ntasks=2 --cpus-per-task=84 \\
+#            --hint=nomultithread <this script>
 #
-# The script cross-checks and refuses to run a degenerate allocation.
+# A shared-node run gives each core several times more memory bandwidth than a
+# full node does, so for the memory-bound Cartesian kernel its speedups are an
+# UPPER bound on what a production full-node run will show. The curvilinear
+# kernel is compute-bound at every occupancy, so its numbers transfer directly.
+# The job output records which mode it ran in so the caveat travels with the
+# result.
+#
+# --hint=nomultithread keeps threads on physical cores; these nodes present 2
+# hardware threads per core and letting OpenMP land on siblings halves the
+# effective vector throughput.
+#
+# The script refuses to run an allocation below 8 CPUs -- see the guard below.
 #SBATCH --time=03:00:00
 #SBATCH --output=sw4-ab-%x-%j.out
 ##SBATCH --account=CHANGE_ME          # uncomment and set if your site requires it
@@ -90,8 +97,18 @@ if [ -n "${SLURM_JOB_ID:-}" ] && [ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt 8 ]; then
   echo "Set FORCE=1 to override and measure on $ALLOC CPU(s) anyway."
   [ -z "${FORCE:-}" ] && exit 1
 fi
-[ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt "$PHYS" ] && \
-  echo " NOTE: allocation is $ALLOC of $PHYS cores on this node."
+if [ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt "$PHYS" ]; then
+  echo " occupancy   $ALLOC of $PHYS cores -- SHARED NODE"
+  echo "             Each core has ~$(( PHYS / ALLOC ))x the memory bandwidth it"
+  echo "             would get on a full node, so speedups for the"
+  echo "             memory-bound Cartesian cases are an UPPER bound on what a"
+  echo "             full-node production run will show. The curvilinear cases"
+  echo "             are compute-bound at any occupancy and transfer directly."
+  echo "             Neighbouring jobs also contend for bandwidth, which the"
+  echo "             A/B interleaving and min-of-reps mitigate but cannot remove."
+else
+  echo " occupancy   $ALLOC of $PHYS cores -- whole node"
+fi
 echo " target      $TARGET"
 echo " geometry    ${CORES} cores -> ${RANKS} ranks x ${THREADS} threads"
 echo " case size   $SIZE   reps=$REPS   precision=$PRECISION"
