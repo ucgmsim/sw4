@@ -82,7 +82,23 @@ CANDIDATES=(
 )
 
 LOADED=""
-if command -v module >/dev/null 2>&1; then
+# An explicit MODULES= override is honoured FIRST and short-circuits the probe.
+# It has to be here rather than after the loop: when the probe fails the script
+# exits, so an override read afterwards would never run -- which is exactly the
+# situation the override exists for.
+if [ -n "${MODULES:-}" ] && command -v module >/dev/null 2>&1; then
+  module purge >/dev/null 2>&1
+  # shellcheck disable=SC2086
+  module load $MODULES >/dev/null 2>&1
+  if have_toolchain; then
+    LOADED="$MODULES (from \$MODULES)"
+  else
+    echo "WARNING: MODULES='$MODULES' loaded but the toolchain is still"
+    echo "         incomplete; falling through to the probe."
+  fi
+fi
+
+if [ -z "$LOADED" ] && command -v module >/dev/null 2>&1; then
   for spec in "${CANDIDATES[@]}"; do
     module purge >/dev/null 2>&1
     # shellcheck disable=SC2086
@@ -109,7 +125,6 @@ if [ -z "$LOADED" ]; then
   exit 1
 fi
 echo " modules     $LOADED"
-[ -n "${MODULES:-}" ] && { module purge >/dev/null 2>&1; module load $MODULES; echo " modules     (overridden) $MODULES"; }
 
 echo
 echo "--- toolchain ----------------------------------------------------"
