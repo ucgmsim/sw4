@@ -174,7 +174,12 @@ emit_case() {  # $1=name  -> writes $OUTDIR/cases/$1.in
         echo "grid nx=$NX x=1.0 y=1.0 z=1.0"
         echo "time t=$T"
         echo "topography input=gaussian zmax=0.25 order=4 gaussianAmp=0.05"
-        echo "refinement zmax=0.15"
+        # SW4 requires >= 12 z-points (excluding ghosts) per grid. The Cartesian
+        # level between the curvilinear bottom (0.25) and this interface must
+        # therefore be at least 12*h deep, and h grows as --size shrinks, so
+        # this is set for the coarsest size (S, h=0.025) and is comfortable at
+        # the finer ones. At 0.15 the level gets 9 points and SW4 aborts.
+        echo "refinement zmax=0.65"
         echo "twilight omega=6.28 phase=0.8 momega=6.28 errorlog=1"
         ;;
       aniso)
@@ -295,6 +300,8 @@ fi
 IFS=',' read -ra CASE_ARR <<< "$CASES"
 for c in "${CASE_ARR[@]}"; do emit_case "$c"; done
 
+FAILED_CASES=""
+rm -f "$OUTDIR/failures.txt"
 CSV="$OUTDIR/results.csv"
 echo "case,precision,side,rep,total,divstress,forcing,bc,sg,comm,mr,img_tseries,updates,essi,wall,linf,l2" > "$CSV"
 
@@ -309,14 +316,37 @@ for p in $PRECISIONS; do
         out="$(run_one "$bd" "$OUTDIR/cases/$c.in" "$OUTDIR/run/$c-$p-$side")"
         echo "$out" > "$OUTDIR/logs/run-$c-$p-$side-r$r.log"
         # phase row is the line after the column header
+        # Every extraction below ends in `|| true`. Under pipefail a grep that
+        # finds nothing returns 1, and set -e would then abort the whole run
+        # before the summary is written -- which is exactly what a single bad
+        # case did during development. A failing case must be recorded and
+        # skipped, not fatal.
         phases="$(echo "$out" | grep -A1 'Total *Div-stress' | tail -1 \
-                  | awk '{printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s",$1,$2,$3,$4,$5,$6,$7,$8,$9,$10}')"
-        wall="$(echo "$out" | awk '/time stepping phase/{print $(NF-1)}' | tail -1)"
-        linf="$(echo "$out" | grep -o 'Linf = *[0-9.eE+-]*' | tail -1 | awk '{print $NF}')"
-        l2="$(  echo "$out" | grep -o 'L2 = *[0-9.eE+-]*'   | tail -1 | awk '{print $NF}')"
+                  | awk '{printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s",$1,$2,$3,$4,$5,$6,$7,$8,$9,$10}' || true)"
+        # SW4 switches format past a minute: "... phase 2 minutes 2.25e+01 seconds".
+        # Taking $(NF-1) grabs only the seconds remainder and silently drops the
+        # minutes, which inverted the A/B comparison on runs over 60s. Sum the
+        # hours/minutes/seconds fields by name instead.
+        wall="$(echo "$out" | grep 'time stepping phase' | tail -1 \
+                | awk '{h=0;m=0;s=0;
+                        for(i=1;i<=NF;i++){
+                          if($i ~ /^hours?$/)        h=$(i-1);
+                          else if($i ~ /^minutes?$/) m=$(i-1);
+                          else if($i ~ /^seconds?$/) s=$(i-1);
+                        }
+                        printf "%.6f", h*3600+m*60+s}' || true)"
+        linf="$(echo "$out" | grep -o 'Linf = *[0-9.eE+-]*' | tail -1 | awk '{print $NF}' || true)"
+        l2="$(  echo "$out" | grep -o 'L2 = *[0-9.eE+-]*'   | tail -1 | awk '{print $NF}' || true)"
+        if [[ -z "$phases" ]]; then
+          FAILED_CASES="${FAILED_CASES}${FAILED_CASES:+ }$c/$p/$side"
+          reason="$(echo "$out" | grep -m1 -iE 'precondition violated|error|abort' | cut -c1-140 || true)"
+          echo "$c/$p/$side rep$r: no timing table. ${reason:-<no diagnostic>}" >> "$OUTDIR/failures.txt"
+          printf "!"
+        else
+          printf "."
+        fi
         echo "$c,$p,$side,$r,${phases:-,,,,,,,,,},${wall:-},${linf:-},${l2:-}" >> "$CSV"
       done
-      printf "."
     done
     echo " done"
   done
@@ -353,6 +383,17 @@ for (case, prec) in sorted({(r['case'], r['precision']) for r in rows}):
     for c in COLS:
         if c in a and c in b and a[c] > 1e-4:
             out.append(f"{case:<10} {prec:<7} {c:<12} {a[c]:>10.4g} {b[c]:>10.4g} {a[c]/b[c]:>8.3f}")
+    # Internal consistency: SW4's own `total` phase column and the wall-clock
+    # line measure the same interval, so they must agree. If they do not, one of
+    # the two parses is broken and neither number should be trusted -- this
+    # check is what caught the minutes-format bug.
+    for side, d in (("A", a), ("B", b)):
+        if "total" in d and "wall" in d and d["total"] > 1e-6:
+            skew = abs(d["wall"] - d["total"]) / d["total"]
+            if skew > 0.05:
+                out.append(f"{'':<10} {'':<7} WARNING: {side} wall={d['wall']:.4g}s "
+                           f"disagrees with total={d['total']:.4g}s by {skew*100:.0f}% "
+                           f"-- parse error, do not trust these figures")
     # correctness
     na, nb = norm.get((case,prec,'base'), set()), norm.get((case,prec,'head'), set())
     if na and nb:
@@ -374,6 +415,13 @@ txt = "\n".join(out)
 open(outp,"w").write(txt + "\n")
 print(txt)
 PYEOF
+
+if [[ -n "$FAILED_CASES" ]]; then
+  echo
+  echo "WARNING: these runs produced no timing table and are absent from the"
+  echo "summary: $FAILED_CASES"
+  echo "See $OUTDIR/failures.txt and $OUTDIR/logs/."
+fi
 
 echo
 echo "results:   $OUTDIR/summary.txt"

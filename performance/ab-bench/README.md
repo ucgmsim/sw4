@@ -82,6 +82,17 @@ To isolate a single change instead, pass explicit commits:
 ./ab-bench.sh --base 5c0c2e5 --head bcafa0a --cases cart-mr
 ```
 
+## If a case fails
+
+A run that produces no timing table is recorded in `failures.txt`, marked with
+`!` instead of `.` in the progress line, excluded from the summary, and warned
+about at the end — the run continues. The usual cause is a geometry SW4 rejects;
+it requires **at least 12 z-points (excluding ghosts) per grid**, so a
+refinement interface placed too close to the curvilinear bottom aborts with
+`Precondition violated: The number of grid points ... must be >= 12`. If you add
+a case or a size, check it at the *coarsest* size you intend to use, since `h`
+grows as `--size` shrinks.
+
 ## Platform recipes
 
 ### Target clusters
