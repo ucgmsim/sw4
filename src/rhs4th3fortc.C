@@ -4,12 +4,21 @@
 
 //extern "C" {
 
-void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+// OP is a template parameter, so the dispatch below resolves at compile time.
+// That matters for more than the branch. With OP=='=' the store used to be
+// `lu = a1 * lu + cof * r` with a1 == 0, and the compiler cannot fold that
+// away: for floating point 0*x is not 0 (x may be NaN, Inf or -0.0), so the
+// kernel read the entire 3-component output array back purely to multiply it
+// by zero. SW4_LU_STORE below drops that read. The memset stays, because it
+// also covers the ghost points and the k-range outside [k1,k2] that the
+// stencil loops never assign.
+template<char OP>
+static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
 		     int nk, int* __restrict__ onesided, float_sw4* __restrict__ a_acof, 
 		     float_sw4 *__restrict__ a_bope, float_sw4* __restrict__ a_ghcof, 
 		     float_sw4* __restrict__ a_lu, float_sw4* __restrict__ a_u,
 		     float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda, 
-		     float_sw4 h, char op )
+		     float_sw4 h )
 {
  // Direct reuse of fortran code by these macro definitions:
 #define mu(i,j,k)     a_mu[base+i+ni*(j)+nij*(k)]
@@ -41,7 +50,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
    const int kfirst0 = kfirst;
 
    int k1, k2, kb;
-   int i, j, k, q, m, qb, mb, a1;
+   int i, j, k, q, m, qb, mb;
    float_sw4 mux1, mux2, mux3, mux4, muy1, muy2, muy3, muy4, muz1, muz2, muz3, muz4;
    float_sw4 r1, r2, r3, mucof, mu1zz, mu2zz, mu3zz;
    float_sw4 lap2mu, u3zip2, u3zip1, u3zim1, u3zim2, lau3zx, mu3xz, u3zjp2, u3zjp1, u3zjm1, u3zjm2;
@@ -50,19 +59,20 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 
    float_sw4 cof = 1.0/(h*h);
 
-   if( op == '=' )
+   if constexpr( OP == '=' )
    {
-      a1 = 0;
       for(size_t i=0 ; i < static_cast<size_t>((ilast-ifirst+1))*(jlast-jfirst+1)*(klast-kfirst+1)*3; i++)
          a_lu[i]=0;
    }
-   else if( op == '+' )
-      a1 = 1;
-   else if( op == '-' )
-   {
-      a1 = 1;
+   else if constexpr( OP == '-' )
       cof = -cof;
-   }
+
+// Assign when OP=='=', accumulate otherwise. See the note above the function.
+#define SW4_LU_STORE(c,val)                                        \
+   do {                                                            \
+      if constexpr( OP == '=' ) lu(c,i,j,k) = (val);                \
+      else                      lu(c,i,j,k) = lu(c,i,j,k) + (val);  \
+   } while(0)
 
    k1 = kfirst+2;
    if( onesided[4] == 1 )
@@ -309,9 +319,9 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 				     8*(-u(2,i,j-1,k+2)+u(2,i,j+1,k+2))) )) ;
 
 /* 9 ops */
-	    lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-	    lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-	    lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+	    SW4_LU_STORE(1, cof*r1);
+	    SW4_LU_STORE(2, cof*r2);
+	    SW4_LU_STORE(3, cof*r3);
 	 }
       if( onesided[4]==1 )
       {
@@ -562,9 +572,9 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
                    -8*u(2,i,j-1,q) + u(2,i,j-2,q)) );
             r3 = r3 + stry(j)*lau2yz;
 
-            lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-            lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-            lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+            SW4_LU_STORE(1, cof*r1);
+            SW4_LU_STORE(2, cof*r2);
+            SW4_LU_STORE(3, cof*r3);
 	       }
       }
       if( onesided[5] == 1 )
@@ -817,9 +827,9 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 	    }
             r3 = r3 + stry(j)*lau2yz;
 
-            lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-            lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-            lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+            SW4_LU_STORE(1, cof*r1);
+            SW4_LU_STORE(2, cof*r2);
+            SW4_LU_STORE(3, cof*r3);
 	       }
       }
    }
@@ -833,15 +843,17 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 #undef acof
 #undef bope
 #undef ghcof
+#undef SW4_LU_STORE
 }
 
 //-----------------------------------------------------------------------
-void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+template<char OP>
+static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
 		 int nk, int* __restrict__ onesided, float_sw4* __restrict__ a_acof, float_sw4 *__restrict__ a_bope,
 		 float_sw4* __restrict__ a_ghcof, float_sw4* __restrict__ a_lu, float_sw4* __restrict__ a_u,
 		 float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda, 
 		 float_sw4 h, float_sw4* __restrict__ a_strx, float_sw4* __restrict__ a_stry, 
-			  float_sw4* __restrict__ a_strz, char op )
+			  float_sw4* __restrict__ a_strz )
 {
    // This would work to create multi-dimensional C arrays:
    //   float_sw4** b_ar=(float_sw4*)malloc(ni*nj*sizeof(float_sw4*));
@@ -880,7 +892,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
    const int kfirst0 = kfirst;
 
    int k1, k2, kb;
-   int i, j, k, q, m, qb, mb, a1;
+   int i, j, k, q, m, qb, mb;
    float_sw4 mux1, mux2, mux3, mux4, muy1, muy2, muy3, muy4, muz1, muz2, muz3, muz4;
    float_sw4 r1, r2, r3, mucof, mu1zz, mu2zz, mu3zz;
    float_sw4 lap2mu, u3zip2, u3zip1, u3zim1, u3zim2, lau3zx, mu3xz, u3zjp2, u3zjp1, u3zjm1, u3zjm2;
@@ -889,19 +901,20 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 
    float_sw4 cof = 1.0/(h*h);
 
-   if( op == '=' )
+   if constexpr( OP == '=' )
    {
-      a1 = 0;
       for(size_t i=0 ; i < static_cast<size_t>((ilast-ifirst+1))*(jlast-jfirst+1)*(klast-kfirst+1)*3; i++)
          a_lu[i]=0;
    }
-   else if( op == '+' )
-      a1 = 1;
-   else if( op == '-' )
-   {
-      a1 = 1;
+   else if constexpr( OP == '-' )
       cof = -cof;
-   }
+
+// Assign when OP=='=', accumulate otherwise. See the note above the function.
+#define SW4_LU_STORE(c,val)                                        \
+   do {                                                            \
+      if constexpr( OP == '=' ) lu(c,i,j,k) = (val);                \
+      else                      lu(c,i,j,k) = lu(c,i,j,k) + (val);  \
+   } while(0)
 
    k1 = kfirst+2;
    if( onesided[4] == 1 )
@@ -1148,9 +1161,9 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 				     8*(-u(2,i,j-1,k+2)+u(2,i,j+1,k+2))) )) ;
 
 /* 9 ops */
-	    lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-	    lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-	    lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+	    SW4_LU_STORE(1, cof*r1);
+	    SW4_LU_STORE(2, cof*r2);
+	    SW4_LU_STORE(3, cof*r3);
 	 }
       if( onesided[4]==1 )
       {
@@ -1401,9 +1414,9 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
                    -8*u(2,i,j-1,q) + u(2,i,j-2,q)) );
             r3 = r3 + stry(j)*lau2yz;
 
-            lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-            lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-            lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+            SW4_LU_STORE(1, cof*r1);
+            SW4_LU_STORE(2, cof*r2);
+            SW4_LU_STORE(3, cof*r3);
 	       }
       }
       if( onesided[5] == 1 )
@@ -1656,9 +1669,9 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 	    }
             r3 = r3 + stry(j)*lau2yz;
 
-            lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-            lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-            lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+            SW4_LU_STORE(1, cof*r1);
+            SW4_LU_STORE(2, cof*r2);
+            SW4_LU_STORE(3, cof*r3);
 	       }
       }
    }
@@ -1672,7 +1685,49 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 #undef acof
 #undef bope
 #undef ghcof
+#undef SW4_LU_STORE
 }
+
+//-----------------------------------------------------------------------
+// Wrappers keeping the existing `char op` interface. An op outside {=,+,-} is
+// now a no-op; previously it fell through leaving a1 uninitialised.
+void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+		     int nk, int* __restrict__ onesided, float_sw4* __restrict__ a_acof, 
+		     float_sw4 *__restrict__ a_bope, float_sw4* __restrict__ a_ghcof, 
+		     float_sw4* __restrict__ a_lu, float_sw4* __restrict__ a_u,
+		     float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda, 
+		     float_sw4 h, char op )
+{
+   if( op == '=' )
+      rhs4th3fort_ci_impl<'='>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk,
+			  onesided, a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h );
+   else if( op == '+' )
+      rhs4th3fort_ci_impl<'+'>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk,
+			  onesided, a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h );
+   else if( op == '-' )
+      rhs4th3fort_ci_impl<'-'>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk,
+			  onesided, a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h );
+}
+
+//-----------------------------------------------------------------------
+void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+		 int nk, int* __restrict__ onesided, float_sw4* __restrict__ a_acof, float_sw4 *__restrict__ a_bope,
+		 float_sw4* __restrict__ a_ghcof, float_sw4* __restrict__ a_lu, float_sw4* __restrict__ a_u,
+		 float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda, 
+		 float_sw4 h, float_sw4* __restrict__ a_strx, float_sw4* __restrict__ a_stry, 
+			  float_sw4* __restrict__ a_strz, char op )
+{
+   if( op == '=' )
+      rhs4th3fortsgstr_ci_impl<'='>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk, onesided,
+	    a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h, a_strx, a_stry, a_strz );
+   else if( op == '+' )
+      rhs4th3fortsgstr_ci_impl<'+'>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk, onesided,
+	    a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h, a_strx, a_stry, a_strz );
+   else if( op == '-' )
+      rhs4th3fortsgstr_ci_impl<'-'>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk, onesided,
+	    a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h, a_strx, a_stry, a_strz );
+}
+
 
 //-----------------------------------------------------------------------
 void rhserrfort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,

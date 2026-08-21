@@ -5112,7 +5112,12 @@ void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
   int g, nz;
 
   for (g = 0; g < mNumberOfCartesianGrids; g++) {
-    a_Uacc[g].set_to_zero();
+    // No set_to_zero() here. The op=='=' path in rhs4th3fort_ci /
+    // rhs4th3fortsgstr_ci memsets the output array itself, and Lu/Uacc are
+    // defined (solve.C:124-126) with exactly the m_iStart[g]..m_kEnd[g] bounds
+    // passed to the kernel below, so that memset provably covers the whole
+    // Sarray. Zeroing twice cost a full 3-component array write per RHS
+    // evaluation, and evalRHS runs twice per timestep.
     uacc_ptr = a_Uacc[g].c_ptr();
     u_ptr = a_U[g].c_ptr();
     mu_ptr = a_Mu[g].c_ptr();
