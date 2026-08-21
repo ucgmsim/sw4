@@ -25,6 +25,7 @@ void EW::forcingfortsg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfi
 	 {
 	    float_sw4 y=(j-1)*h;
 #pragma ivdep
+#pragma omp simd
 	    //#pragma simd
 	    for( int i=ifirst; i<=ilast; i++ )
 	    {
@@ -181,6 +182,7 @@ void EW::forcingttfortsg_ci( int ifirst, int ilast, int jfirst, int jlast, int k
 	 {
 	    float_sw4 y=(j-1)*h;
 #pragma ivdep
+#pragma omp simd
 	    //#pragma simd
 	    for( int i=ifirst; i<=ilast; i++ )
 	    {
@@ -341,6 +343,7 @@ void EW::forcingfortcsg_ci( int ifirst, int ilast, int jfirst, int jlast, int kf
       for( int k=kfirst; k<=klast; k++ )
 	 for( int j=jfirst; j<=jlast; j++ )
 #pragma ivdep
+#pragma omp simd
 	    //#pragma simd
 	    for( int i=ifirst; i<=ilast; i++ )
 	    {
@@ -494,6 +497,7 @@ void EW::forcingttfortcsg_ci( int ifirst, int ilast, int jfirst, int jlast, int 
       for( int k=kfirst; k<=klast; k++ )
 	 for( int j=jfirst; j<=jlast; j++ )
 #pragma ivdep
+#pragma omp simd
 	    //#pragma simd
 	    for( int i=ifirst; i<=ilast; i++ )
 	    {
@@ -656,6 +660,7 @@ void EW::forcingfortsgatt_ci( int ifirst, int ilast, int jfirst, int jlast, int 
 	 {
 	    float_sw4 y=(j-1)*h;
 #pragma ivdep
+#pragma omp simd
 	    //#pragma simd
 	    for( int i=ifirst; i<=ilast; i++ )
 	    {
@@ -804,6 +809,7 @@ void EW::forcingttfortsgatt_ci( int ifirst, int ilast, int jfirst, int jlast, in
 	 {
 	    float_sw4 y=(j-1)*h;
 #pragma ivdep
+#pragma omp simd
 	    //#pragma simd
 	    for( int i=ifirst; i<=ilast; i++ )
 	    {
@@ -985,6 +991,7 @@ void EW::forcingfortsgattc_ci( int ifirst, int ilast, int jfirst, int jlast, int
       for( int k=kfirst; k<=klast; k++ )
 	 for( int j=jfirst; j<=jlast; j++ )
 #pragma ivdep
+#pragma omp simd
 	    //#pragma simd
 	    for( int i=ifirst; i<=ilast; i++ )
 	    {
@@ -1130,6 +1137,7 @@ void EW::forcingttfortsgattc_ci( int ifirst, int ilast, int jfirst, int jlast, i
       for( int k=kfirst; k<=klast; k++ )
 	 for( int j=jfirst; j<=jlast; j++ )
 #pragma ivdep
+#pragma omp simd
 	    //#pragma simd
 	    for( int i=ifirst; i<=ilast; i++ )
 	    {

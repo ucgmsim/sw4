@@ -44,6 +44,7 @@ void update_unext( int ib, int ie, int jb, int je, int kb, int ke,
     for(j=jb+2; j <= je-2 ; j++ )
     {
 #pragma ivdep
+#pragma omp simd
       for(i=ib+2; i <= ie-2 ; i++ )
       {
 	Unext(c,i,j,kic) = up(c,i,j,kic) + cof*(Lutt(c,i,j,kic)+force(c,i,j,kic))/rho(i,j,kic);
@@ -92,6 +93,7 @@ void dpdmt_wind( int ib, int ie, int jb, int je, int kb_tt, int ke_tt, int kb_u,
       {
 	 //#pragma simd
 #pragma ivdep
+#pragma omp simd
 	for(i=ib; i <= ie ; i++ )
 	{
 	  // up-2u+um recovers an O(dt^2) second time-derivative from

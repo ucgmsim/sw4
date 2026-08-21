@@ -77,6 +77,7 @@ void EW::addsgd4_ci( int ifirst, int ilast, int jfirst, int jlast,
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 	    //#pragma simd
 #pragma ivdep
+#pragma omp simd
 	    for( int i=ifirst+2; i <= ilast-2 ; i++ )
 	    {
 	       float_sw4 birho=beta/rho(i,j,k);
@@ -182,6 +183,7 @@ void EW::addsgd6_ci( int ifirst, int ilast, int jfirst, int jlast,
 	 for( int j=jfirst+3; j <= jlast-3 ; j++ )
 	    //#pragma simd
 #pragma ivdep
+#pragma omp simd
 	    for( int i=ifirst+3; i <= ilast-3 ; i++ )
 	    {
 	       float_sw4 birho=0.5*beta/rho(i,j,k);
@@ -284,6 +286,7 @@ void EW::addsgd4c_ci( int ifirst, int ilast, int jfirst, int jlast,
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 	    //#pragma simd
 #pragma ivdep
+#pragma omp simd
 	    for( int i=ifirst+2; i <= ilast-2 ; i++ )
 	    {
 	       float_sw4 irhoj=beta/(rho(i,j,k)*jac(i,j,k));
@@ -368,6 +371,7 @@ void EW::addsgd6c_ci(  int ifirst, int ilast, int jfirst, int jlast,
 	 for( int j=jfirst+3; j <= jlast-3 ; j++ )
 	    //#pragma simd
 #pragma ivdep
+#pragma omp simd
 	    for( int i=ifirst+3; i <= ilast-3 ; i++ )
 	    {
 	       float_sw4 birho=0.5*beta/(rho(i,j,k)*jac(i,j,k));

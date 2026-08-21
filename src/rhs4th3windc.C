@@ -90,6 +90,7 @@ void rhs4th3wind( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int 
       for( j=jfirst+2; j <= jlast-2 ; j++ )
 	 //#pragma simd
 #pragma ivdep
+#pragma omp simd
 	for( i=ifirst+2; i <= ilast-2 ; i++ )
 	{
 /* from inner_loop_4a, 28x3 = 84 ops */
@@ -329,6 +330,7 @@ void rhs4th3wind( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int 
       for( j=jfirst+2; j <= jlast-2 ; j++ )
 	 //#pragma simd
 #pragma ivdep
+#pragma omp simd
 	for( i=ifirst+2; i <= ilast-2 ; i++ )
 	{
 /* from inner_loop_4a */
@@ -582,6 +584,7 @@ void rhs4th3wind( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int 
       for( j=jfirst+2; j <= jlast-2 ; j++ )
 	 //#pragma simd
 #pragma ivdep
+#pragma omp simd
 	for( i=ifirst+2; i <= ilast-2 ; i++ )
 	{
 	  /* from inner_loop_4a */
