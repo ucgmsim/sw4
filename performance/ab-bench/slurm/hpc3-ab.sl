@@ -58,6 +58,12 @@ HEAD_REF="${HEAD_REF:-HEAD}"
 RANKS="${RANKS:-2}"               # one per socket; these nodes are dual-socket
 STRICT="${STRICT:-}"              # set to 1 for a bit-reproducible comparison
 CASES="${CASES:-}"                # override the case list, e.g. prod,prod-mr
+NX="${NX:-}"                      # fixed global grid instead of per-rank sizing.
+                                  # REQUIRED for comparing layouts: per-rank
+                                  # sizing makes 2 ranks solve a 1/8-size
+                                  # problem, so absolute times are not
+                                  # comparable across rank counts.
+TIMEVAL="${TIMEVAL:-}"
 THREADS_OVERRIDE="${THREADS_OVERRIDE:-}"
 
 echo "=================================================================="
@@ -251,6 +257,8 @@ ARGS=(--base "$BASE" --head "$HEAD_REF" --target "$TARGET"
       --jobs "$CORES" --outdir "$OUT")
 [ -n "$STRICT" ] && ARGS+=(--strict-fp)
 [ -n "$CASES" ] && ARGS+=(--cases "$CASES")
+[ -n "$NX" ] && ARGS+=(--nx "$NX")
+[ -n "$TIMEVAL" ] && ARGS+=(--time "$TIMEVAL")
 
 # Walltime sanity. The per-rank sizing means nx grows as cbrt(ranks), so
 # SIZE=L at 16 ranks is a 372^3 grid -- four of six jobs in the previous round

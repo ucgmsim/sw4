@@ -101,8 +101,11 @@ MATRIX=(
   "P-gen-dp|$P_GENOA|6:00:00|1|16|4|96G|$AB|$PROD_ENV PRECISION=double RANKS=16"
   # AVX2 contrast -- do the gains survive without AVX-512 on production settings?
   "P-mil-sp|$P_MILAN|6:00:00|1|16|4|96G|$AB|$PROD_ENV PRECISION=single RANKS=16"
-  # layout, same 64 cores as P-gen-sp: does 16x4 still beat 2x32 on production?
-  "P-omp32|$P_GENOA|6:00:00|1|2|32|96G|$AB|$PROD_ENV PRECISION=single RANKS=2"
+  # Layout pair. NX is pinned so both solve the SAME problem: per-rank sizing
+  # would give the 2-rank job a 1/8-size grid and make the absolute times
+  # meaningless, which is exactly what happened in the first attempt.
+  "P-lay16|$P_GENOA|6:00:00|1|16|4|96G|$AB|CASES=prod STEPS=150 REPS=4 PRECISION=single RANKS=16 NX=235 TIMEVAL=0.2983"
+  "P-lay2|$P_GENOA|6:00:00|1|2|32|96G|$AB|CASES=prod STEPS=150 REPS=4 PRECISION=single RANKS=2 NX=235 TIMEVAL=0.2983"
   # single-precision correctness. STRICT_FP removes FMA re-contraction and one
   # thread removes reduction ordering, so this MUST come back bit-exact.
   # Anything else is a real defect and outranks all remaining optimisation work.
@@ -115,7 +118,7 @@ MATRIX=(
   # halo exchange at HEAD across nodes. BASE=e6ccbba pins this to the revert
   # point so it measures the hand-packing, not the reverted non-blocking attempt
   # the script default would have compared.
-  "P-comm|$P_GENOA|4:00:00|4|16|4|96G|$COMM|BASE=e6ccbba SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS_PER_NODE=16"
+  "P-comm|$P_GENOA|4:00:00|4|16|4|96G|$COMM|BASE=e6ccbba HEAD_REF=HEAD SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS_PER_NODE=16"
 )
 
 if [ "$DO_SUBMIT" = 1 ]; then
