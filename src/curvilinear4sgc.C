@@ -32,14 +32,25 @@
 
 #include "sw4.h"
 #include <sys/types.h>
-void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+// OP is a template parameter so the dispatch resolves at compile time. This is
+// the port of 86fd071 that its own commit message flagged as left undone: with
+// OP=='=' the store was `lu = a1*lu + sgn*r*ijac` with a1 == 0, and the
+// compiler cannot fold that away -- for floating point 0*x is not 0, since x
+// may be NaN, Inf or -0.0 -- so the kernel read the entire 3-component output
+// array back purely to multiply it by zero. That is 3 of the 16 words/pt this
+// kernel touches, on top of the 3 written by the memset the caller also did.
+//
+// Bit-exact: with OP=='=' sgn is 1 and multiplying by exactly 1.0 is exact;
+// with OP=='-' sgn is -1 and `a + (-1)*b` is exactly `a - b` in IEEE-754.
+template<char OP>
+static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
 			float_sw4* __restrict__ a_u, float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda,
 			float_sw4* __restrict__ a_met, float_sw4* __restrict__ a_jac, float_sw4* __restrict__ a_lu,
 			int* onesided, float_sw4* __restrict__ a_acof, float_sw4* __restrict__ a_bope,
 			float_sw4* __restrict__ a_ghcof, float_sw4* __restrict__ a_acof_no_gp, 
                         float_sw4* __restrict__ a_ghcof_no_gp,
                         float_sw4* __restrict__ a_strx, float_sw4* __restrict__ a_stry,
-			int nk, char op )
+			int nk )
 {
 //      subroutine CURVILINEAR4SG( ifirst, ilast, jfirst, jlast, kfirst,
 //     *                         klast, u, mu, la, met, jac, lu, 
@@ -54,12 +65,8 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 //      Interior (k>6), 2126 arithmetic ops.
 //      Boundary discretization (1<=k<=6 ), 6049 arithmetic ops.
 
-//   const float_sw4 a1 =0;
-   float_sw4 a1 =0;
-   float_sw4 sgn = 1;
-   if( op=='=' )
+   if constexpr( OP == '=' )
    {
-      a1 = 0;
       // Threaded. This sits outside the kernel's `#pragma omp parallel` region
       // and was a plain serial loop writing 3*ni*nj*nk words -- Sarray's own
       // set_to_zero is threaded, but this open-coded twin was not. Its cost
@@ -74,18 +81,15 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 #pragma omp parallel for simd
       for(size_t i=0 ; i < static_cast<size_t>((ilast-ifirst+1))*(jlast-jfirst+1)*(klast-kfirst+1)*3; i++)
          a_lu[i]=0;
-      sgn= 1;
    }
-   else if( op=='+')
-   {
-      a1 = 1;
-      sgn= 1;
-   }
-   else if( op=='-')
-   {
-      a1 = 1;
-      sgn=-1;
-   }
+
+// Assign when OP=='=', accumulate otherwise. See the note above the function.
+#define SW4_CURV_LU_STORE(c,val)                                        \
+   do {                                                                 \
+      if constexpr( OP == '=' )      lu(c,i,j,k) = (val);                \
+      else if constexpr( OP == '+' ) lu(c,i,j,k) = lu(c,i,j,k) + (val);  \
+      else                           lu(c,i,j,k) = lu(c,i,j,k) - (val);  \
+   } while(0)
 
    const float_sw4 i6 = 1.0/6;
    const float_sw4 tf = 0.75;
@@ -637,9 +641,9 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 	       }
 
 // 12 ops, tot=6049
-	       lu(1,i,j,k) = a1*lu(1,i,j,k) + sgn*r1*ijac;
-	       lu(2,i,j,k) = a1*lu(2,i,j,k) + sgn*r2*ijac;
-	       lu(3,i,j,k) = a1*lu(3,i,j,k) + sgn*r3*ijac;
+	       SW4_CURV_LU_STORE(1, r1*ijac);
+	       SW4_CURV_LU_STORE(2, r2*ijac);
+	       SW4_CURV_LU_STORE(3, r3*ijac);
 	    }
    }
 // Fissioned by output component. The three sections below (u-, v-, w-equation)
@@ -950,7 +954,7 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
              c1*(u(2,i,j-1,k+1)-u(2,i,j-1,k-1)) ) ) );
 
 // 4 ops, tot=773
-	    lu(1,i,j,k) = a1*lu(1,i,j,k) + sgn*r1*ijac;
+	    SW4_CURV_LU_STORE(1, r1*ijac);
 	 }
 
 #pragma omp for collapse(2) nowait
@@ -1256,7 +1260,7 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 
 
 // 4 ops, tot=1541
-	    lu(2,i,j,k) = a1*lu(2,i,j,k) + sgn*r2*ijac;
+	    SW4_CURV_LU_STORE(2, r2*ijac);
 	 }
 
 #pragma omp for collapse(2) nowait
@@ -1496,7 +1500,7 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
              c1*(u(2,i,j-1,k+1)-u(2,i,j-1,k-1)) ) ) ) );
 
 // 4 ops, tot=2126
-	    lu(3,i,j,k) = a1*lu(3,i,j,k) + sgn*r3*ijac;
+	    SW4_CURV_LU_STORE(3, r3*ijac);
 	 }
    if( onesided[5]==1 )
    {
@@ -1989,9 +1993,9 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 	       }
 
 // 12 ops, tot=6049
-	       lu(1,i,j,k) = a1*lu(1,i,j,k) + sgn*r1*ijac;
-	       lu(2,i,j,k) = a1*lu(2,i,j,k) + sgn*r2*ijac;
-	       lu(3,i,j,k) = a1*lu(3,i,j,k) + sgn*r3*ijac;
+	       SW4_CURV_LU_STORE(1, r1*ijac);
+	       SW4_CURV_LU_STORE(2, r2*ijac);
+	       SW4_CURV_LU_STORE(3, r3*ijac);
 	    }
    }
    }
@@ -2008,4 +2012,25 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 #undef bope
 #undef ghcof
 #undef ghcof_no_gp
+#undef SW4_CURV_LU_STORE
+}
+
+//-----------------------------------------------------------------------
+// Wrapper keeping the existing `char op` interface. An op outside {=,+,-} is
+// now a no-op; previously it fell through leaving a1/sgn at their initialisers.
+void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+			float_sw4* __restrict__ a_u, float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda,
+			float_sw4* __restrict__ a_met, float_sw4* __restrict__ a_jac, float_sw4* __restrict__ a_lu,
+			int* onesided, float_sw4* __restrict__ a_acof, float_sw4* __restrict__ a_bope,
+			float_sw4* __restrict__ a_ghcof, float_sw4* __restrict__ a_acof_no_gp, 
+                        float_sw4* __restrict__ a_ghcof_no_gp,
+                        float_sw4* __restrict__ a_strx, float_sw4* __restrict__ a_stry,
+			int nk, char op )
+{
+   if( op == '=' )
+      curvilinear4sg_ci_impl<'='>( ifirst, ilast, jfirst, jlast, kfirst, klast, a_u, a_mu, a_lambda, a_met, a_jac, a_lu, onesided, a_acof, a_bope, a_ghcof, a_acof_no_gp, a_ghcof_no_gp, a_strx, a_stry, nk );
+   else if( op == '+' )
+      curvilinear4sg_ci_impl<'+'>( ifirst, ilast, jfirst, jlast, kfirst, klast, a_u, a_mu, a_lambda, a_met, a_jac, a_lu, onesided, a_acof, a_bope, a_ghcof, a_acof_no_gp, a_ghcof_no_gp, a_strx, a_stry, nk );
+   else if( op == '-' )
+      curvilinear4sg_ci_impl<'-'>( ifirst, ilast, jfirst, jlast, kfirst, klast, a_u, a_mu, a_lambda, a_met, a_jac, a_lu, onesided, a_acof, a_bope, a_ghcof, a_acof_no_gp, a_ghcof_no_gp, a_strx, a_stry, nk );
 }

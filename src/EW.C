@@ -5204,7 +5204,12 @@ void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
 
   //  if( topographyExists() )
   for (g = mNumberOfCartesianGrids; g < mNumberOfGrids; g++) {
-    a_Uacc[g].set_to_zero();
+    // No set_to_zero() here, matching the Cartesian loop above. The OP=='='
+    // path in curvilinear4sg_ci memsets the output array itself, and Lu/Uacc
+    // are defined (solve.C:124-126, over ALL grids) with exactly the
+    // m_iStart[g]..m_kEnd[g] bounds passed to the kernel below, so that memset
+    // provably covers the whole Sarray. Zeroing twice cost a full 3-component
+    // array write per RHS evaluation, twice per timestep.
     uacc_ptr = a_Uacc[g].c_ptr();
     u_ptr = a_U[g].c_ptr();
     mu_ptr = a_Mu[g].c_ptr();
