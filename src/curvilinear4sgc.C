@@ -115,7 +115,13 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
    {
       kstart = 7;
    // SBP Boundary closure terms
-#pragma omp for
+// collapse(2) over (k,j): the closure loops run over only SIX k-iterations, so
+// a bare `omp for` leaves most threads idle -- 25% at 8 threads, 57% at 14,
+// 89% at 56, and the targets here have 112-168 cores per node. The interior
+// loop is also thin (nk-12). Legal: the j bounds do not depend on k, and every
+// iteration writes a distinct lu(c,i,j,k). Numerically inert -- no reduction,
+// so no accumulation order changes.
+#pragma omp for collapse(2)
       for( int k= 1; k <= 6 ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -609,7 +615,7 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 	       lu(3,i,j,k) = a1*lu(3,i,j,k) + sgn*r3*ijac;
 	    }
    }
-#pragma omp for
+#pragma omp for collapse(2)
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -1419,7 +1425,7 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 	 }
    if( onesided[5]==1 )
    {
-#pragma omp for
+#pragma omp for collapse(2)
       for( int k= nk-5; k <= nk ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd

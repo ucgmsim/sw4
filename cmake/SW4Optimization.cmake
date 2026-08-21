@@ -277,3 +277,54 @@ message(STATUS "SW4 target:      ${SW4_RESOLVED_TARGET}  (${_target_note})")
 message(STATUS "SW4 arch flags:  ${SW4_RESOLVED_ARCH_FLAGS}")
 message(STATUS "SW4 opt flags:   ${SW4_RESOLVED_CXX_OPT}")
 message(STATUS "SW4 strict FP:   ${SW4_STRICT_FP}   LTO: ${SW4_LTO}")
+
+# ---------------------------------------------------------------------------
+# 5. Heavily-nested kernels: raise the complete-unroll budget
+# ---------------------------------------------------------------------------
+# The SBP boundary-closure bodies in the curvilinear kernels contain
+# `for(q=1..8){ for(m=1..8){ ... } }`. GCC's complete-unroll pass runs AFTER the
+# vectoriser, and the early pass that could flatten these is gated by
+# --param=max-completely-peeled-insns, default 200 -- far below these bodies. So
+# GCC reports "loop nest containing two or more consecutive inner loops cannot
+# be vectorized" and the closures come out scalar while the interior loops right
+# next to them vectorise fine. innerloop-ani-sgstr-vcc.C comes out entirely
+# scalar: the vectoriser never even reaches its 2nd and 3rd loops.
+#
+# This is the GCC analogue of a documented upstream problem: Johansen et al.,
+# CSE 19(5) 2017 record the Intel compiler "silently aborting its vectorisation
+# pass" on this same code, fixed by overriding optimisation limits. We already
+# pass -qoverride-limits to icpx above; this is the missing GCC counterpart.
+#
+# Measured with -march=znver4 -mprefer-vector-width=512 (200 -> 4000):
+#   curvilinear4sgc.C          zmm  5613 -> 19927   text 120K -> 336K   7.3s -> 34.3s
+#   curvilinear4sgwind.C       zmm  5641 -> 19980   text 123K -> 341K   7.4s -> 34.4s
+#   ilanisocurvc.C             zmm  3859 -> 15395   text 116K -> 326K  11.2s -> 40.7s
+#   innerloop-ani-sgstr-vcc.C  zmm     0 ->  5898   text  21K -> 122K   2.0s -> 14.4s
+#
+# Applied per-source rather than globally: the compile-time and code-size cost
+# is real (~5x on these four files) and there is no reason to pay it on the
+# other ~200 translation units. 2000 was measured to be insufficient; 4000 is
+# enough on both sapphirerapids and znver4.
+#
+# NOT bit-exact under the default -ffp-contract=fast: more unrolling exposes
+# more FMA-contraction opportunities, which shifts results by ~1e-9 relative.
+# That is the one class of deviation this project already treats as
+# architecture-dependent and gates behind SW4_STRICT_FP=ON, under which this
+# option IS bit-identical.
+set(SW4_UNROLL_HEAVY_SOURCES
+    src/curvilinear4sgc.C
+    src/curvilinear4sgwind.C
+    src/ilanisocurvc.C
+    src/innerloop-ani-sgstr-vcc.C)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set(SW4_UNROLL_HEAVY_FLAGS --param=max-completely-peeled-insns=4000)
+else()
+  set(SW4_UNROLL_HEAVY_FLAGS "")   # icpx already gets -qoverride-limits
+endif()
+
+if(SW4_UNROLL_HEAVY_FLAGS AND CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
+  set_source_files_properties(${SW4_UNROLL_HEAVY_SOURCES}
+      PROPERTIES COMPILE_OPTIONS "${SW4_UNROLL_HEAVY_FLAGS}")
+  message(STATUS "SW4 unroll:      ${SW4_UNROLL_HEAVY_FLAGS} on 4 heavily-nested kernels")
+endif()
