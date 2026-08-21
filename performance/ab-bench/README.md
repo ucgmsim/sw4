@@ -93,6 +93,50 @@ refinement interface placed too close to the curvilinear bottom aborts with
 a case or a size, check it at the *coarsest* size you intend to use, since `h`
 grows as `--size` shrinks.
 
+## Submitting on a cluster without giving anyone shell access
+
+`slurm/hpc3-ab.sl` and `slurm/hpc3-comm.sl` are self-contained: copy the repo
+across, `sbatch`, collect the output file. Nothing needs an interactive session,
+which matters where login requires a portal/MFA round trip.
+
+```bash
+# Copy INCLUDING .git -- the harness uses `git worktree` to check out both
+# commits, so a source-only copy cannot work.
+rsync -az --exclude 'build*' --exclude 'ab-*' sw4/ hpc3:~/sw4-ab/
+
+# Single node, per partition. genoa is Zen 4 (AVX-512), milan is Zen 3 (AVX2
+# only) -- a znver4 binary raises SIGILL on milan, so the script derives the
+# build target from the partition rather than guessing.
+sbatch -p genoa performance/ab-bench/slurm/hpc3-ab.sl
+sbatch -p milan performance/ab-bench/slurm/hpc3-ab.sl
+
+# Multi-node, for the halo exchange. Defaults to isolating 5374160 -> 668bd37,
+# where nothing but parallelStuff.C differs.
+sbatch -p genoa performance/ab-bench/slurm/hpc3-comm.sl
+```
+
+The summary is echoed into the job's `.out` file, so the whole result arrives
+without needing to fetch anything. Knobs are environment variables:
+
+```bash
+SIZE=XL REPS=7 sbatch -p genoa performance/ab-bench/slurm/hpc3-ab.sl
+PRECISION=both sbatch -p genoa performance/ab-bench/slurm/hpc3-ab.sl
+STRICT=1 sbatch -p genoa performance/ab-bench/slurm/hpc3-ab.sl   # bit-reproducible
+BASE=23a3410 HEAD_REF=HEAD sbatch -p genoa performance/ab-bench/slurm/hpc3-comm.sl
+```
+
+Module names are the one thing not knowable from outside the site. The scripts
+probe a list of plausible sets (`foss CMake`, `GCC OpenMPI OpenBLAS CMake`, …)
+and verify by looking for `cmake`/`mpicxx`/`gfortran`/`git`/`python3` on PATH
+rather than trusting `module load` exit codes. If none work they print the
+relevant slice of `module avail` and tell you to re-submit with:
+
+```bash
+MODULES='GCC/13.2.0 OpenMPI/4.1.6 CMake/3.27' sbatch -p genoa ...
+```
+
+Uncomment the `--account` line in the header if your site requires one.
+
 ## Platform recipes
 
 ### Target clusters

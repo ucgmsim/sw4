@@ -20,5 +20,9 @@ debug*/
 *.make
 
 
-# ab-bench output
-ab-results-*/
+# ab-bench output. Anchored to the repo root with a leading slash: a bare
+# 'ab-*/' also matches performance/ab-bench, which is the harness itself.
+/ab-results-*/
+/ab-*/
+/sw4-ab-*.out
+/sw4-comm-*.out
