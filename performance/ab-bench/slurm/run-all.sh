@@ -4,12 +4,16 @@
 #
 #   ./performance/ab-bench/slurm/run-all.sh -A nesi00213
 #
-# Jobs are chained with --dependency=afterany within each partition, so no two
-# benchmark jobs ever share a node. That matters: an earlier round had two of
-# our own jobs co-tenant on c006 and another overlapping the 4-node comm job,
-# and for the memory-bound Cartesian cases a neighbour with varying load is
-# exactly the quantity being measured. Serialising costs wall-clock and buys
-# numbers worth reading.
+# Everything is submitted at once. An earlier version chained jobs with
+# --dependency=afterany to stop two of our own runs sharing a node, but that is
+# the wrong trade on a busy cluster: other users' jobs contend regardless, so
+# serialising ours controls almost nothing while multiplying wall-clock. Only
+# --exclusive would actually isolate a run, and a whole free node is rare enough
+# that those jobs effectively never schedule.
+#
+# The mitigation is to measure the noise instead of trying to remove it: the
+# summary now reports each phase's own run-to-run spread, so a contended result
+# announces itself rather than masquerading as signal.
 #
 set -uo pipefail
 
@@ -79,46 +83,73 @@ fi
 
 # ----------------------------------------------------------------- submit ----
 # name | partition | precision | ranks | cpus-per-task | script | extra
+# name | partition | walltime | nodes | ntasks | cpus-per-task | mem | script | env
+#
+# Production settings throughout: the prod cases carry real supergrid absorbing
+# boundaries (gp=30) and attenuation nmech=3, which is what production runs use
+# and what every twilight case silently does not.
+#
+# SIZE=M is 800k points/rank -> nx~234 at 16 ranks. The previous round used
+# SIZE=L (nx=372) on a four-case list and four of six jobs hit the time limit
+# two reps into curvi-mr, having built in 14-89s. This is ~4x less work with 3x
+# the walltime, and the prod cases have no twilight sin/cos so they are much
+# cheaper per point.
+PROD_ENV="CASES=prod,prod-mr SIZE=M STEPS=150 REPS=4"
 MATRIX=(
-  "prod-genoa-sp|$P_GENOA|single|16|4|$AB|"
-  "prod-genoa-dp|$P_GENOA|double|16|4|$AB|"
-  "omp32-genoa-sp|$P_GENOA|single|2|32|$AB|"
-  "comm-genoa-sp|$P_GENOA|single|16|4|$COMM|--nodes=4"
-  "prod-milan-sp|$P_MILAN|single|16|4|$AB|"
-  "prod-milan-dp|$P_MILAN|double|16|4|$AB|"
+  # the headline: production settings, production layout, both precisions
+  "P-gen-sp|$P_GENOA|6:00:00|1|16|4|96G|$AB|$PROD_ENV PRECISION=single RANKS=16"
+  "P-gen-dp|$P_GENOA|6:00:00|1|16|4|96G|$AB|$PROD_ENV PRECISION=double RANKS=16"
+  # AVX2 contrast -- do the gains survive without AVX-512 on production settings?
+  "P-mil-sp|$P_MILAN|6:00:00|1|16|4|96G|$AB|$PROD_ENV PRECISION=single RANKS=16"
+  # layout, same 64 cores as P-gen-sp: does 16x4 still beat 2x32 on production?
+  "P-omp32|$P_GENOA|6:00:00|1|2|32|96G|$AB|$PROD_ENV PRECISION=single RANKS=2"
+  # single-precision correctness. STRICT_FP removes FMA re-contraction and one
+  # thread removes reduction ordering, so this MUST come back bit-exact.
+  # Anything else is a real defect and outranks all remaining optimisation work.
+  "P-strict|$P_GENOA|1:00:00|1|4|1|32G|$AB|CASES=prod,prod-mr SIZE=S STEPS=100 REPS=2 PRECISION=single STRICT=1 RANKS=4 THREADS_OVERRIDE=1"
+  # falsifiable prediction: SG cost was measured INDEPENDENT of gp, because the
+  # sweep covers the whole grid either way. gp=12 and gp=30 should cost the
+  # same. If they differ, the premise behind the windowing work is wrong.
+  "P-sg12|$P_GENOA|3:00:00|1|16|4|96G|$AB|CASES=prod SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS=16 SW4_BENCH_SGGP=12"
+  "P-sg30|$P_GENOA|3:00:00|1|16|4|96G|$AB|CASES=prod SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS=16 SW4_BENCH_SGGP=30"
+  # halo exchange at HEAD across nodes. BASE=e6ccbba pins this to the revert
+  # point so it measures the hand-packing, not the reverted non-blocking attempt
+  # the script default would have compared.
+  "P-comm|$P_GENOA|4:00:00|4|16|4|96G|$COMM|BASE=e6ccbba SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS_PER_NODE=16"
 )
 
 if [ "$DO_SUBMIT" = 1 ]; then
   : > "$STATE"
-  declare -A LASTDEP=()
   echo
-  printf "%-16s %-7s %-7s %-9s %s\n" JOB PART PREC LAYOUT JOBID
+  printf "%-10s %-7s %-6s %-9s %-9s %s\n" JOB PART LAYOUT WALL SIZE JOBID
   for row in "${MATRIX[@]}"; do
-    IFS='|' read -r name part prec ranks cpt script extra <<< "$row"
-    dep="${LASTDEP[$part]:-}"
-    # env vars have to be exported into sbatch's environment, and RANKS vs
-    # RANKS_PER_NODE differs per script, so build the call explicitly
-    rankvar_name=RANKS; [ "$script" = "$COMM" ] && rankvar_name=RANKS_PER_NODE
-    nodes="--nodes=1"; tasks="--ntasks=$ranks"
-    [ -n "$extra" ] && { nodes="$extra"; tasks="--ntasks-per-node=$ranks"; }
-    depflag=(); [ -n "$dep" ] && depflag=(--dependency=afterany:"$dep")
+    IFS='|' read -r name part wall nodes ntasks cpt mem script envs <<< "$row"
+    if [ "$script" = "$COMM" ]; then
+      layout="${nodes}n x${ntasks}x${cpt}"
+      geom=(--nodes="$nodes" --ntasks-per-node="$ntasks" --cpus-per-task="$cpt")
+    else
+      layout="${ntasks}x${cpt}"
+      geom=(--nodes="$nodes" --ntasks="$ntasks" --cpus-per-task="$cpt")
+    fi
+    sz=$(echo "$envs" | grep -o 'SIZE=[A-Z]*' | head -1)
     if [ "$DRY" = 1 ]; then
-      echo "DRY: PRECISION=$prec $rankvar_name=$ranks SIZE=$SIZE sbatch -A $ACCOUNT -p $part -J sw4-$name $nodes $tasks --cpus-per-task=$cpt --mem=$MEM ${depflag[*]} $script"
+      echo "DRY: env $envs ${MODULES_ENV:+MODULES='$MODULES_ENV' }sbatch -A $ACCOUNT -p $part -J sw4-$name -t $wall ${geom[*]} --mem=$mem --hint=nomultithread $script"
       continue
     fi
-    jid=$(env PRECISION="$prec" "$rankvar_name=$ranks" SIZE="$SIZE" REPS="$REPS" \
-              STEPS="$STEPS" ${MODULES_ENV:+MODULES="$MODULES_ENV"} \
-          sbatch --parsable -A "$ACCOUNT" -p "$part" -J "sw4-$name" -t "$WALL" \
-              $nodes $tasks --cpus-per-task="$cpt" --mem="$MEM" --hint=nomultithread \
-              "${depflag[@]}" "$script" 2>&1) || { echo "  SUBMIT FAILED $name: $jid"; continue; }
-    LASTDEP[$part]="$jid"
-    echo "$jid|sw4-$name|$part|$prec|${ranks}x${cpt}" >> "$STATE"
-    printf "%-16s %-7s %-7s %-9s %s\n" "$name" "$part" "$prec" "${ranks}x${cpt}" "$jid"
+    # shellcheck disable=SC2086
+    jid=$(env $envs ${MODULES_ENV:+MODULES="$MODULES_ENV"} \
+          sbatch --parsable -A "$ACCOUNT" -p "$part" -J "sw4-$name" -t "$wall" \
+              "${geom[@]}" --mem="$mem" --hint=nomultithread "$script" 2>&1) \
+      || { echo "  SUBMIT FAILED $name: $jid"; continue; }
+    echo "$jid|sw4-$name|$part|$layout|$sz" >> "$STATE"
+    printf "%-10s %-7s %-6s %-9s %-9s %s\n" "$name" "$part" "$layout" "$wall" "${sz:-}" "$jid"
   done
   [ "$DRY" = 1 ] && exit 0
   echo
-  echo "chained with --dependency=afterany within each partition, so no two"
-  echo "benchmark jobs share a node. state: $STATE"
+  echo "all submitted at once -- no --dependency chaining. Other users' jobs"
+  echo "contend regardless, so serialising ours would cost wall-clock without"
+  echo "buying isolation; the per-phase spread in the summary reports the noise"
+  echo "instead. state: $STATE"
 fi
 
 # ------------------------------------------------------------------ watch ----
@@ -128,7 +159,7 @@ fi
 dash() {
   clear 2>/dev/null || true
   echo "=== sw4 ab-bench $(date '+%F %T') ============================================"
-  printf "%-16s %-7s %-6s %-9s %-10s %s\n" JOB PART PREC LAYOUT STATE RESULT
+  printf "%-14s %-7s %-11s %-8s %-10s %s\n" JOB PART LAYOUT SIZE STATE RESULT
   echo "---------------------------------------------------------------------------------"
   local pending=0
   while IFS='|' read -r jid name part prec layout; do
@@ -164,7 +195,7 @@ print("  ".join(bits) if bits else "running...")
 PYX
 ) || res="(parse error)"
     fi
-    printf "%-16s %-7s %-6s %-9s %-10s %s\n" "${name#sw4-}" "$part" "$prec" "$layout" "$st" "$res"
+    printf "%-14s %-7s %-11s %-8s %-10s %s\n" "${name#sw4-}" "$part" "$layout" "$prec" "$st" "$res"
   done < "$STATE"
   echo "---------------------------------------------------------------------------------"
   echo "$pending job(s) still queued/running.  refresh ${INTERVAL}s.  Ctrl-C to stop watching."
