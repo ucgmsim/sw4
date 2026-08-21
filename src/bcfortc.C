@@ -57,101 +57,126 @@ void EW::bcfort_ci( int ib, int ie, int jb, int je, int kb, int ke, int wind[36]
       {
          size_t idel = 1+wind[1+6*s]-wind[6*s];
          size_t ijdel = idel * (1+wind[3+6*s]-wind[2+6*s]);
-	 if( s== 0 )
+// SW4_BC_GHOSTFILL_THREADED
+      // Ghost-fill for the Dirichlet / supergrid sides, threaded with
+      // collapse(2) over (k,j) on all six sides.
+      //
+      // These were the worst-scaling loops in SW4. Measured on HPC3, the bc
+      // phase degrades 6.5-8.0x going from 16 ranks x 4 threads to 2 ranks x
+      // 32 threads at constant core count; fitting s/P + c/(P*T) to that gives
+      // c/64 ~= 0, i.e. essentially ALL of bc was serial per-rank work. The
+      // source explains it: every one of these six pragmas was commented out,
+      // and the only ACTIVE pragmas in this function are in the bPeriodic
+      // branch, which never executes under the production default boundary
+      // conditions. The threaded loops were the ones that did not run.
+      //
+      // They were disabled in the 2017 Fortran->C conversion because a running
+      // `qq` counter is a loop-carried dependency. That was true only for sides
+      // 4 and 5, where the pragma sat on the j loop; for sides 0-3 it sat on
+      // the k loop and qq was already re-derived from k there, so those four
+      // were disabled unnecessarily.
+      //
+      // Replacing the counter with its closed form removes the dependency and
+      // makes all six uniform:
+      //     qq = (k-k0)*ijdel + (j-j0)*idel + (i-i0)
+      // with idel/ijdel the i- and ij-extents of the window, computed just
+      // above. Exactly equivalent: the counter advanced once per i and was
+      // never reset across j.
+	 if( s == 0 )
 	 {
-	    //#pragma omp parallel for 
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
 		     u[ind  ]      = bforce1[  3*qq];
 		     u[ind+npts]   = bforce1[1+3*qq];
 		     u[ind+2*npts] = bforce1[2+3*qq];
-		     qq++;
 		  }
-               }
-            }
 	 }
-	 else if( s== 1 )
+	 else if( s == 1 )
 	 {
-	    //#pragma omp parallel for
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
-		     u[ind]        = bforce2[  3*qq];
+		     u[ind  ]      = bforce2[  3*qq];
 		     u[ind+npts]   = bforce2[1+3*qq];
 		     u[ind+2*npts] = bforce2[2+3*qq];
-		     qq++;
 		  }
-               }
-            } 
 	 }
-	 else if( s==2 )
+	 else if( s == 2 )
 	 {
-	    //#pragma omp parallel for 
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
-		     u[ind  ] = bforce3[  3*qq];
-		     u[ind+npts] = bforce3[1+3*qq];
+		     u[ind  ]      = bforce3[  3*qq];
+		     u[ind+npts]   = bforce3[1+3*qq];
 		     u[ind+2*npts] = bforce3[2+3*qq];
-		     qq++;
 		  }
-               }
-            }
 	 }
-	 else if( s==3 )
+	 else if( s == 3 )
 	 {
-	    //#pragma omp parallel for 
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
-		     u[ind  ] = bforce4[  3*qq];
-		     u[ind+npts] = bforce4[1+3*qq];
+		     u[ind  ]      = bforce4[  3*qq];
+		     u[ind+npts]   = bforce4[1+3*qq];
 		     u[ind+2*npts] = bforce4[2+3*qq];
-		     qq++;
 		  }
-               }
-            } 
 	 }
-	 else if( s==4 )
+	 else if( s == 4 )
 	 {
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       //#pragma omp parallel for 
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
-		     u[ind  ] = bforce5[  3*qq];
-		     u[ind+npts] = bforce5[1+3*qq];
+		     u[ind  ]      = bforce5[  3*qq];
+		     u[ind+npts]   = bforce5[1+3*qq];
 		     u[ind+2*npts] = bforce5[2+3*qq];
-		     qq++;
 		  }
-               }
-            }
 	 }
-	 else if( s==5 )
+	 else if( s == 5 )
 	 {
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       //#pragma omp parallel for 
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
-		     u[ind  ] = bforce6[  3*qq];
-		     u[ind+npts] = bforce6[1+3*qq];
+		     u[ind  ]      = bforce6[  3*qq];
+		     u[ind+npts]   = bforce6[1+3*qq];
 		     u[ind+2*npts] = bforce6[2+3*qq];
-		     qq++;
 		  }
-               }
-            }
 	 }
       }
       else if( bccnd[s]==bPeriodic )
@@ -248,8 +273,20 @@ void EW::bcfort_ci( int ib, int ie, int jb, int je, int kb, int ke, int wind[36]
 	 if( s==4 && curvilinear == 0 )
 	 {
 	    int k=1, kl=1;
-#pragma omp parallel for 
+// Thread j, vectorise i. These four free-surface loops are the only BC code
+// that actually computes anything (~55 flop/point) and they were neither
+// vectorised nor adequately threaded: an audit measured pkFP=0 / scFP=48 for
+// the body -- fully scalar -- with the pragma on j alone and nothing on i.
+// collapse(2) is deliberately NOT used: it requires a perfectly nested pair, so
+// the simd pragma on the inner loop would break it, and j already spans the
+// whole plane. The body is entirely
+// per-(i,j): qq and ind are derived from the indices, every temporary is local,
+// the inner w loop accumulates into local scalars, and the writes go to the
+// ghost plane at ind-nij*kl while the reads come from interior planes at
+// ind+nij*kl*(w-1) with w>=1, so there is no read-write overlap.
+#pragma omp parallel for
 	    for( int j=jb+2 ; j <= je-2 ; j++ )
+#pragma omp simd
 	       for( int i=ib+2 ; i <= ie-2 ; i++ )
 	       {
 		  size_t qq = i-ib+ni*(j-jb);
@@ -276,8 +313,20 @@ void EW::bcfort_ci( int ib, int ie, int jb, int je, int kb, int ke, int wind[36]
 	 else if( s==5 && curvilinear == 0 )
 	 {
 	    int k=nz, kl=-1;
-#pragma omp parallel for 
+// Thread j, vectorise i. These four free-surface loops are the only BC code
+// that actually computes anything (~55 flop/point) and they were neither
+// vectorised nor adequately threaded: an audit measured pkFP=0 / scFP=48 for
+// the body -- fully scalar -- with the pragma on j alone and nothing on i.
+// collapse(2) is deliberately NOT used: it requires a perfectly nested pair, so
+// the simd pragma on the inner loop would break it, and j already spans the
+// whole plane. The body is entirely
+// per-(i,j): qq and ind are derived from the indices, every temporary is local,
+// the inner w loop accumulates into local scalars, and the writes go to the
+// ghost plane at ind-nij*kl while the reads come from interior planes at
+// ind+nij*kl*(w-1) with w>=1, so there is no read-write overlap.
+#pragma omp parallel for
 	    for( int j=jb+2 ; j <= je-2 ; j++ )
+#pragma omp simd
 	       for( int i=ib+2 ; i <= ie-2 ; i++ )
 	       {
 		  size_t qq = i-ib+ni*(j-jb);
@@ -325,101 +374,126 @@ void EW::bcfortsg_ci( int ib, int ie, int jb, int je, int kb, int ke, int wind[3
       {
          size_t idel = 1+wind[1+6*s]-wind[6*s];
          size_t ijdel = idel * (1+wind[3+6*s]-wind[2+6*s]);
-	 if( s== 0 )
+// SW4_BC_GHOSTFILL_THREADED
+      // Ghost-fill for the Dirichlet / supergrid sides, threaded with
+      // collapse(2) over (k,j) on all six sides.
+      //
+      // These were the worst-scaling loops in SW4. Measured on HPC3, the bc
+      // phase degrades 6.5-8.0x going from 16 ranks x 4 threads to 2 ranks x
+      // 32 threads at constant core count; fitting s/P + c/(P*T) to that gives
+      // c/64 ~= 0, i.e. essentially ALL of bc was serial per-rank work. The
+      // source explains it: every one of these six pragmas was commented out,
+      // and the only ACTIVE pragmas in this function are in the bPeriodic
+      // branch, which never executes under the production default boundary
+      // conditions. The threaded loops were the ones that did not run.
+      //
+      // They were disabled in the 2017 Fortran->C conversion because a running
+      // `qq` counter is a loop-carried dependency. That was true only for sides
+      // 4 and 5, where the pragma sat on the j loop; for sides 0-3 it sat on
+      // the k loop and qq was already re-derived from k there, so those four
+      // were disabled unnecessarily.
+      //
+      // Replacing the counter with its closed form removes the dependency and
+      // makes all six uniform:
+      //     qq = (k-k0)*ijdel + (j-j0)*idel + (i-i0)
+      // with idel/ijdel the i- and ij-extents of the window, computed just
+      // above. Exactly equivalent: the counter advanced once per i and was
+      // never reset across j.
+	 if( s == 0 )
 	 {
-	    //#pragma omp parallel for 
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
 		     u[ind  ]      = bforce1[  3*qq];
 		     u[ind+npts]   = bforce1[1+3*qq];
 		     u[ind+2*npts] = bforce1[2+3*qq];
-		     qq++;
 		  }
-               }
-            }
 	 }
-	 else if( s== 1 )
+	 else if( s == 1 )
 	 {
-	    //#pragma omp parallel for
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
-		     u[ind]        = bforce2[  3*qq];
+		     u[ind  ]      = bforce2[  3*qq];
 		     u[ind+npts]   = bforce2[1+3*qq];
 		     u[ind+2*npts] = bforce2[2+3*qq];
-		     qq++;
 		  }
-               }
-            } 
 	 }
-	 else if( s==2 )
+	 else if( s == 2 )
 	 {
-	    //#pragma omp parallel for 
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
-		     u[ind  ] = bforce3[  3*qq];
-		     u[ind+npts] = bforce3[1+3*qq];
+		     u[ind  ]      = bforce3[  3*qq];
+		     u[ind+npts]   = bforce3[1+3*qq];
 		     u[ind+2*npts] = bforce3[2+3*qq];
-		     qq++;
 		  }
-               }
-            }
 	 }
-	 else if( s==3 )
+	 else if( s == 3 )
 	 {
-	    //#pragma omp parallel for 
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
-		     u[ind  ] = bforce4[  3*qq];
-		     u[ind+npts] = bforce4[1+3*qq];
+		     u[ind  ]      = bforce4[  3*qq];
+		     u[ind+npts]   = bforce4[1+3*qq];
 		     u[ind+2*npts] = bforce4[2+3*qq];
-		     qq++;
 		  }
-               }
-            } 
 	 }
-	 else if( s==4 )
+	 else if( s == 4 )
 	 {
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       //#pragma omp parallel for 
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
-		     u[ind  ] = bforce5[  3*qq];
-		     u[ind+npts] = bforce5[1+3*qq];
+		     u[ind  ]      = bforce5[  3*qq];
+		     u[ind+npts]   = bforce5[1+3*qq];
 		     u[ind+2*npts] = bforce5[2+3*qq];
-		     qq++;
 		  }
-               }
-            }
 	 }
-	 else if( s==5 )
+	 else if( s == 5 )
 	 {
-	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ ) {
-               size_t qq = (k-wind[4+6*s])*ijdel;
-	       //#pragma omp parallel for 
-	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ ) {
+#pragma omp parallel for collapse(2)
+	    for( int k=wind[4+6*s]; k <= wind[5+6*s] ; k++ )
+	       for( int j=wind[2+6*s]; j <= wind[3+6*s] ; j++ )
+#pragma omp simd
 		  for( int i=wind[6*s]; i <= wind[1+6*s] ; i++ ) {
+		     size_t qq  = (size_t)(k-wind[4+6*s])*ijdel
+		                + (size_t)(j-wind[2+6*s])*idel
+		                + (size_t)(i-wind[6*s]);
 		     size_t ind = i-ib+ni*(j-jb)+nij*(k-kb);
-		     u[ind  ] = bforce6[  3*qq];
-		     u[ind+npts] = bforce6[1+3*qq];
+		     u[ind  ]      = bforce6[  3*qq];
+		     u[ind+npts]   = bforce6[1+3*qq];
 		     u[ind+2*npts] = bforce6[2+3*qq];
-		     qq++;
 		  }
-               }
-            }
 	 }
       }
       else if( bccnd[s]==bPeriodic )
@@ -516,8 +590,20 @@ void EW::bcfortsg_ci( int ib, int ie, int jb, int je, int kb, int ke, int wind[3
 	 if( s==4 )
 	 {
 	    int k=1, kl=1;
-#pragma omp parallel for 
+// Thread j, vectorise i. These four free-surface loops are the only BC code
+// that actually computes anything (~55 flop/point) and they were neither
+// vectorised nor adequately threaded: an audit measured pkFP=0 / scFP=48 for
+// the body -- fully scalar -- with the pragma on j alone and nothing on i.
+// collapse(2) is deliberately NOT used: it requires a perfectly nested pair, so
+// the simd pragma on the inner loop would break it, and j already spans the
+// whole plane. The body is entirely
+// per-(i,j): qq and ind are derived from the indices, every temporary is local,
+// the inner w loop accumulates into local scalars, and the writes go to the
+// ghost plane at ind-nij*kl while the reads come from interior planes at
+// ind+nij*kl*(w-1) with w>=1, so there is no read-write overlap.
+#pragma omp parallel for
 	    for( int j=jb+2 ; j <= je-2 ; j++ )
+#pragma omp simd
 	       for( int i=ib+2 ; i <= ie-2 ; i++ )
 	       {
 		  size_t qq = i-ib+ni*(j-jb);
@@ -544,8 +630,20 @@ void EW::bcfortsg_ci( int ib, int ie, int jb, int je, int kb, int ke, int wind[3
 	 else
 	 {
 	    int k=nz, kl=-1;
-#pragma omp parallel for 
+// Thread j, vectorise i. These four free-surface loops are the only BC code
+// that actually computes anything (~55 flop/point) and they were neither
+// vectorised nor adequately threaded: an audit measured pkFP=0 / scFP=48 for
+// the body -- fully scalar -- with the pragma on j alone and nothing on i.
+// collapse(2) is deliberately NOT used: it requires a perfectly nested pair, so
+// the simd pragma on the inner loop would break it, and j already spans the
+// whole plane. The body is entirely
+// per-(i,j): qq and ind are derived from the indices, every temporary is local,
+// the inner w loop accumulates into local scalars, and the writes go to the
+// ghost plane at ind-nij*kl while the reads come from interior planes at
+// ind+nij*kl*(w-1) with w>=1, so there is no read-write overlap.
+#pragma omp parallel for
 	    for( int j=jb+2 ; j <= je-2 ; j++ )
+#pragma omp simd
 	       for( int i=ib+2 ; i <= ie-2 ; i++ )
 	       {
 		  size_t qq  = i-ib+ni*(j-jb);
