@@ -2,6 +2,22 @@
 #SBATCH --job-name=sw4-ab
 #SBATCH --nodes=1
 #SBATCH --exclusive
+#SBATCH --mem=0
+# --mem=0 means "all memory on the node". Without it Slurm applies the site
+# default (512M on NeSI), which is below what a single compile of
+# rhs4th3fortc.C needs at --param=max-completely-peeled-insns=4000 (~513MB
+# peak RSS) -- the build OOMs before any measurement happens.
+#
+# --exclusive alone does NOT get you the node's cores in the allocation on
+# every Slurm configuration: it grants exclusive ACCESS while the allocation
+# still reflects what was requested, so squeue shows CPUS=1 and
+# SLURM_CPUS_ON_NODE reports 1. Pass the core count explicitly at submit time,
+# because it differs per partition and cannot be baked in here:
+#
+#   sbatch -p genoa --ntasks=2 --cpus-per-task=84 ...   # 168-core nodes
+#   sbatch -p milan --ntasks=2 --cpus-per-task=63 ...   # 126-core nodes
+#
+# The script cross-checks and refuses to run a degenerate allocation.
 #SBATCH --time=03:00:00
 #SBATCH --output=sw4-ab-%x-%j.out
 ##SBATCH --account=CHANGE_ME          # uncomment and set if your site requires it
@@ -53,8 +69,29 @@ case "${SLURM_JOB_PARTITION:-}" in
            echo "      -p genoa or -p milan to get a tuned build." ;;
 esac
 
-CORES="${SLURM_CPUS_ON_NODE:-$( (command -v nproc >/dev/null && nproc) || echo 8)}"
+ALLOC="${SLURM_CPUS_ON_NODE:-0}"
+PHYS="$( (command -v nproc >/dev/null && nproc) || echo 8)"
+CORES="$ALLOC"; [ "$CORES" -lt 1 ] && CORES="$PHYS"
 THREADS=$(( CORES / RANKS )); [ "$THREADS" -lt 1 ] && THREADS=1
+
+# A benchmark that silently runs on one core is worse than one that refuses to
+# start: the numbers look plausible and mean nothing. Bail out loudly instead.
+if [ -n "${SLURM_JOB_ID:-}" ] && [ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt 8 ]; then
+  echo
+  echo "REFUSING TO RUN: Slurm allocated only $ALLOC CPU(s) on a node with"
+  echo "$PHYS. --exclusive grants exclusive access but does not necessarily put"
+  echo "the node's cores into the allocation, so timings here would be"
+  echo "meaningless. Re-submit with the core count stated explicitly:"
+  echo
+  echo "  sbatch -p \${SLURM_JOB_PARTITION:-genoa} --ntasks=$RANKS \\"
+  echo "         --cpus-per-task=\$(( $PHYS / $RANKS )) --mem=0 \\"
+  echo "         performance/ab-bench/slurm/hpc3-ab.sl"
+  echo
+  echo "Set FORCE=1 to override and measure on $ALLOC CPU(s) anyway."
+  [ -z "${FORCE:-}" ] && exit 1
+fi
+[ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt "$PHYS" ] && \
+  echo " NOTE: allocation is $ALLOC of $PHYS cores on this node."
 echo " target      $TARGET"
 echo " geometry    ${CORES} cores -> ${RANKS} ranks x ${THREADS} threads"
 echo " case size   $SIZE   reps=$REPS   precision=$PRECISION"

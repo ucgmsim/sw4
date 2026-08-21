@@ -104,15 +104,26 @@ which matters where login requires a portal/MFA round trip.
 # commits, so a source-only copy cannot work.
 rsync -az --exclude 'build*' --exclude 'ab-*' sw4/ hpc3:~/sw4-ab/
 
-# Single node, per partition. genoa is Zen 4 (AVX-512), milan is Zen 3 (AVX2
-# only) -- a znver4 binary raises SIGILL on milan, so the script derives the
-# build target from the partition rather than guessing.
-sbatch -p genoa performance/ab-bench/slurm/hpc3-ab.sl
-sbatch -p milan performance/ab-bench/slurm/hpc3-ab.sl
+# State the layout explicitly. --exclusive grants exclusive ACCESS to the node
+# but on many Slurm configurations the allocation still reflects only what was
+# requested -- squeue then shows CPUS=1 and SLURM_CPUS_ON_NODE reports 1, which
+# would silently benchmark a 168-core node on one core. The scripts refuse to
+# run a sub-8-CPU allocation rather than produce plausible nonsense.
+#
+# Core counts differ per partition and cannot be baked into the script:
+#   HPC3/Mahuika genoa  168 cores  -> --cpus-per-task=84
+#   HPC3/Mahuika milan  126 cores  -> --cpus-per-task=63
+# Check yours with `sinfo -p <partition> -o '%n %c %m'` first.
+
+sbatch -p genoa --ntasks=2 --cpus-per-task=84 --mem=0 \
+       performance/ab-bench/slurm/hpc3-ab.sl
+sbatch -p milan --ntasks=2 --cpus-per-task=63 --mem=0 \
+       performance/ab-bench/slurm/hpc3-ab.sl
 
 # Multi-node, for the halo exchange. Defaults to isolating 5374160 -> 668bd37,
 # where nothing but parallelStuff.C differs.
-sbatch -p genoa performance/ab-bench/slurm/hpc3-comm.sl
+sbatch -p genoa --nodes=4 --ntasks-per-node=2 --cpus-per-task=84 --mem=0 \
+       performance/ab-bench/slurm/hpc3-comm.sl
 ```
 
 The summary is echoed into the job's `.out` file, so the whole result arrives

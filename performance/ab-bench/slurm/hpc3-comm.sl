@@ -2,6 +2,22 @@
 #SBATCH --job-name=sw4-comm
 #SBATCH --nodes=4
 #SBATCH --exclusive
+#SBATCH --mem=0
+# --mem=0 means "all memory on the node". Without it Slurm applies the site
+# default (512M on NeSI), which is below what a single compile of
+# rhs4th3fortc.C needs at --param=max-completely-peeled-insns=4000 (~513MB
+# peak RSS) -- the build OOMs before any measurement happens.
+#
+# --exclusive alone does NOT get you the node's cores in the allocation on
+# every Slurm configuration: it grants exclusive ACCESS while the allocation
+# still reflects what was requested, so squeue shows CPUS=1 and
+# SLURM_CPUS_ON_NODE reports 1. Pass the core count explicitly at submit time,
+# because it differs per partition and cannot be baked in here:
+#
+#   sbatch -p genoa --ntasks=2 --cpus-per-task=84 ...   # 168-core nodes
+#   sbatch -p milan --ntasks=2 --cpus-per-task=63 ...   # 126-core nodes
+#
+# The script cross-checks and refuses to run a degenerate allocation.
 #SBATCH --time=02:00:00
 #SBATCH --output=sw4-comm-%x-%j.out
 ##SBATCH --account=CHANGE_ME
@@ -44,8 +60,22 @@ PRECISION="${PRECISION:-double}"
 RANKS_PER_NODE="${RANKS_PER_NODE:-2}"
 
 NODES="${SLURM_JOB_NUM_NODES:-1}"
-CORES="${SLURM_CPUS_ON_NODE:-$( (command -v nproc >/dev/null && nproc) || echo 8)}"
+ALLOC="${SLURM_CPUS_ON_NODE:-0}"
+PHYS="$( (command -v nproc >/dev/null && nproc) || echo 8)"
+CORES="$ALLOC"; [ "$CORES" -lt 1 ] && CORES="$PHYS"
 THREADS=$(( CORES / RANKS_PER_NODE )); [ "$THREADS" -lt 1 ] && THREADS=1
+
+if [ -n "${SLURM_JOB_ID:-}" ] && [ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt 8 ]; then
+  echo
+  echo "REFUSING TO RUN: only $ALLOC CPU(s) allocated per node (physical: $PHYS)."
+  echo "Re-submit stating the layout explicitly:"
+  echo "  sbatch -p \${SLURM_JOB_PARTITION:-genoa} --nodes=$NODES \\"
+  echo "         --ntasks-per-node=$RANKS_PER_NODE \\"
+  echo "         --cpus-per-task=\$(( $PHYS / $RANKS_PER_NODE )) --mem=0 \\"
+  echo "         performance/ab-bench/slurm/hpc3-comm.sl"
+  echo "Set FORCE=1 to override."
+  [ -z "${FORCE:-}" ] && exit 1
+fi
 
 echo "=================================================================="
 echo " SW4 halo-exchange A/B"
