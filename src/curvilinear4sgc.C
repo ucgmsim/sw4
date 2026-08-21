@@ -121,7 +121,22 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 // loop is also thin (nk-12). Legal: the j bounds do not depend on k, and every
 // iteration writes a distinct lu(c,i,j,k). Numerically inert -- no reduction,
 // so no accumulation order changes.
-#pragma omp for collapse(2)
+// nowait on every omp for in this region. Each loop writes a disjoint slice
+// of lu -- the closures write k=1..6 and k=nk-5..nk while the interior writes
+// k1..k2 (k1=7 when the low closure runs, k2=nk-6 when the high one does), and
+// the fissioned curvilinear interior loops write one output component each --
+// and every loop reads only u/mu/la/met/jac, never another loop's output. So
+// the implicit barrier at the end of each omp for is redundant; the parallel
+// region's own closing barrier is sufficient. Nothing follows the last loop
+// inside the region but #undefs.
+//
+// This matters more than it looks. At equal core count, 16 ranks x 4 threads
+// beat 2 ranks x 32 threads by 1.42-2.34x on total runtime across every case
+// measured on HPC3, and the degradation tracked synchronisation density, not
+// bandwidth: the one phase that is a single long parallel loop was flat while
+// bc, which forks 42 times, degraded 6.5-8.0x. Div-stress carries 3 barriers
+// per Cartesian call and 5 per curvilinear call; this removes all but one.
+#pragma omp for collapse(2) nowait
       for( int k= 1; k <= 6 ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -629,7 +644,7 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 // is compute-bound on every target (AI 32.3 flop/B single against a machine
 // balance of 8.4-24.5), so it has traffic budget to spend. This is the CPU
 // analogue of the loop fission that gave 3x in the published GPU port.
-#pragma omp for collapse(2)
+#pragma omp for collapse(2) nowait
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -926,7 +941,7 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 	    lu(1,i,j,k) = a1*lu(1,i,j,k) + sgn*r1*ijac;
 	 }
 
-#pragma omp for collapse(2)
+#pragma omp for collapse(2) nowait
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -1232,7 +1247,7 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 	    lu(2,i,j,k) = a1*lu(2,i,j,k) + sgn*r2*ijac;
 	 }
 
-#pragma omp for collapse(2)
+#pragma omp for collapse(2) nowait
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -1473,7 +1488,7 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 	 }
    if( onesided[5]==1 )
    {
-#pragma omp for collapse(2)
+#pragma omp for collapse(2) nowait
       for( int k= nk-5; k <= nk ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
