@@ -148,6 +148,41 @@ MODULES='GCC/13.2.0 OpenMPI/4.1.6 CMake/3.27' sbatch -p genoa ...
 
 Uncomment the `--account` line in the header if your site requires one.
 
+## Profiling
+
+`sample-profile.sh` samples a live SW4 run and degrades through whatever the
+site actually permits, recording which method it used next to the numbers:
+
+1. **`perf record`** -- needs `kernel.perf_event_paranoid <= 2`. Best option:
+   real call graphs and hardware counters.
+2. **ptrace poor-man's profiler** (`eu-stack`, else `gdb`) -- needs
+   `kernel.yama.ptrace_scope <= 1`, and at 1 the sampler must be an ancestor of
+   the target, which it is. No perf_event access required.
+3. **SW4's own per-phase timer** -- needs no privileges and is collected
+   regardless of which of the above worked.
+
+Probe first; it costs seconds and tells you whether perf is usable at all:
+
+```bash
+./performance/ab-bench/sample-profile.sh --probe
+PROBE_ONLY=1 sbatch -A nesi00213 -p genoa -t 0:10:00 --ntasks=1 --cpus-per-task=4 \
+  --mem=8G performance/ab-bench/slurm/hpc3-profile.sl
+
+# then the real thing
+sbatch -A nesi00213 -p genoa -t 1:00:00 --ntasks=16 --cpus-per-task=4 --mem=96G \
+  --hint=nomultithread performance/ab-bench/slurm/hpc3-profile.sl
+```
+
+Only rank 0 is sampled -- N concurrent perf sessions on one node distort each
+other and every rank runs the same code. The build uses `RelWithDebInfo` so
+symbols resolve while keeping the Release flags.
+
+`top.txt` is the digest. Template parameters are rendered readably
+(`rhs4th3fort_ci_impl<'='>` rather than `<(char)61>`), argument lists are
+stripped, and unresolved addresses are summed into one line instead of spamming
+the list -- they are usually the OpenMP runtime spinning at a barrier, which is
+worth knowing as an aggregate and useless individually.
+
 ## Platform recipes
 
 ### Target clusters
