@@ -70,10 +70,28 @@ void memvar_pred_fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
    const size_t nij = ni*(jlast-jfirst+1);
    const size_t nijk= nij*(klast-kfirst+1);
    const int base = -ifirst-ni*jfirst-nij*kfirst;
+// collapse(3) over (c,k,j) and simd on i. Two problems here, both measured.
+// The `for c` loop sat OUTSIDE the pragma, so each call opened three teams and
+// swept the grid three times. And the i loop carried no vectorisation
+// assertion: objdump at -march=znver4 -mprefer-vector-width=512 gave 34:25 and
+// 72:102 packed:scalar for memvar_pred/corr -- the corrector more than half
+// scalar, against 2:1 packed for the tuned RHS kernels.
+//
+// These are pure elementwise updates, alp[ind] = f(alm,u,up,um) at the same
+// index with no cross-i dependency, so there is nothing to stop either.
+// collapse(3) is legal because c/k/j are perfectly nested; the simd pragma
+// sits in the body of the innermost collapsed loop, which is allowed (unlike
+// putting it between two loops that collapse itself has to fuse).
+//
+// This matters because attenuation is the production default (nmech=3), which
+// makes Updates ~12% of runtime, and the campaign measured a mild REGRESSION
+// there (0.967x on both production cases, just outside its own spread) -- the
+// one phase that may have been made slightly worse.
+#pragma omp parallel for collapse(3)
    for( int c=0 ; c < 3 ;c++)
-#pragma omp parallel for collapse(2)
       for( int k=k1 ; k <= k2 ; k++)
 	 for( int j=jfirst ; j<= jlast; j++ )
+#pragma omp simd
 	    for( int i=ifirst ; i<= ilast; i++ )
 	    {
 	       size_t ind = base+i+ni*j+nij*k;
@@ -124,10 +142,13 @@ void memvar_corr_fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
    const size_t nij = ni*(jlast-jfirst+1);
    const size_t nijk= nij*(klast-kfirst+1);
    const int base = -ifirst-ni*jfirst-nij*kfirst;
+// collapse(3) over (c,k,j) and simd on i -- see the note on the first
+// occurrence above for why.
+#pragma omp parallel for collapse(3)
    for( int c=0 ; c < 3 ;c++)
-#pragma omp parallel for collapse(2)
       for( int k=k1 ; k <= k2 ; k++)
 	 for( int j=jfirst ; j<= jlast; j++ )
+#pragma omp simd
 	    for( int i=ifirst ; i<= ilast; i++ )
 	    {
 	       size_t ind = base+i+ni*j+nij*k;
@@ -194,10 +215,13 @@ void memvar_corr_fort_wind_ci( int ifirst, int ilast, int jfirst, int jlast, int
    //  real*8 alp(3,ifirst:ilast,jfirst:jlast,kfirst:klast) // different sizes here
    //  real*8 alm(3,d1b:d1e, d2b:d2e, d3b:d3e)
 
+// collapse(3) over (c,k,j) and simd on i -- see the note on the first
+// occurrence above for why.
+#pragma omp parallel for collapse(3)
    for( int c=0 ; c < 3 ;c++)
-#pragma omp parallel for collapse(2)
       for( int k=k1 ; k <= k2 ; k++)
 	 for( int j=jfirst ; j<= jlast; j++ )
+#pragma omp simd
 	    for( int i=ifirst ; i<= ilast; i++ )
 	    {
 	       size_t ind = base+i+ni*j+nij*k;
