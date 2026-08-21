@@ -61,6 +61,18 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 
    if constexpr( OP == '=' )
    {
+      // Threaded. This sits outside the kernel's `#pragma omp parallel` region
+      // and was a plain serial loop writing 3*ni*nj*nk words -- Sarray's own
+      // set_to_zero is threaded, but this open-coded twin was not. Its cost
+      // relative to the parallel region grows linearly with threads per rank,
+      // which is the regime the HPC3 data shows SW4 is actually limited in
+      // (16x4 beats 2x32 by 1.42-2.34x, tracking synchronisation and serial
+      // work rather than bandwidth). Amdahl-fitting the measured cart
+      // 16x4->2x32 divstress ratio puts a serial term of this size at ~13% of
+      // Div-stress at 4 threads/rank and ~54% at 32 -- INFERRED, and exactly
+      // the shape of estimate this campaign has got wrong before, so treat the
+      // magnitude as unverified. The change itself is free and bit-exact.
+#pragma omp parallel for simd
       for(size_t i=0 ; i < static_cast<size_t>((ilast-ifirst+1))*(jlast-jfirst+1)*(klast-kfirst+1)*3; i++)
          a_lu[i]=0;
    }
@@ -918,6 +930,18 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 
    if constexpr( OP == '=' )
    {
+      // Threaded. This sits outside the kernel's `#pragma omp parallel` region
+      // and was a plain serial loop writing 3*ni*nj*nk words -- Sarray's own
+      // set_to_zero is threaded, but this open-coded twin was not. Its cost
+      // relative to the parallel region grows linearly with threads per rank,
+      // which is the regime the HPC3 data shows SW4 is actually limited in
+      // (16x4 beats 2x32 by 1.42-2.34x, tracking synchronisation and serial
+      // work rather than bandwidth). Amdahl-fitting the measured cart
+      // 16x4->2x32 divstress ratio puts a serial term of this size at ~13% of
+      // Div-stress at 4 threads/rank and ~54% at 32 -- INFERRED, and exactly
+      // the shape of estimate this campaign has got wrong before, so treat the
+      // magnitude as unverified. The change itself is free and bit-exact.
+#pragma omp parallel for simd
       for(size_t i=0 ; i < static_cast<size_t>((ilast-ifirst+1))*(jlast-jfirst+1)*(klast-kfirst+1)*3; i++)
          a_lu[i]=0;
    }

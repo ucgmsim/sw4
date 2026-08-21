@@ -436,8 +436,13 @@ void Sarray::side_plane_fortran( int side, int wind[6], int nGhost )
 //-----------------------------------------------------------------------
 void Sarray::set_to_zero()
 {
+// One parallel region, not m_nc of them. The `for c` loop used to sit OUTSIDE
+// the pragma, so zeroing a 3-component array opened three teams and traversed
+// the buffer three times. collapse(3) over (c,k,j) keeps the same thread->memory
+// mapping that the NUMA first-touch alignment depends on -- this function is the
+// first touch for every solution array (solve.C:130) -- while forking once.
+#pragma omp parallel for collapse(3)
    for( int c=1 ; c <= m_nc ; c++ )
-#pragma omp parallel for collapse(2)
       for( int k=m_kb ; k <= m_ke ; k++ )
 	 for( int j=m_jb ; j <= m_je ; j++ )
 #pragma ivdep
