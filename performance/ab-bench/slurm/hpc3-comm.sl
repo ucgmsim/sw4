@@ -70,7 +70,18 @@ NODES="${SLURM_JOB_NUM_NODES:-1}"
 ALLOC="${SLURM_CPUS_ON_NODE:-0}"
 PHYS="$( (command -v nproc >/dev/null && nproc) || echo 8)"
 CORES="$ALLOC"; [ "$CORES" -lt 1 ] && CORES="$PHYS"
-THREADS=$(( CORES / RANKS_PER_NODE )); [ "$THREADS" -lt 1 ] && THREADS=1
+# Prefer what Slurm was actually asked for. Deriving THREADS from
+# SLURM_CPUS_ON_NODE / ranks is wrong whenever --cpus-per-task is given: with
+# SMT enabled (these nodes report 336 and 256 CPUs for 168 and 128 physical
+# cores) that division can come out double the intended thread count and
+# oversubscribe every rank.
+if [ -n "${SLURM_CPUS_PER_TASK:-}" ]; then
+  THREADS="$SLURM_CPUS_PER_TASK"
+else
+  THREADS=$(( CORES / RANKS_PER_NODE ))
+fi
+[ -n "${THREADS_OVERRIDE:-}" ] && THREADS="$THREADS_OVERRIDE"
+[ "$THREADS" -lt 1 ] && THREADS=1
 
 if [ -n "${SLURM_JOB_ID:-}" ] && [ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt 8 ]; then
   echo
