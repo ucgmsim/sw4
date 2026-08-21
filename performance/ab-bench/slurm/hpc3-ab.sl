@@ -57,6 +57,8 @@ BASE="${BASE:-23a3410}"           # last commit before the series
 HEAD_REF="${HEAD_REF:-HEAD}"
 RANKS="${RANKS:-2}"               # one per socket; these nodes are dual-socket
 STRICT="${STRICT:-}"              # set to 1 for a bit-reproducible comparison
+CASES="${CASES:-}"                # override the case list, e.g. prod,prod-mr
+THREADS_OVERRIDE="${THREADS_OVERRIDE:-}"
 
 echo "=================================================================="
 echo " SW4 A/B benchmark"
@@ -245,6 +247,37 @@ ARGS=(--base "$BASE" --head "$HEAD_REF" --target "$TARGET"
       --ranks "$RANKS" --threads "$THREADS"
       --jobs "$CORES" --outdir "$OUT")
 [ -n "$STRICT" ] && ARGS+=(--strict-fp)
+[ -n "$CASES" ] && ARGS+=(--cases "$CASES")
+
+# Walltime sanity. The per-rank sizing means nx grows as cbrt(ranks), so
+# SIZE=L at 16 ranks is a 372^3 grid -- four of six jobs in the previous round
+# died two reps into curvi-mr at exactly that size, having built in 14-89s and
+# completed the other three cases. Warn rather than fail: the estimate is crude
+# and a big allocation may well be fine.
+NCASES=$(echo "${CASES:-cart,cart-mr,curvi,curvi-mr}" | tr ',' '\n' | grep -c .)
+EST=$(python3 -c "
+ppr={'S':2e5,'M':8e5,'L':3.2e6,'XL':1.28e7}['$SIZE']
+# 8.75 ns/pt/step per thread, x2 sides, x reps, x cases; mr cases cost ~4x
+print(int(ppr*$STEPS*8.75e-9*2*$REPS*$NCASES*2.5))" 2>/dev/null || echo 0)
+WALLSEC=$(python3 -c "
+p='${SLURM_JOB_END_TIME:-0}'
+import os,subprocess
+try:
+    o=subprocess.run(['squeue','-h','-j','${SLURM_JOB_ID:-0}','-o','%L'],capture_output=True,text=True).stdout.strip()
+    h,m,sec=0,0,0
+    parts=o.replace('-',':').split(':')
+    parts=[int(x) for x in parts if x.isdigit()]
+    print(sum(v*f for v,f in zip(reversed(parts),[1,60,3600,86400])))
+except Exception: print(0)" 2>/dev/null || echo 0)
+if [ "${EST:-0}" -gt 0 ] && [ "${WALLSEC:-0}" -gt 0 ] && [ "$EST" -gt "$WALLSEC" ]; then
+  echo
+  echo " WARNING: rough estimate ${EST}s of run time against ${WALLSEC}s of walltime"
+  echo "          left. SIZE=$SIZE at $RANKS ranks gives nx~$(python3 -c "print(round((${EST}/1)**0))" 2>/dev/null; true)"
+  echo "          Consider SIZE=M, fewer --reps, or a shorter CASES list. The"
+  echo "          harness writes results.csv incrementally, so a job killed on"
+  echo "          time still yields every case that finished."
+  echo
+fi
 
 # Prefer srun inside a Slurm allocation; the harness detects this itself, but
 # being explicit avoids surprises if the site wraps mpirun.

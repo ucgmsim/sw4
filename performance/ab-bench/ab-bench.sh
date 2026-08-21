@@ -234,7 +234,7 @@ emit_case() {  # $1=name  -> writes $OUTDIR/cases/$1.in
         echo "grid nx=$NX x=30000 y=30000 z=30000"
         echo "time t=$(python3 -c "print(f'{${STEPS}*7.5/(${NX}-1):.6g}')")"
         echo "boundary_conditions"
-        echo "supergrid gp=20"
+        echo "supergrid gp=${SW4_BENCH_SGGP:-30}"
         [ "$n" = prod-curvi ] && echo "topography input=gaussian zmax=6000 order=4 gaussianAmp=1500 gaussianXc=15000 gaussianYc=15000 gaussianLx=6000 gaussianLy=6000"
         [ "$n" = prod-mr ] && echo "refinement zmax=12000"
         echo "block vp=4000 vs=2000 rho=2600 qp=100 qs=50"
