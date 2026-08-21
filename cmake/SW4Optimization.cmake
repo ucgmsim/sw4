@@ -41,16 +41,40 @@ option(SW4_OPT_REPORT
        "Emit vectorisation/optimisation reports at compile time." OFF)
 
 # --- refuse to co-operate with an unsafe user-supplied flag -----------------
+# Check every place a flag can arrive from, not just CMAKE_CXX_FLAGS. The
+# per-configuration variables are where CMake convention actually puts
+# optimisation flags, so a site build script setting
+# CMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -Ofast" was sailing straight past this
+# guard -- the exact scenario it exists to catch. Fortran and the linker are
+# included because -ffast-math there can alter the QUADPACK results and pull in
+# crtfastmath.o, which sets the MXCSR denormals-are-zero and flush-to-zero bits
+# process-wide, affecting the C++ code too.
+set(_sw4_flag_vars
+    CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_RELWITHDEBINFO
+    CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_MINSIZEREL
+    CMAKE_C_FLAGS CMAKE_C_FLAGS_RELEASE CMAKE_C_FLAGS_RELWITHDEBINFO
+    CMAKE_Fortran_FLAGS CMAKE_Fortran_FLAGS_RELEASE
+    CMAKE_EXE_LINKER_FLAGS
+    SW4_ARCH_FLAGS SW4_EXTRA_RELEASE_FLAGS)
+set(_sw4_all_flags "")
+foreach(_v IN LISTS _sw4_flag_vars)
+  string(APPEND _sw4_all_flags " ${${_v}}")
+endforeach()
+string(APPEND _sw4_all_flags " $ENV{CXXFLAGS} $ENV{CFLAGS} $ENV{FFLAGS}")
+
 foreach(_bad_flag "-ffast-math" "-Ofast" "-funsafe-math-optimizations"
-                  "-fassociative-math" "-ffinite-math-only" "-fp-model=fast"
-                  "-fp-model fast")
-  if("${CMAKE_CXX_FLAGS} ${SW4_ARCH_FLAGS} ${SW4_EXTRA_RELEASE_FLAGS}" MATCHES "${_bad_flag}")
+                  "-fassociative-math" "-ffinite-math-only" "-freciprocal-math"
+                  "-fno-honor-nans" "-ffp-contract=fast -ffast-math"
+                  "-fp-model=fast" "-fp-model fast")
+  if("${_sw4_all_flags}" MATCHES "${_bad_flag}")
     message(FATAL_ERROR
-      "${_bad_flag} was requested, but it implies finite-math-only, which folds "
+      "${_bad_flag} was found in one of: ${_sw4_flag_vars}, or in "
+      "CXXFLAGS/CFLAGS/FFLAGS. It implies finite-math-only, which folds "
       "std::isnan() to false and silently disables SW4's NaN guards in "
-      "material.C / ProjectMtrl.C / lbfgs.C. Remove it. If you want maximum "
-      "speed, the flags this module selects are already as aggressive as is "
-      "safe for this code.")
+      "material.C / ProjectMtrl.C / lbfgs.C -- those checks are not made to "
+      "fail loudly, they are deleted. Remove it. If you want maximum speed, "
+      "the flags this module selects are already as aggressive as is safe for "
+      "this code.")
   endif()
 endforeach()
 
