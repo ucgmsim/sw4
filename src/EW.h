@@ -1752,6 +1752,10 @@ vector<CurvilinearInterface2*> m_cli2;
 
 vector<MPI_Datatype> m_send_type1;
 vector<MPI_Datatype> m_send_type3;
+// Contiguous staging buffers for the x-direction halo exchange; see
+// EW::communicate_array in parallelStuff.C for why that direction is packed
+// by hand while the y-direction still uses a derived datatype.
+vector<float_sw4> m_xpack_send, m_xpack_recv;
 vector<MPI_Datatype> m_send_type4; // metric
 vector<MPI_Datatype> m_send_type21; // anisotropic
 MPI_Datatype m_send_type_2dfinest[2];

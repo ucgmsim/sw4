@@ -424,99 +424,116 @@ void EW::setupMPICommunications()
 
 
 //-----------------------------------------------------------------------
+// Pack / unpack one x-direction halo strip of width p starting at column i0
+// into a contiguous buffer. Layout is (c,k,j,i) so the buffer is filled in a
+// single monotonic sweep and both sides agree without any metadata.
+static void pack_x( Sarray& u, int i0, int p, float_sw4* __restrict__ buf )
+{
+   const int jb=u.m_jb, je=u.m_je, kb=u.m_kb, ke=u.m_ke, nc=u.m_nc;
+   const int nj = je-jb+1, nk = ke-kb+1;
+#pragma omp parallel for collapse(2)
+   for( int c=1 ; c <= nc ; c++ )
+      for( int k=kb ; k <= ke ; k++ )
+      {
+	 size_t q = ((size_t)(c-1)*nk + (k-kb))*(size_t)nj*p;
+	 for( int j=jb ; j <= je ; j++ )
+	    for( int i=0 ; i < p ; i++ )
+	       buf[q++] = u(c,i0+i,j,k);
+      }
+}
+
+static void unpack_x( Sarray& u, int i0, int p, const float_sw4* __restrict__ buf )
+{
+   const int jb=u.m_jb, je=u.m_je, kb=u.m_kb, ke=u.m_ke, nc=u.m_nc;
+   const int nj = je-jb+1, nk = ke-kb+1;
+#pragma omp parallel for collapse(2)
+   for( int c=1 ; c <= nc ; c++ )
+      for( int k=kb ; k <= ke ; k++ )
+      {
+	 size_t q = ((size_t)(c-1)*nk + (k-kb))*(size_t)nj*p;
+	 for( int j=jb ; j <= je ; j++ )
+	    for( int i=0 ; i < p ; i++ )
+	       u(c,i0+i,j,k) = buf[q++];
+      }
+}
+
+//-----------------------------------------------------------------------
 void EW::communicate_array( Sarray& u, int grid )
 {
-  // REQUIRE2( 0 <= grid && grid < mU.size() , 
-  // 	    " Error in communicate_array, grid = " << grid );
-   
-   REQUIRE2( u.m_nc == 21 || u.m_nc == 4 || u.m_nc == 3 || u.m_nc == 1, "Communicate array, only implemented for one-, three-, four-, and 21-component arrays"
-	     << " nc = " << u.m_nc );
-   int ie = u.m_ie, ib=u.m_ib, je=u.m_je, jb=u.m_jb, ke=u.m_ke, kb=u.m_kb;
+   REQUIRE2( u.m_nc == 21 || u.m_nc == 4 || u.m_nc == 3 || u.m_nc == 1,
+	     "Communicate array, only implemented for one-, three-, four-, and "
+	     "21-component arrays" << " nc = " << u.m_nc );
+
+   const int ib=u.m_ib, ie=u.m_ie, jb=u.m_jb, je=u.m_je, kb=u.m_kb, ke=u.m_ke;
+   const int nc = u.m_nc, p = m_ppadding;
+   const size_t strip = (size_t)nc * (ke-kb+1) * (je-jb+1) * p;
+   const int xtag1 = 345, xtag2 = 346, ytag1 = 347, ytag2 = 348;
    MPI_Status status;
-   if( u.m_nc == 1 )
+
+// The x- and y-phases MUST stay in this order. The y-direction datatype has
+// blocklength p*ni, spanning the full i-extent including the i-halos, so it is
+// the y-exchange that fills the corner ghost points -- and it can only carry
+// correct corners once the x-exchange has landed.
+
+// ---- x-direction: hand-packed into contiguous buffers -------------------
+// The derived type for this direction is MPI_Type_vector(nc*nj*nk, p, ni):
+// nc*nj*nk blocks of just p=2 elements. For a realistic per-rank grid that is
+// 30,000-60,000 eight-byte blocks, 60-200x more fragmented than the
+// y-direction type for exactly the same data volume, and MPI has to walk that
+// block list on every one of the ~20 exchanges per timestep per grid.
+// Packing into a contiguous buffer with a threaded loop and sending one
+// contiguous message replaces the datatype engine with a parallel copy.
+//
+// This is also why the non-blocking variant in 668bd37 regressed 25-35%: with
+// a type this fragmented, splitting one Sendrecv into Isend+Irecv makes MPI
+// stage a temporary buffer per request instead of one, doubling exactly the
+// work that already dominated. Fix the packing first.
+   if( m_neighbor[0] != MPI_PROC_NULL || m_neighbor[1] != MPI_PROC_NULL )
    {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(ie-(2*m_ppadding-1),jb,kb), 1, m_send_type1[2*grid], m_neighbor[1], xtag1,
-		    &u(ib,jb,kb), 1, m_send_type1[2*grid], m_neighbor[0], xtag1,
+      if( m_xpack_send.size() < strip )
+      {
+	 m_xpack_send.resize(strip);
+	 m_xpack_recv.resize(strip);
+      }
+      float_sw4* sbuf = &m_xpack_send[0];
+      float_sw4* rbuf = &m_xpack_recv[0];
+
+      // high-i interior -> neighbour 1; receive into the low-i halo
+      if( m_neighbor[1] != MPI_PROC_NULL ) pack_x( u, ie-(2*p-1), p, sbuf );
+      MPI_Sendrecv( sbuf, (int)strip, m_mpifloat, m_neighbor[1], xtag1,
+		    rbuf, (int)strip, m_mpifloat, m_neighbor[0], xtag1,
 		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(ib+m_ppadding,jb,kb), 1, m_send_type1[2*grid], m_neighbor[0], xtag2,
-		    &u(ie-(m_ppadding-1),jb,kb), 1, m_send_type1[2*grid], m_neighbor[1], xtag2,
+      // Only unpack if something was actually received. Against MPI_PROC_NULL
+      // the recv is a no-op and rbuf still holds stale data -- the derived-type
+      // version wrote nothing in that case, so unpacking unconditionally would
+      // scribble garbage into a physical-boundary halo.
+      if( m_neighbor[0] != MPI_PROC_NULL ) unpack_x( u, ib, p, rbuf );
+
+      // low-i interior -> neighbour 0; receive into the high-i halo
+      if( m_neighbor[0] != MPI_PROC_NULL ) pack_x( u, ib+p, p, sbuf );
+      MPI_Sendrecv( sbuf, (int)strip, m_mpifloat, m_neighbor[0], xtag2,
+		    rbuf, (int)strip, m_mpifloat, m_neighbor[1], xtag2,
 		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(ib,je-(2*m_ppadding-1),kb), 1, m_send_type1[2*grid+1], m_neighbor[3], ytag1,
-		    &u(ib,jb,kb), 1, m_send_type1[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(ib,jb+m_ppadding,kb), 1, m_send_type1[2*grid+1], m_neighbor[2], ytag2,
-		    &u(ib,je-(m_ppadding-1),kb), 1, m_send_type1[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
+      if( m_neighbor[1] != MPI_PROC_NULL ) unpack_x( u, ie-(p-1), p, rbuf );
    }
-   else if( u.m_nc == 3 )
-   {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(1,ie-(2*m_ppadding-1),jb,kb), 1, m_send_type3[2*grid], m_neighbor[1], xtag1,
-		    &u(1,ib,jb,kb), 1, m_send_type3[2*grid], m_neighbor[0], xtag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib+m_ppadding,jb,kb), 1, m_send_type3[2*grid], m_neighbor[0], xtag2,
-		    &u(1,ie-(m_ppadding-1),jb,kb), 1, m_send_type3[2*grid], m_neighbor[1], xtag2,
-		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(1,ib,je-(2*m_ppadding-1),kb), 1, m_send_type3[2*grid+1], m_neighbor[3], ytag1,
-		    &u(1,ib,jb,kb), 1, m_send_type3[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib,jb+m_ppadding,kb), 1, m_send_type3[2*grid+1], m_neighbor[2], ytag2,
-		    &u(1,ib,je-(m_ppadding-1),kb), 1, m_send_type3[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
-   }
-   else if( u.m_nc == 4 )
-   {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(1,ie-(2*m_ppadding-1),jb,kb), 1, m_send_type4[2*grid], m_neighbor[1], xtag1,
-		    &u(1,ib,jb,kb), 1, m_send_type4[2*grid], m_neighbor[0], xtag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib+m_ppadding,jb,kb), 1, m_send_type4[2*grid], m_neighbor[0], xtag2,
-		    &u(1,ie-(m_ppadding-1),jb,kb), 1, m_send_type4[2*grid], m_neighbor[1], xtag2,
-		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(1,ib,je-(2*m_ppadding-1),kb), 1, m_send_type4[2*grid+1], m_neighbor[3], ytag1,
-		    &u(1,ib,jb,kb), 1, m_send_type4[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib,jb+m_ppadding,kb), 1, m_send_type4[2*grid+1], m_neighbor[2], ytag2,
-		    &u(1,ib,je-(m_ppadding-1),kb), 1, m_send_type4[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
-   }
-   else if( u.m_nc == 21 )
-   {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(1,ie-(2*m_ppadding-1),jb,kb), 1, m_send_type21[2*grid], m_neighbor[1], xtag1,
-		    &u(1,ib,jb,kb), 1, m_send_type21[2*grid], m_neighbor[0], xtag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib+m_ppadding,jb,kb), 1, m_send_type21[2*grid], m_neighbor[0], xtag2,
-		    &u(1,ie-(m_ppadding-1),jb,kb), 1, m_send_type21[2*grid], m_neighbor[1], xtag2,
-		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(1,ib,je-(2*m_ppadding-1),kb), 1, m_send_type21[2*grid+1], m_neighbor[3], ytag1,
-		    &u(1,ib,jb,kb), 1, m_send_type21[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib,jb+m_ppadding,kb), 1, m_send_type21[2*grid+1], m_neighbor[2], ytag2,
-		    &u(1,ib,je-(m_ppadding-1),kb), 1, m_send_type21[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
-   }
+
+// ---- y-direction: keep the derived datatype ----------------------------
+// Here the type is MPI_Type_vector(nc*nk, p*ni, ni*nj) -- a few hundred blocks
+// of p*ni contiguous elements. That is well within what MPI handles
+// efficiently, so it is deliberately left alone rather than churned for
+// uniformity.
+   MPI_Datatype ytype;
+   if(      nc == 1 ) ytype = m_send_type1[2*grid+1];
+   else if( nc == 3 ) ytype = m_send_type3[2*grid+1];
+   else if( nc == 4 ) ytype = m_send_type4[2*grid+1];
+   else               ytype = m_send_type21[2*grid+1];
+
+   MPI_Sendrecv( &u(1,ib,je-(2*p-1),kb), 1, ytype, m_neighbor[3], ytag1,
+		 &u(1,ib,jb,kb),         1, ytype, m_neighbor[2], ytag1,
+		 m_cartesian_communicator, &status );
+   MPI_Sendrecv( &u(1,ib,jb+p,kb),       1, ytype, m_neighbor[2], ytag2,
+		 &u(1,ib,je-(p-1),kb),   1, ytype, m_neighbor[3], ytag2,
+		 m_cartesian_communicator, &status );
 }
 
 //-----------------------------------------------------------------------
