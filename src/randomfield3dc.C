@@ -70,8 +70,12 @@ void EW::randomfield3d_ci( int ifirst, int ilast, int jfirst, int jlast, int kfi
    // Can not use OpenMP for this loop, since it would unsync the random number generator
    for( int k=1-pz ; k <= nkg+gh ; k++ )
       for( int j=1-gh ; j <= njg+gh ; j++ )
-#pragma ivdep
-	 //#pragma simd
+   // No vectorisation pragma here, deliberately. The generator state
+   // (iseed1/2/3) is carried from one iteration to the next, so this loop is
+   // sequential by construction -- the same reason the comment above rules out
+   // OpenMP. #pragma ivdep used to sit here, which asserts the opposite: on
+   // Intel it licenses vectorising an LCG across lanes and desynchronises the
+   // stream. GCC ignored ivdep, which is the only reason this has not bitten.
 	 for( int i=1-gh ; i <= nig+gh ; i++ )
 	 {
    // Random number generator, expanded into loop
@@ -180,8 +184,12 @@ void EW::randomfield3dc_ci( int ifirst, int ilast, int jfirst, int jlast, int kf
    // Can not use OpenMP for this loop, since it would unsync the random number generator
    for( int k=1-pz ; k <= nkg+gh ; k++ )
       for( int j=1-gh ; j <= njg+gh ; j++ )
-#pragma ivdep
-	 //#pragma simd
+   // No vectorisation pragma here, deliberately. The generator state
+   // (iseed1/2/3) is carried from one iteration to the next, so this loop is
+   // sequential by construction -- the same reason the comment above rules out
+   // OpenMP. #pragma ivdep used to sit here, which asserts the opposite: on
+   // Intel it licenses vectorising an LCG across lanes and desynchronises the
+   // stream. GCC ignored ivdep, which is the only reason this has not bitten.
 	 for( int i=1-gh ; i <= nig+gh ; i++ )
 	 {
    // Random number generator, expanded into loop
@@ -253,21 +261,27 @@ void EW::perturbvelocity_ci(int ifirst, int ilast, int jfirst, int jlast, int kf
 			    float_sw4 plimit )
 {
 
-   size_t ind = 0;
+// `ind` used to be a single size_t declared out here and incremented in the
+// inner loop. Declared outside the parallel region it is shared, so every
+// thread raced on the same counter and the perturbation landed on effectively
+// arbitrary grid points. Deriving it from (i,j,k) makes each iteration
+// independent, which is what the omp parallel for already assumed.
+   const size_t ni = static_cast<size_t>(ilast-ifirst+1);
+   const size_t nj = static_cast<size_t>(jlast-jfirst+1);
 #pragma omp parallel for
    for( int k=kfirst ; k <= klast ; k++ )
    {
       float_sw4 A = amp + grad*(zmin + (k-1)*h );
       for( int j=jfirst ; j <= jlast ; j++ )
 #pragma ivdep 
-	 //#pragma simd
+#pragma omp simd
 	 for( int i=ifirst ; i <= ilast ; i++ )
 	 {
+	    const size_t ind = (i-ifirst) + ni*(j-jfirst) + ni*nj*(k-kfirst);
 	    float_sw4 perijk = a_per[ind]>-plimit ? a_per[ind]:-plimit;
 	    perijk = perijk < plimit ? perijk : plimit;
 	    a_vs[ind] *= 1+A*perijk;
 	    a_vp[ind] *= 1+A*perijk;
-	    ind++;
 	 }
    }
 }
@@ -278,19 +292,21 @@ void EW::perturbvelocityc_ci(int ifirst, int ilast, int jfirst, int jlast, int k
 			     float_sw4* __restrict__ a_per, float_sw4 amp, float_sw4 grad, 
 			     float_sw4* a_z, float_sw4 plimit )
 {
-   size_t ind = 0;
+// Same shared-counter race as perturbvelocity_ci above; same fix.
+   const size_t ni = static_cast<size_t>(ilast-ifirst+1);
+   const size_t nj = static_cast<size_t>(jlast-jfirst+1);
 #pragma omp parallel for
    for( int k=kfirst ; k <= klast ; k++ )
       for( int j=jfirst ; j <= jlast ; j++ )
 #pragma ivdep 
-	 //#pragma simd
+#pragma omp simd
 	 for( int i=ifirst ; i <= ilast ; i++ )
 	 {
+	    const size_t ind = (i-ifirst) + ni*(j-jfirst) + ni*nj*(k-kfirst);
 	    float_sw4 A = amp + grad*a_z[ind];
 	    float_sw4 perijk = a_per[ind]>-plimit ? a_per[ind]:-plimit;
 	    perijk = perijk < plimit ? perijk : plimit;
 	    a_vs[ind] *= 1+A*perijk;
 	    a_vp[ind] *= 1+A*perijk;
-	    ind++;
 	 }
 }

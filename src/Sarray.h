@@ -40,6 +40,7 @@
 #include <vector>
 #include <string>
 #include "sw4.h"
+#include <new>
 
 using std::string;
 
@@ -56,7 +57,19 @@ public:
    Sarray( const Sarray& u );
    Sarray( Sarray& u, int nc=-1 );
    Sarray();
-   ~Sarray() {if( m_data != 0 ) delete[] m_data;}
+   ~Sarray() {deallocate( m_data );}
+
+   // Data is allocated 64-byte aligned. glibc's operator new returns pointers
+   // 16 bytes past a page boundary (the malloc chunk header), so plain
+   // new float_sw4[] is only ever 16-byte aligned -- measured, not assumed.
+   // Every 64-byte AVX-512 load from such a base straddles a cache-line
+   // boundary. 64 covers both a zmm register and a cache line on every target
+   // we deploy to. Allocation and deallocation must stay paired: cycleSolution-
+   // Arrays rotates m_data between Um/U/Up via reference(), so a mismatched
+   // deallocator would surface as a corrupt free several timesteps later.
+   static constexpr size_t s_alignment = 64;
+   static float_sw4* allocate( size_t n );
+   static void deallocate( float_sw4*& p );
 //   void define( CartesianProcessGrid* cartcomm, int nc );
    void define( int iend, int jend, int kend );
    void define( int nc, int iend, int jend, int kend );
@@ -87,7 +100,7 @@ public:
 	       << " <= j <= " << m_je << " " << m_kb << " <=  k <= " << m_ke );
 #endif
 //      return m_data[c-1+m_nc*(i-m_ib)+m_nc*m_ni*(j-m_jb)+m_nc*m_ni*m_nj*(k-m_kb)];}
-      return m_data[m_base+m_offc*c+m_offi*i+m_offj*j+m_offk*k];}
+      return m_data[m_base+m_offc*c+i+m_offj*j+m_offk*k];}
    inline float_sw4& operator()( int i, int j, int k )
       {
 #ifdef BZ_DEBUG
@@ -102,19 +115,28 @@ public:
             
 #endif
 //      return m_data[m_nc*(i-m_ib)+m_nc*m_ni*(j-m_jb)+m_nc*m_ni*m_nj*(k-m_kb)];}
-      return m_data[m_base+m_offi*i+m_offj*j+m_offk*k+m_offc];}
+      return m_data[m_base+i+m_offj*j+m_offk*k+m_offc];}
    inline bool is_defined()
       {return m_data != NULL;}
    int m_ib, m_ie, m_jb, m_je, m_kb, m_ke;
-   static bool m_corder;
+   // Fixed at compile time. Nothing ever assigned false: it was initialised
+   // true and EW additionally re-assigned true at startup. Making it constexpr
+   // lets the compiler dead-code the !m_corder halves of the ~28 branches in
+   // Sarray.C, and -- more importantly -- lets the index expressions below
+   // hard-code the unit i-stride instead of multiplying by the runtime member
+   // m_offi (which is always 1 in this ordering). That multiply was costing
+   // 26-32% of the integer multiplies in accessor-heavy translation units.
+   // m_offi is retained because the now-dead !m_corder paths still reference
+   // it; it must stay consistent with the expressions below.
+   static constexpr bool m_corder = true;
    ssize_t m_base;
    size_t m_offi, m_offj, m_offk, m_offc, m_npts;
 //   int index( int i, int j, int k ) {return (i-m_ib)+m_ni*(j-m_jb)+m_ni*m_nj*(k-m_kb);}
-   size_t index( int i, int j, int k ) {return m_base+m_offc+m_offi*i+m_offj*j+m_offk*k;}
+   size_t index( int i, int j, int k ) {return m_base+m_offc+i+m_offj*j+m_offk*k;}
 #ifdef SW4_CUDA
-   __host__ __device__ size_t index( int c, int i, int j, int k ) {return m_base+m_offc*c+m_offi*i+m_offj*j+m_offk*k;}
+   __host__ __device__ size_t index( int c, int i, int j, int k ) {return m_base+m_offc*c+i+m_offj*j+m_offk*k;}
 #else
-   size_t index( int c, int i, int j, int k ) {return m_base+m_offc*c+m_offi*i+m_offj*j+m_offk*k;}
+   size_t index( int c, int i, int j, int k ) {return m_base+m_offc*c+i+m_offj*j+m_offk*k;}
 #endif
    void intersection( int ib, int ie, int jb, int je, int kb, int ke, int wind[6] );
    void side_plane( int side, int wind[6], int nGhost=1 );

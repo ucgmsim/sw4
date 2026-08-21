@@ -605,7 +605,7 @@ EW::EW(const string &fileName, vector<vector<Source *>> &a_GlobalSources,
   // FTNC #endif
   // FTNC   Sarray::m_corder = m_croutines;
 
-  Sarray::m_corder = true;
+  // Sarray::m_corder is now a compile-time constant; see Sarray.h.
   //   m_error_checking = new ErrorChecking();
   // initialize the boundary condition array
   for (int i = 0; i < 6; i++) {

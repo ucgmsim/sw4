@@ -33,11 +33,17 @@
 #include "EW.h"
 
 //-----------------------------------------------------------------------
+// u / mu / la come from three distinct Sarrays, and solve.C:114 allocates each
+// BCForcing[g][side] as its own new float_sw4[], so bforce1..6 are six separate
+// objects. strx/stry are the supergrid stretching arrays, also distinct. None of
+// these can alias, so __restrict__ is a promise the callers actually keep.
+// (For periodic sides a_BCForcing[g][s] is NULL, but those sides are never
+// dereferenced -- restrict only constrains access, not the value.)
 void EW::bcfort_ci( int ib, int ie, int jb, int je, int kb, int ke, int wind[36], 
-		      int nx, int ny, int nz, float_sw4* u, float_sw4 h, boundaryConditionType bccnd[6],
-		      float_sw4 sbop[5], float_sw4* mu, float_sw4* la, float_sw4 t,
-		      float_sw4* bforce1, float_sw4* bforce2, float_sw4* bforce3, 
-		      float_sw4* bforce4, float_sw4* bforce5, float_sw4* bforce6,
+		      int nx, int ny, int nz, float_sw4* __restrict__ u, float_sw4 h, boundaryConditionType bccnd[6],
+		      float_sw4 sbop[5], float_sw4* __restrict__ mu, float_sw4* __restrict__ la, float_sw4 t,
+		      float_sw4* __restrict__ bforce1, float_sw4* __restrict__ bforce2, float_sw4* __restrict__ bforce3, 
+		      float_sw4* __restrict__ bforce4, float_sw4* __restrict__ bforce5, float_sw4* __restrict__ bforce6,
 		    float_sw4 om, float_sw4 ph, float_sw4 cv, int curvilinear )
 {
    const float_sw4 d4a = 2.0/3.0;
@@ -301,12 +307,12 @@ void EW::bcfort_ci( int ib, int ie, int jb, int je, int kb, int ke, int wind[36]
 
 //-----------------------------------------------------------------------
 void EW::bcfortsg_ci( int ib, int ie, int jb, int je, int kb, int ke, int wind[36], 
-		      int nx, int ny, int nz, float_sw4* u, float_sw4 h, boundaryConditionType bccnd[6],
-		      float_sw4 sbop[5], float_sw4* mu, float_sw4* la, float_sw4 t,
-		      float_sw4* bforce1, float_sw4* bforce2, float_sw4* bforce3, 
-		      float_sw4* bforce4, float_sw4* bforce5, float_sw4* bforce6,
+		      int nx, int ny, int nz, float_sw4* __restrict__ u, float_sw4 h, boundaryConditionType bccnd[6],
+		      float_sw4 sbop[5], float_sw4* __restrict__ mu, float_sw4* __restrict__ la, float_sw4 t,
+		      float_sw4* __restrict__ bforce1, float_sw4* __restrict__ bforce2, float_sw4* __restrict__ bforce3, 
+		      float_sw4* __restrict__ bforce4, float_sw4* __restrict__ bforce5, float_sw4* __restrict__ bforce6,
 		      float_sw4 om, float_sw4 ph, float_sw4 cv,
-		      float_sw4* strx, float_sw4* stry )
+		      float_sw4* __restrict__ strx, float_sw4* __restrict__ stry )
 {
    const float_sw4 d4a = 2.0/3.0;
    const float_sw4 d4b = -1.0/12.0;
