@@ -431,92 +431,70 @@ void EW::communicate_array( Sarray& u, int grid )
    
    REQUIRE2( u.m_nc == 21 || u.m_nc == 4 || u.m_nc == 3 || u.m_nc == 1, "Communicate array, only implemented for one-, three-, four-, and 21-component arrays"
 	     << " nc = " << u.m_nc );
-   int ie = u.m_ie, ib=u.m_ib, je=u.m_je, jb=u.m_jb, ke=u.m_ke, kb=u.m_kb;
-   MPI_Status status;
+
+// Pick the pre-committed derived datatype pair for this component count.
+// [2*grid] strides in i (the x-direction halo), [2*grid+1] strides in j.
+   MPI_Datatype xtype, ytype;
    if( u.m_nc == 1 )
    {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(ie-(2*m_ppadding-1),jb,kb), 1, m_send_type1[2*grid], m_neighbor[1], xtag1,
-		    &u(ib,jb,kb), 1, m_send_type1[2*grid], m_neighbor[0], xtag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(ib+m_ppadding,jb,kb), 1, m_send_type1[2*grid], m_neighbor[0], xtag2,
-		    &u(ie-(m_ppadding-1),jb,kb), 1, m_send_type1[2*grid], m_neighbor[1], xtag2,
-		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(ib,je-(2*m_ppadding-1),kb), 1, m_send_type1[2*grid+1], m_neighbor[3], ytag1,
-		    &u(ib,jb,kb), 1, m_send_type1[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(ib,jb+m_ppadding,kb), 1, m_send_type1[2*grid+1], m_neighbor[2], ytag2,
-		    &u(ib,je-(m_ppadding-1),kb), 1, m_send_type1[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
+      xtype = m_send_type1[2*grid];  ytype = m_send_type1[2*grid+1];
    }
    else if( u.m_nc == 3 )
    {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(1,ie-(2*m_ppadding-1),jb,kb), 1, m_send_type3[2*grid], m_neighbor[1], xtag1,
-		    &u(1,ib,jb,kb), 1, m_send_type3[2*grid], m_neighbor[0], xtag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib+m_ppadding,jb,kb), 1, m_send_type3[2*grid], m_neighbor[0], xtag2,
-		    &u(1,ie-(m_ppadding-1),jb,kb), 1, m_send_type3[2*grid], m_neighbor[1], xtag2,
-		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(1,ib,je-(2*m_ppadding-1),kb), 1, m_send_type3[2*grid+1], m_neighbor[3], ytag1,
-		    &u(1,ib,jb,kb), 1, m_send_type3[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib,jb+m_ppadding,kb), 1, m_send_type3[2*grid+1], m_neighbor[2], ytag2,
-		    &u(1,ib,je-(m_ppadding-1),kb), 1, m_send_type3[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
+      xtype = m_send_type3[2*grid];  ytype = m_send_type3[2*grid+1];
    }
    else if( u.m_nc == 4 )
    {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(1,ie-(2*m_ppadding-1),jb,kb), 1, m_send_type4[2*grid], m_neighbor[1], xtag1,
-		    &u(1,ib,jb,kb), 1, m_send_type4[2*grid], m_neighbor[0], xtag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib+m_ppadding,jb,kb), 1, m_send_type4[2*grid], m_neighbor[0], xtag2,
-		    &u(1,ie-(m_ppadding-1),jb,kb), 1, m_send_type4[2*grid], m_neighbor[1], xtag2,
-		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(1,ib,je-(2*m_ppadding-1),kb), 1, m_send_type4[2*grid+1], m_neighbor[3], ytag1,
-		    &u(1,ib,jb,kb), 1, m_send_type4[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib,jb+m_ppadding,kb), 1, m_send_type4[2*grid+1], m_neighbor[2], ytag2,
-		    &u(1,ib,je-(m_ppadding-1),kb), 1, m_send_type4[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
+      xtype = m_send_type4[2*grid];  ytype = m_send_type4[2*grid+1];
    }
-   else if( u.m_nc == 21 )
+   else
    {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(1,ie-(2*m_ppadding-1),jb,kb), 1, m_send_type21[2*grid], m_neighbor[1], xtag1,
-		    &u(1,ib,jb,kb), 1, m_send_type21[2*grid], m_neighbor[0], xtag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib+m_ppadding,jb,kb), 1, m_send_type21[2*grid], m_neighbor[0], xtag2,
-		    &u(1,ie-(m_ppadding-1),jb,kb), 1, m_send_type21[2*grid], m_neighbor[1], xtag2,
-		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(1,ib,je-(2*m_ppadding-1),kb), 1, m_send_type21[2*grid+1], m_neighbor[3], ytag1,
-		    &u(1,ib,jb,kb), 1, m_send_type21[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib,jb+m_ppadding,kb), 1, m_send_type21[2*grid+1], m_neighbor[2], ytag2,
-		    &u(1,ib,je-(m_ppadding-1),kb), 1, m_send_type21[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
+      xtype = m_send_type21[2*grid]; ytype = m_send_type21[2*grid+1];
    }
+
+// u(1,i,j,k) and u(i,j,k) resolve to the same address, so the nc==1 case can
+// use the same four-argument accessor as the rest.
+   const int ib = u.m_ib, ie = u.m_ie, jb = u.m_jb, je = u.m_je, kb = u.m_kb;
+   const int p  = m_ppadding;
+
+   const int xtag1 = 345, xtag2 = 346, ytag1 = 347, ytag2 = 348;
+   MPI_Request req[4];
+
+// The x- and y-phases MUST stay ordered, and the barrier between them is not
+// removable: ytype spans the full i-extent, i-halos included, so it is the
+// y-exchange that fills the corner ghost points -- and it can only carry
+// correct corner values once the x-exchange has landed. Merging all eight
+// transfers into a single Waitall silently corrupts the corners.
+//
+// Within a phase the two transfers are independent: each sends from the
+// interior (offset p from its own edge) and receives into the opposite halo,
+// so neither reads what the other writes. Those can fly concurrently, which is
+// what this buys over four serialized MPI_Sendrecv calls.
+//
+// m_neighbor[] is MPI_PROC_NULL on a physical boundary; non-blocking calls
+// against MPI_PROC_NULL complete immediately, exactly as MPI_Sendrecv did.
+
+// X-direction communication
+   MPI_Irecv( &u(1,ib,jb,kb),           1, xtype, m_neighbor[0], xtag1,
+	      m_cartesian_communicator, &req[0] );
+   MPI_Irecv( &u(1,ie-(p-1),jb,kb),     1, xtype, m_neighbor[1], xtag2,
+	      m_cartesian_communicator, &req[1] );
+   MPI_Isend( &u(1,ie-(2*p-1),jb,kb),   1, xtype, m_neighbor[1], xtag1,
+	      m_cartesian_communicator, &req[2] );
+   MPI_Isend( &u(1,ib+p,jb,kb),         1, xtype, m_neighbor[0], xtag2,
+	      m_cartesian_communicator, &req[3] );
+   MPI_Waitall( 4, req, MPI_STATUSES_IGNORE );
+
+// Y-direction communication
+   MPI_Irecv( &u(1,ib,jb,kb),           1, ytype, m_neighbor[2], ytag1,
+	      m_cartesian_communicator, &req[0] );
+   MPI_Irecv( &u(1,ib,je-(p-1),kb),     1, ytype, m_neighbor[3], ytag2,
+	      m_cartesian_communicator, &req[1] );
+   MPI_Isend( &u(1,ib,je-(2*p-1),kb),   1, ytype, m_neighbor[3], ytag1,
+	      m_cartesian_communicator, &req[2] );
+   MPI_Isend( &u(1,ib,jb+p,kb),         1, ytype, m_neighbor[2], ytag2,
+	      m_cartesian_communicator, &req[3] );
+   MPI_Waitall( 4, req, MPI_STATUSES_IGNORE );
 }
 
 //-----------------------------------------------------------------------
