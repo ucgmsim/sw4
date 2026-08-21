@@ -56,7 +56,7 @@ Options
   --reps N           timed repetitions, interleaved         (default: $REPS)
   --ranks N          MPI ranks                 (default: $RANKS)
   --threads N        OMP_NUM_THREADS           (default: cores/ranks)
-  --cases LIST       comma list from: cart,cart-mr,curvi,curvi-mr,aniso
+  --cases LIST       comma list from: cart,cart-mr,curvi,curvi-mr,prod,prod-curvi,prod-mr,aniso
                      (default: $CASES)
   --launcher CMD     override the MPI launcher, e.g. "srun" or
                      "mpirun --allow-run-as-root --bind-to core"
@@ -172,7 +172,14 @@ emit_case() {  # $1=name  -> writes $OUTDIR/cases/$1.in
   {
     case "$n" in
       cart)
-        # Cartesian + supergrid: rhs4th3fortsgstr_ci interior.
+        # Cartesian, twilight. NOTE: `supergrid gp=20` only TUNES the taper --
+        # it does not enable supergrid. m_use_supergrid flips only when a
+        # boundary condition is bSuperGrid (setupRun.C:2066), and twilight
+        # cases leave the BCs at their all-Dirichlet default. So this case
+        # exercises rhs4th3fort_ci, NOT rhs4th3fortsgstr_ci, and never calls
+        # addSuperGridDamping. Kept as-is because twilight's analytic solution
+        # is the only exact correctness oracle we have; use the prod* cases
+        # below for anything performance-related.
         echo "grid nx=$NX x=1.0 y=1.0 z=1.0"
         echo "time t=$T"
         echo "supergrid gp=20"
@@ -207,6 +214,34 @@ emit_case() {  # $1=name  -> writes $OUTDIR/cases/$1.in
         # the finer ones. At 0.15 the level gets 9 points and SW4 aborts.
         echo "refinement zmax=0.65"
         echo "twilight omega=6.28 phase=0.8 momega=6.28 errorlog=1"
+        ;;
+      prod|prod-curvi|prod-mr)
+        # Production-shaped: point source, real material, and REAL supergrid
+        # absorbing boundaries (a bare `boundary_conditions` line defaults to
+        # bSuperGrid on five sides with a free surface on top -- see
+        # processBoundaryConditions). This is the configuration the twilight
+        # cases silently are not: with it, addSuperGridDamping runs and
+        # evalRHS takes the rhs4th3fortsgstr_ci branch.
+        #
+        # Measured phase split on this case vs a twilight one:
+        #   production: Div-stress 72%  SG 15.5%  Updates 8%   Forcing 2.7%
+        #   twilight:   Div-stress 50%  SG  0.0%  Updates 6%   Forcing 40%
+        # so every phase share quoted from a twilight case is against the
+        # wrong denominator, and two phases production has are absent.
+        #
+        # dt/h = 2.5e-4 for vp=4000 over a 30 km cube (measured: nx=61,
+        # t=1.0 -> 8 steps), hence t = STEPS * 7.5/(nx-1).
+        echo "grid nx=$NX x=30000 y=30000 z=30000"
+        echo "time t=$(python3 -c "print(f'{${STEPS}*7.5/(${NX}-1):.6g}')")"
+        echo "boundary_conditions"
+        echo "supergrid gp=20"
+        [ "$n" = prod-curvi ] && echo "topography input=gaussian zmax=6000 order=4 gaussianAmp=1500 gaussianXc=15000 gaussianYc=15000 gaussianLx=6000 gaussianLy=6000"
+        [ "$n" = prod-mr ] && echo "refinement zmax=12000"
+        echo "block vp=4000 vs=2000 rho=2600"
+        echo "source x=15000 y=15000 z=8000 mxy=1e18 t0=0.36 freq=16.6667 type=Gaussian"
+        for r in 1 2 3; do
+          echo "rec x=$((15000+r*2500)) y=$((15000+r*2000)) z=0 file=st0$r writeEvery=1000000"
+        done
         ;;
       aniso)
         # nc=21 anisotropic path.  No analytic solution, so correctness is
@@ -363,6 +398,12 @@ for p in $PRECISIONS; do
                         printf "%.6f", h*3600+m*60+s}' || true)"
         linf="$(echo "$out" | grep -o 'Linf = *[0-9.eE+-]*' | tail -1 | awk '{print $NF}' || true)"
         l2="$(  echo "$out" | grep -o 'L2 = *[0-9.eE+-]*'   | tail -1 | awk '{print $NF}' || true)"
+        # Production cases have no analytic solution, so hash the recorded
+        # waveforms instead (see sac-hash.py for why the header is skipped).
+        if [ -z "$linf" ]; then
+          linf="$(python3 "$REPO/performance/ab-bench/sac-hash.py" \
+                  "$OUTDIR/run/$c-$p-$side" 2>/dev/null || true)"
+        fi
         if [[ -z "$phases" ]]; then
           FAILED_CASES="${FAILED_CASES}${FAILED_CASES:+ }$c/$p/$side"
           reason="$(echo "$out" | grep -m1 -iE 'precondition violated|error|abort' | cut -c1-140 || true)"
@@ -394,6 +435,7 @@ def f(x):
     except: return None
 
 best = collections.defaultdict(dict)
+allreps = collections.defaultdict(lambda: collections.defaultdict(list))
 norm = collections.defaultdict(list)
 for r in rows:
     k = (r["case"], r["precision"], r["side"])
@@ -401,6 +443,7 @@ for r in rows:
         v = f(r[c])
         if v is not None and v > 0:
             best[k][c] = min(best[k].get(c, 1e18), v)
+            allreps[k][c].append(v)
     if r["linf"] or r["l2"]:
         norm[k].append((r["linf"], r["l2"]))
 
@@ -413,21 +456,30 @@ for (case, prec) in sorted({(r['case'], r['precision']) for r in rows}):
     if not a or not b: continue
 
     # --- noise floor from the phases nothing under test touches --------------
-    devs = [abs(a[c]/b[c] - 1.0) for c in UNTOUCHED if c in a and c in b and b[c] > 1e-6]
-    floor = max(devs) if devs else None
+    # Every phase gets its OWN error bar, because noise scales with how big
+    # the phase is: on a short run a 0.19s phase genuinely varies ~100% between
+    # reps while a 2.6s phase varies a few percent. A single global "noise
+    # floor" taken from the untouched phases was therefore either far too tight
+    # (when they were large) or absurd (+/-99.7% when they were small), and in
+    # both cases it mislabelled real results. The spread below is measured, not
+    # assumed: max over both sides of (max-min)/min across reps.
+    def spread_of(k, c):
+        v = allreps[k].get(c, [])
+        return (max(v)-min(v))/min(v) if len(v) > 1 and min(v) > 0 else None
 
     out.append(hdr); out.append("-"*len(hdr))
     for c in COLS:
         if c in a and c in b and a[c] > 1e-4:
             sp = a[c]/b[c]
-            tag = ""
-            if floor is not None and c not in UNTOUCHED:
-                tag = "  <- within noise" if abs(sp-1.0) <= floor else ""
-            out.append(f"{case:<10} {prec:<7} {c:<12} {a[c]:>10.4g} {b[c]:>10.4g} {sp:>8.3f}{tag}")
-
-    if floor is not None:
-        out.append(f"{'':<10} {'':<7} noise floor: +/-{floor*100:.1f}% "
-                   f"(from {'/'.join(UNTOUCHED)}, which nothing under test changes)")
+            sa = spread_of((case,prec,'base'), c)
+            sb = spread_of((case,prec,'head'), c)
+            band = max([x for x in (sa, sb) if x is not None], default=None)
+            if band is None:
+                out.append(f"{case:<10} {prec:<7} {c:<12} {a[c]:>10.4g} {b[c]:>10.4g} {sp:>8.3f}")
+            else:
+                tag = "  <- within its own +/-%.0f%% spread" % (band*100) \
+                      if abs(sp-1.0) <= band else "   (spread +/-%.0f%%)" % (band*100)
+                out.append(f"{case:<10} {prec:<7} {c:<12} {a[c]:>10.4g} {b[c]:>10.4g} {sp:>8.3f}{tag}")
 
     # --- is the run even long enough to mean anything? -----------------------
     shortest = min([x for x in (a.get("total"), b.get("total")) if x] or [0])
