@@ -113,10 +113,13 @@ if [ -n "${SLURM_JOB_ID:-}" ] && [ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt 8 ]; then
   echo "meaningless. Re-submit with the core count stated explicitly:"
   echo
   echo "  sbatch -p \${SLURM_JOB_PARTITION:-genoa} --ntasks=$RANKS \\"
-  echo "         --cpus-per-task=\$(( $PHYS / $RANKS )) --mem=0 \\"
+  echo "         --cpus-per-task=\$(( $PHYS / $RANKS )) --mem=96G \\"
   echo "         performance/ab-bench/slurm/hpc3-ab.sl"
   echo
-  echo "Set FORCE=1 to override and measure on $ALLOC CPU(s) anyway."
+  echo "Set FORCE=1 to override. That is the right answer for a"
+  echo "correctness-only run -- e.g. STRICT=1 with THREADS_OVERRIDE=1, where the"
+  echo "point is bit-exactness and the timings are irrelevant. This guard exists"
+  echo "to stop meaningless TIMINGS, and it blocked exactly such a job once."
   [ -z "${FORCE:-}" ] && exit 1
 fi
 if [ "$ALLOC" -gt 0 ] && [ "$PHYS" -gt 0 ] && [ "$ALLOC" -lt "$PHYS" ]; then

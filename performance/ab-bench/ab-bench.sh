@@ -405,7 +405,9 @@ for p in $PRECISIONS; do
         linf="$(echo "$out" | grep -o 'Linf = *[0-9.eE+-]*' | tail -1 | awk '{print $NF}' || true)"
         l2="$(  echo "$out" | grep -o 'L2 = *[0-9.eE+-]*'   | tail -1 | awk '{print $NF}' || true)"
         # Production cases have no analytic solution, so hash the recorded
-        # waveforms instead (see sac-hash.py for why the header is skipped).
+        # waveforms (see sac-hash.py for why the header is skipped). The hash
+        # only answers same/different; sac-compare.py below quantifies it in ULP,
+        # which is what actually matters on a single-precision branch.
         if [ -z "$linf" ]; then
           linf="$(python3 "$REPO/performance/ab-bench/sac-hash.py" \
                   "$OUTDIR/run/$c-$p-$side" 2>/dev/null || true)"
@@ -540,6 +542,10 @@ for (case, prec) in sorted({(r['case'], r['precision']) for r in rows}):
                            f"(A Linf={la} L2={l2a} / B Linf={lb} L2={l2b})")
             except Exception:
                 out.append(f"{'':<10} {'':<7} correctness: DIFFERS A=({la},{l2a}) B=({lb},{l2b})")
+        if str(la).startswith("sac"):
+            out.append(f"{'':<10} {'':<7}   run sac-compare.py on the two run/ dirs to "
+                       f"quantify this in ULP -- a hash cannot distinguish "
+                       f"accumulated float rounding from a solver change.")
 
     # --- wall vs total consistency (catches the minutes-format class of bug) --
     for side, d in (("A", a), ("B", b)):

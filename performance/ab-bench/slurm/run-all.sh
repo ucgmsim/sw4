@@ -106,7 +106,7 @@ MATRIX=(
   # single-precision correctness. STRICT_FP removes FMA re-contraction and one
   # thread removes reduction ordering, so this MUST come back bit-exact.
   # Anything else is a real defect and outranks all remaining optimisation work.
-  "P-strict|$P_GENOA|1:00:00|1|4|1|32G|$AB|CASES=prod,prod-mr SIZE=S STEPS=100 REPS=2 PRECISION=single STRICT=1 RANKS=4 THREADS_OVERRIDE=1"
+  "P-strict|$P_GENOA|1:00:00|1|4|1|32G|$AB|CASES=prod,prod-mr SIZE=S STEPS=100 REPS=2 PRECISION=single STRICT=1 RANKS=4 THREADS_OVERRIDE=1 FORCE=1"
   # falsifiable prediction: SG cost was measured INDEPENDENT of gp, because the
   # sweep covers the whole grid either way. gp=12 and gp=30 should cost the
   # same. If they differ, the premise behind the windowing work is wrong.
