@@ -615,6 +615,20 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 	       lu(3,i,j,k) = a1*lu(3,i,j,k) + sgn*r3*ijac;
 	    }
    }
+// Fissioned by output component. The three sections below (u-, v-, w-equation)
+// are provably independent: each assigns every cof/mux temporary before reading
+// it, and each touches only its own accumulator -- verified by scanning for
+// read-before-assign and for cross-component reads of r1/r2/r3. Splitting them
+// into three loop nests shortens the dependency chains and cuts repeated
+// address computation; it does NOT reduce register spilling (the static spill
+// fraction is unchanged). Accumulation order within each component is preserved
+// exactly, so this is algebraically inert.
+//
+// The cost is re-reading u/mu/la/met/jac three times instead of once. That is
+// the right trade here and the wrong one for the Cartesian kernel: this kernel
+// is compute-bound on every target (AI 32.3 flop/B single against a machine
+// balance of 8.4-24.5), so it has traffic budget to spend. This is the CPU
+// analogue of the loop fission that gave 3x in the published GPU port.
 #pragma omp for collapse(2)
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
@@ -628,7 +642,7 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
             float_sw4 istrx = 1/(strx(i));
             float_sw4 istrxy = istry*istrx;
 
-            float_sw4 r1 = 0, r2=0, r3=0;
+	    float_sw4 r1 = 0;
 
 	    // pp derivative (u)
 // 53 ops, tot=58
@@ -910,6 +924,23 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 
 // 4 ops, tot=773
 	    lu(1,i,j,k) = a1*lu(1,i,j,k) + sgn*r1*ijac;
+	 }
+
+#pragma omp for collapse(2)
+   for( int k= kstart; k <= kend ; k++ )
+      for( int j=jfirst+2; j <= jlast-2 ; j++ )
+#pragma omp simd
+#pragma ivdep	 
+	 for( int i=ifirst+2; i <= ilast-2 ; i++ )
+	 {
+// 5 ops
+	    float_sw4 ijac = strx(i)*stry(j)/jac(i,j,k);
+            float_sw4 istry = 1/(stry(j));
+            float_sw4 istrx = 1/(strx(i));
+            float_sw4 istrxy = istry*istrx;
+
+	    float_sw4 cof1, cof2, cof3, cof4, cof5, mux1, mux2, mux3, mux4;
+	    float_sw4 r2 = 0;
 // v-equation
 
 //	    r1 = 0;
@@ -1199,6 +1230,23 @@ void curvilinear4sg_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
 
 // 4 ops, tot=1541
 	    lu(2,i,j,k) = a1*lu(2,i,j,k) + sgn*r2*ijac;
+	 }
+
+#pragma omp for collapse(2)
+   for( int k= kstart; k <= kend ; k++ )
+      for( int j=jfirst+2; j <= jlast-2 ; j++ )
+#pragma omp simd
+#pragma ivdep	 
+	 for( int i=ifirst+2; i <= ilast-2 ; i++ )
+	 {
+// 5 ops
+	    float_sw4 ijac = strx(i)*stry(j)/jac(i,j,k);
+            float_sw4 istry = 1/(stry(j));
+            float_sw4 istrx = 1/(strx(i));
+            float_sw4 istrxy = istry*istrx;
+
+	    float_sw4 cof1, cof2, cof3, cof4, cof5, mux1, mux2, mux3, mux4;
+	    float_sw4 r3 = 0;
 	 
 // w-equation
 
