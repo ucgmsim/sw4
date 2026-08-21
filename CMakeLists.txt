@@ -82,9 +82,14 @@ FortranCInterface_HEADER(FC.h MACRO_NAMESPACE "FC_")
 option(USE_DOUBLE "Use double precision" ON)
 
 set(SW4_ARCH_FLAGS "" CACHE STRING
-    "Architecture-specific compiler flags (e.g. -march=native -mtune=native)")
-set(SW4_EXTRA_RELEASE_FLAGS "-funroll-loops" CACHE STRING
-    "Additional Release-mode optimization flags")
+    "Architecture-specific compiler flags. Leave empty to let SW4_TARGET pick them.")
+set(SW4_EXTRA_RELEASE_FLAGS "" CACHE STRING
+    "Extra Release-mode flags, appended after the ones SW4_TARGET selects.")
+
+# Selects numerically-inert Release flags for the deployment target and the
+# compiler in use. Defines SW4_RESOLVED_ARCH_FLAGS / _CXX_OPT / _FORT_OPT.
+list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+include(SW4Optimization)
 
 file(GLOB SW4_QUADPACK_SRC_FILES CONFIGURE_DEPENDS src/quadpack/*.f)
 
@@ -172,11 +177,17 @@ if(USE_SZ AND SZ_FOUND)
   target_include_directories(sw4_config INTERFACE ${SZ_INCLUDE_DIR})
 endif()
 
+string(JOIN " " SW4_RELEASE_CXX_FLAGS
+    ${SW4_RESOLVED_ARCH_FLAGS} ${SW4_RESOLVED_CXX_OPT} ${SW4_EXTRA_RELEASE_FLAGS})
+string(JOIN " " SW4_RELEASE_FORT_FLAGS
+    ${SW4_RESOLVED_ARCH_FLAGS} ${SW4_RESOLVED_FORT_OPT})
+
 target_compile_options(sw4_config INTERFACE
     "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Debug>>:SHELL:-O0>"
-    "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:SHELL:${SW4_ARCH_FLAGS} ${SW4_EXTRA_RELEASE_FLAGS}>"
-    "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:RelWithDebInfo>>:SHELL:-O3 ${SW4_ARCH_FLAGS}>"
-    "$<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:Release>>:SHELL:${SW4_ARCH_FLAGS}>"
+    "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:SHELL:${SW4_RELEASE_CXX_FLAGS}>"
+    "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:RelWithDebInfo>>:SHELL:-O3 ${SW4_RELEASE_CXX_FLAGS}>"
+    "$<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:Release>>:SHELL:${SW4_RELEASE_FORT_FLAGS}>"
+    "$<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:RelWithDebInfo>>:SHELL:${SW4_RELEASE_FORT_FLAGS}>"
 )
 
 target_link_libraries(sw4_config INTERFACE
