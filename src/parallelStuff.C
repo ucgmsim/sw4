@@ -442,21 +442,6 @@ static void pack_x( Sarray& u, int i0, int p, float_sw4* __restrict__ buf )
       }
 }
 
-static void unpack_x( Sarray& u, int i0, int p, const float_sw4* __restrict__ buf )
-{
-   const int jb=u.m_jb, je=u.m_je, kb=u.m_kb, ke=u.m_ke, nc=u.m_nc;
-   const int nj = je-jb+1, nk = ke-kb+1;
-#pragma omp parallel for collapse(2)
-   for( int c=1 ; c <= nc ; c++ )
-      for( int k=kb ; k <= ke ; k++ )
-      {
-	 size_t q = ((size_t)(c-1)*nk + (k-kb))*(size_t)nj*p;
-	 for( int j=jb ; j <= je ; j++ )
-	    for( int i=0 ; i < p ; i++ )
-	       u(c,i0+i,j,k) = buf[q++];
-      }
-}
-
 //-----------------------------------------------------------------------
 void EW::communicate_array( Sarray& u, int grid )
 {
@@ -475,46 +460,60 @@ void EW::communicate_array( Sarray& u, int grid )
 // the y-exchange that fills the corner ghost points -- and it can only carry
 // correct corners once the x-exchange has landed.
 
-// ---- x-direction: hand-packed into contiguous buffers -------------------
+// ---- x-direction: pack the send, let MPI scatter the receive ------------
 // The derived type for this direction is MPI_Type_vector(nc*nj*nk, p, ni):
-// nc*nj*nk blocks of just p=2 elements. For a realistic per-rank grid that is
-// 30,000-60,000 eight-byte blocks, 60-200x more fragmented than the
-// y-direction type for exactly the same data volume, and MPI has to walk that
-// block list on every one of the ~20 exchanges per timestep per grid.
-// Packing into a contiguous buffer with a threaded loop and sending one
-// contiguous message replaces the datatype engine with a parallel copy.
+// nc*nj*nk blocks of just p=2 elements, which for a realistic per-rank grid is
+// 30,000-60,000 eight-byte blocks -- 60-200x more fragmented than the
+// y-direction type for exactly the same data volume, walked on every one of the
+// ~20 exchanges per timestep per grid.
 //
-// This is also why the non-blocking variant in 668bd37 regressed 25-35%: with
-// a type this fragmented, splitting one Sendrecv into Isend+Irecv makes MPI
-// stage a temporary buffer per request instead of one, doubling exactly the
-// work that already dominated. Fix the packing first.
+// This is asymmetric on purpose, and the reason is measured. Packing BOTH sides
+// (6a29d4b) gained 2.02-2.28x on Comm. on genoa and lost a consistent 0.752x on
+// milan, at two rank counts and on both the plain and refined cases. Counting
+// passes over the halo explains it:
+//
+//   derived type both sides : MPI packs strided->buf, transfers, unpacks
+//                             buf->strided                          = 2 passes
+//   packing both sides      : we pack, MPI memcpys buf->buf, we unpack
+//                                                                   = 3 passes
+//
+// So packing trades memory bandwidth for a shorter descriptor walk. Genoa has
+// ~460 GB/s per socket (12x DDR5-4800) and the trade pays; milan has ~204
+// (8x DDR4-3200), where Comm. is already 30-39% of runtime against genoa's 8%,
+// and the extra pass costs more than the walk saves.
+//
+// Sending from a contiguous buffer while RECEIVING with the derived type gets
+// both: MPI scatters straight from the message into the strided destination, so
+// we are back to 2 passes, and only the receive side walks the block list. MPI
+// permits the mismatch -- send and recv datatypes need matching type
+// signatures, not matching layouts, and `strip` floats is `strip` floats either
+// way.
    if( m_neighbor[0] != MPI_PROC_NULL || m_neighbor[1] != MPI_PROC_NULL )
    {
       if( m_xpack_send.size() < strip )
-      {
 	 m_xpack_send.resize(strip);
-	 m_xpack_recv.resize(strip);
-      }
       float_sw4* sbuf = &m_xpack_send[0];
-      float_sw4* rbuf = &m_xpack_recv[0];
 
-      // high-i interior -> neighbour 1; receive into the low-i halo
+      MPI_Datatype xtype;
+      if(      nc == 1 ) xtype = m_send_type1[2*grid];
+      else if( nc == 3 ) xtype = m_send_type3[2*grid];
+      else if( nc == 4 ) xtype = m_send_type4[2*grid];
+      else               xtype = m_send_type21[2*grid];
+
+      // high-i interior -> neighbour 1; MPI scatters into the low-i halo
       if( m_neighbor[1] != MPI_PROC_NULL ) pack_x( u, ie-(2*p-1), p, sbuf );
       MPI_Sendrecv( sbuf, (int)strip, m_mpifloat, m_neighbor[1], xtag1,
-		    rbuf, (int)strip, m_mpifloat, m_neighbor[0], xtag1,
+		    &u(1,ib,jb,kb), 1, xtype, m_neighbor[0], xtag1,
 		    m_cartesian_communicator, &status );
-      // Only unpack if something was actually received. Against MPI_PROC_NULL
-      // the recv is a no-op and rbuf still holds stale data -- the derived-type
-      // version wrote nothing in that case, so unpacking unconditionally would
-      // scribble garbage into a physical-boundary halo.
-      if( m_neighbor[0] != MPI_PROC_NULL ) unpack_x( u, ib, p, rbuf );
 
-      // low-i interior -> neighbour 0; receive into the high-i halo
+      // low-i interior -> neighbour 0; MPI scatters into the high-i halo
       if( m_neighbor[0] != MPI_PROC_NULL ) pack_x( u, ib+p, p, sbuf );
       MPI_Sendrecv( sbuf, (int)strip, m_mpifloat, m_neighbor[0], xtag2,
-		    rbuf, (int)strip, m_mpifloat, m_neighbor[1], xtag2,
+		    &u(1,ie-(p-1),jb,kb), 1, xtype, m_neighbor[1], xtag2,
 		    m_cartesian_communicator, &status );
-      if( m_neighbor[1] != MPI_PROC_NULL ) unpack_x( u, ie-(p-1), p, rbuf );
+      // No unpack, so no MPI_PROC_NULL guard is needed on the receive side:
+      // against PROC_NULL the receive is a no-op and MPI writes nothing, which
+      // is exactly the old derived-type behaviour.
    }
 
 // ---- y-direction: keep the derived datatype ----------------------------
