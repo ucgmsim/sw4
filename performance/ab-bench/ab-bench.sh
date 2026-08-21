@@ -237,7 +237,13 @@ emit_case() {  # $1=name  -> writes $OUTDIR/cases/$1.in
         echo "supergrid gp=20"
         [ "$n" = prod-curvi ] && echo "topography input=gaussian zmax=6000 order=4 gaussianAmp=1500 gaussianXc=15000 gaussianYc=15000 gaussianLx=6000 gaussianLy=6000"
         [ "$n" = prod-mr ] && echo "refinement zmax=12000"
-        echo "block vp=4000 vs=2000 rho=2600"
+        echo "block vp=4000 vs=2000 rho=2600 qp=100 qs=50"
+        # Attenuation is ON by default in production (the `attenuation` command
+        # defaults to nmech=3, parseInputFile.C:1434) and it reshapes the whole
+        # profile: Div-stress 57% -> 81% of runtime and Updates x4.07, because
+        # each mechanism adds a visco-elastic stencil pass and a memory-variable
+        # sweep. A benchmark without it measures a configuration nobody runs.
+        [ -z "${SW4_BENCH_NOATT:-}" ] && echo "attenuation phasefreq=2.5 nmech=3 maxfreq=15"
         echo "source x=15000 y=15000 z=8000 mxy=1e18 t0=0.36 freq=16.6667 type=Gaussian"
         for r in 1 2 3; do
           echo "rec x=$((15000+r*2500)) y=$((15000+r*2000)) z=0 file=st0$r writeEvery=1000000"
@@ -468,6 +474,16 @@ for (case, prec) in sorted({(r['case'], r['precision']) for r in rows}):
         return (max(v)-min(v))/min(v) if len(v) > 1 and min(v) > 0 else None
 
     out.append(hdr); out.append("-"*len(hdr))
+    # A phase that measures ~0 when the input asked for it is a FINDING, not a
+    # row to hide. Dropping them is how the campaign ran for a whole day against
+    # a benchmark that never enabled supergrid: the SG column was ~2e-05 s in
+    # every single run and the table silently omitted it.
+    zeroed = [c for c in COLS if c not in ("essi","mr","img_tseries")
+              and (a.get(c, 0.0) <= 1e-4 or b.get(c, 0.0) <= 1e-4)]
+    if zeroed:
+        out.append(f"{'':<10} {'':<7} NOTE: phase(s) {'/'.join(zeroed)} measured ~0 -- "
+                   f"that code path is not being exercised by this case. If you "
+                   f"expected it to be, the case is wrong, not the timer.")
     for c in COLS:
         if c in a and c in b and a[c] > 1e-4:
             sp = a[c]/b[c]
