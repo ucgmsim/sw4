@@ -77,7 +77,16 @@ case "${SLURM_JOB_PARTITION:-}" in
 esac
 
 ALLOC="${SLURM_CPUS_ON_NODE:-0}"
-PHYS="$( (command -v nproc >/dev/null && nproc) || echo 8)"
+# nproc reports the cgroup's CPU budget inside a Slurm job, not the node's core
+# count, so on a 64-of-168 allocation it returned 4 and the occupancy line read
+# "64 of 4 cores -- whole node". Ask Slurm for the node's real geometry and keep
+# nproc only as a fallback outside a job.
+PHYS=""
+if command -v scontrol >/dev/null 2>&1 && [ -n "${SLURMD_NODENAME:-}" ]; then
+  PHYS=$(scontrol show node "$SLURMD_NODENAME" 2>/dev/null | tr ' ' '\n' \
+         | awk -F= '/^CoresPerSocket=/{c=$2} /^Sockets=/{s=$2} END{if(c&&s) print c*s}')
+fi
+[ -z "$PHYS" ] && PHYS="$( (command -v nproc >/dev/null && nproc) || echo 8)"
 CORES="$ALLOC"; [ "$CORES" -lt 1 ] && CORES="$PHYS"
 # Prefer what Slurm was actually asked for. Deriving THREADS from
 # SLURM_CPUS_ON_NODE / ranks is wrong whenever --cpus-per-task is given: with
@@ -108,7 +117,7 @@ if [ -n "${SLURM_JOB_ID:-}" ] && [ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt 8 ]; then
   echo "Set FORCE=1 to override and measure on $ALLOC CPU(s) anyway."
   [ -z "${FORCE:-}" ] && exit 1
 fi
-if [ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt "$PHYS" ]; then
+if [ "$ALLOC" -gt 0 ] && [ "$PHYS" -gt 0 ] && [ "$ALLOC" -lt "$PHYS" ]; then
   echo " occupancy   $ALLOC of $PHYS cores -- SHARED NODE"
   echo "             Each core has ~$(( PHYS / ALLOC ))x the memory bandwidth it"
   echo "             would get on a full node, so speedups for the"
@@ -117,8 +126,13 @@ if [ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt "$PHYS" ]; then
   echo "             are compute-bound at any occupancy and transfer directly."
   echo "             Neighbouring jobs also contend for bandwidth, which the"
   echo "             A/B interleaving and min-of-reps mitigate but cannot remove."
+elif [ "$ALLOC" -gt 0 ] && [ "$PHYS" -gt 0 ]; then
+  echo " occupancy   $ALLOC of $PHYS cores -- whole node (bandwidth-saturated;"
+  echo "             these figures should transfer to production)"
 else
-  echo " occupancy   $ALLOC of $PHYS cores -- whole node"
+  echo " occupancy   $ALLOC cpus allocated; node core count undetermined, so the"
+  echo "             shared-vs-saturated caveat cannot be stated -- check by hand"
+  echo "             with: scontrol show node \$SLURMD_NODENAME | grep -o 'CoresPerSocket=[0-9]*'"
 fi
 echo " target      $TARGET"
 echo " geometry    ${CORES} cores -> ${RANKS} ranks x ${THREADS} threads"
