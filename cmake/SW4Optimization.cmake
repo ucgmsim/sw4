@@ -311,11 +311,26 @@ message(STATUS "SW4 strict FP:   ${SW4_STRICT_FP}   LTO: ${SW4_LTO}")
 # That is the one class of deviation this project already treats as
 # architecture-dependent and gates behind SW4_STRICT_FP=ON, under which this
 # option IS bit-identical.
+# rhs4th3fortc.C has the same blocker, from a different construct: multiple
+# CONSECUTIVE for(q=1..8) loops in the one-sided closure bodies rather than a
+# q/m nest (the m-loops there were already hand-unrolled). Same diagnostic, same
+# fix. Verified -march=sapphirerapids -mprefer-vector-width=512, 200 -> 4000:
+#   "cannot be vectorized" diagnostics  24 -> 0   (all four closure loops)
+#   zmm  9069 -> 38336      packed FP  4942 -> 17206
+#   text 351K -> 820K       compile    20.2s -> 73.6s
+# This matters more than it looks. EW.C:1023 turns a closure on for every
+# bRefInterface, so in a mesh-refinement run each Cartesian level has closures
+# on both k-sides, and refinement levels are deliberately thin -- the repo's own
+# performance/MR_OMP/rfile/berkeley-mr-cart.in gives nk of 33, 49 and 30. At
+# those geometries the closures are 68-81% of the kernel call, not a fringe.
+# Note the other Cartesian kernels (rhs4th3windc.C, rhs4th3windc2.C,
+# rhs4th3point.C) do NOT have the blocker and are deliberately not listed.
 set(SW4_UNROLL_HEAVY_SOURCES
     src/curvilinear4sgc.C
     src/curvilinear4sgwind.C
     src/ilanisocurvc.C
-    src/innerloop-ani-sgstr-vcc.C)
+    src/innerloop-ani-sgstr-vcc.C
+    src/rhs4th3fortc.C)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   set(SW4_UNROLL_HEAVY_FLAGS --param=max-completely-peeled-insns=4000)
