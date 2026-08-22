@@ -217,7 +217,8 @@ void setDebugIO(bool onoff) { mDebugIO = onoff; }
   
 //void setDampingCFL(float_sw4 d4_cfl) { m_d4_cfl = d4_cfl; }
 
-void printTime(int cycle, float_sw4 t, double wallclock=-1, bool force=false ) const;
+void printTime(int cycle, float_sw4 t, double wallclock=-1, bool force=false,
+               int cycleFirst=-1, int cycleLast=-1 ) const;
 void printPreamble(vector<Source*> & a_Sources,int event) const;
 void switch_on_checkfornan();
 void switch_on_error_log();

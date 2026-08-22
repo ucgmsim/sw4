@@ -757,15 +757,46 @@ int EW::local_to_global_event(int e) const {
 }
 
 //-----------------------------------------------------------------------
-void EW::printTime(int cycle, float_sw4 t, double wallclock, bool force) const {
+// Format a duration in seconds as DD-HH:MM:SS. The day field carries the
+// overflow, so hours wrap at 24; it is a minimum width rather than a fixed one,
+// so a hypothetical 100+ day projection widens instead of truncating. Rounds to
+// the nearest second, so a 59.7 s estimate does not print as 00-00:00:59 while
+// the next line jumps to 00-00:01:01.
+static void format_eta(double seconds, char* buf, size_t buflen) {
+  if (seconds < 0) seconds = 0;
+  long long total = static_cast<long long>(seconds + 0.5);
+  snprintf(buf, buflen, "%02lld-%02lld:%02lld:%02lld", total / 86400,
+           (total / 3600) % 24, (total / 60) % 60, total % 60);
+}
+
+//-----------------------------------------------------------------------
+void EW::printTime(int cycle, float_sw4 t, double wallclock, bool force,
+                   int cycleFirst, int cycleLast) const {
   if (!mQuiet && proc_zero() &&
       (force || mPrintInterval == 1 || (cycle % mPrintInterval) == 1 ||
        cycle == 1)) {
     // string big enough for >1 million time steps
-    if (wallclock >= 0)
-      printf("Time step %7i  t = %15.7e  wallclock = %10.2f s\n", cycle, t,
-             wallclock);
-    else
+    if (wallclock >= 0) {
+      // Project the time left from the mean cost of the steps run so far.
+      // cycleFirst is where THIS process started stepping, which is not step 1
+      // after a checkpoint restart; wallclock is measured from that same point,
+      // so the two agree and a restarted run is not credited with the time the
+      // previous job spent. The mean absorbs the periodic image and checkpoint
+      // writes, so the estimate converges rather than swinging on the cycles
+      // that happen to do I/O.
+      int stepsDone = cycle - cycleFirst + 1;
+      int stepsLeft = cycleLast - cycle;
+      if (cycleFirst > 0 && stepsDone > 0 && stepsLeft > 0 && wallclock > 0) {
+        char eta[32];
+        format_eta(wallclock / stepsDone * stepsLeft, eta, sizeof(eta));
+        printf("Time step %7i  t = %15.7e  wallclock = %10.2f s  ETA = %s\n",
+               cycle, t, wallclock, eta);
+      } else
+        // No ETA to give: the caller did not supply the step range, or this is
+        // the last step and there is nothing left to project.
+        printf("Time step %7i  t = %15.7e  wallclock = %10.2f s\n", cycle, t,
+               wallclock);
+    } else
       printf("Time step %7i  t = %15.7e\n", cycle, t);
     fflush(stdout);
   }
