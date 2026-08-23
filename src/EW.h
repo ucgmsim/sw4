@@ -218,7 +218,7 @@ void setDebugIO(bool onoff) { mDebugIO = onoff; }
 //void setDampingCFL(float_sw4 d4_cfl) { m_d4_cfl = d4_cfl; }
 
 void printTime(int cycle, float_sw4 t, double wallclock=-1, bool force=false,
-               int cycleFirst=-1, int cycleLast=-1 ) const;
+               int cycleFirst=-1, int cycleLast=-1, float_sw4 maxabs=-1 ) const;
 void printPreamble(vector<Source*> & a_Sources,int event) const;
 void switch_on_checkfornan();
 void switch_on_error_log();
@@ -742,6 +742,7 @@ void smooth_grid( int maxIter );
 void enforceDirichlet5( vector<Sarray> & a_U );
 
 bool check_for_nan( vector<Sarray>& a_U, int verbose, string name );
+bool solution_health( vector<Sarray>& a_U, float_sw4& maxabs ) const;
 
 bool check_for_nan( vector<Sarray*>& a_U, int nmech, int verbose, string name );
 

@@ -952,9 +952,38 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 // increment time
     t += mDt;
 
+// Health check on the printing cadence. One fused pass for max|U| and a
+// non-finite test, then a single collective -- see EW::solution_health. The
+// condition is on currentTimeStep, which is identical on all ranks, so every
+// rank reaches the collective. It mirrors the cadence printTime prints on, so
+// the value is always available for the line about to be written.
+//
+// Up holds the solution just computed; the arrays are not cycled until later.
+    float_sw4 maxabsU = -1;
+    if( mPrintInterval > 0 &&
+        ( mPrintInterval == 1 || (currentTimeStep % mPrintInterval) == 1 ||
+          currentTimeStep == 1 || currentTimeStep == mNumberOfTimeSteps[event] ) )
+    {
+       if( !solution_health( Up, maxabsU ) )
+       {
+          if( proc_zero() )
+          {
+             cout << endl
+                  << "FATAL: the solution contains NaN or Inf at time step "
+                  << currentTimeStep << " (t = " << t << ")." << endl
+                  << "       The run has diverged. Aborting now rather than "
+                  << "spending the rest of the allocation on it." << endl
+                  << "       For the location of the first bad value, rerun "
+                  << "with checkfornan enabled." << endl;
+             cout.flush();
+          }
+          MPI_Abort( MPI_COMM_WORLD, 1 );
+       }
+    }
+
 // periodically, print time stepping info to stdout
     printTime( currentTimeStep, t, MPI_Wtime()-time_start_solve, currentTimeStep == mNumberOfTimeSteps[event],
-               beginCycle, mNumberOfTimeSteps[event] );
+               beginCycle, mNumberOfTimeSteps[event], maxabsU );
     //    printTime( currentTimeStep, t, true );
 
 // Images have to be written before the solution arrays are cycled, because both Up and Um are needed

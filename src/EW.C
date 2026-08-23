@@ -35,6 +35,7 @@
 #include "EW.h"
 #include "GridGenerator.h"
 
+#include <cstdarg>
 #include <cstring>
 
 #include <algorithm>
@@ -771,12 +772,32 @@ static void format_eta(double seconds, char* buf, size_t buflen) {
 
 //-----------------------------------------------------------------------
 void EW::printTime(int cycle, float_sw4 t, double wallclock, bool force,
-                   int cycleFirst, int cycleLast) const {
+                   int cycleFirst, int cycleLast, float_sw4 maxabs) const {
+// mPrintInterval > 0 guards the modulo: printcycle=0 is accepted by the input
+// parser (it only requires >= 0), and 'cycle % 0' is a SIGFPE, not a no-op.
   if (!mQuiet && proc_zero() &&
-      (force || mPrintInterval == 1 || (cycle % mPrintInterval) == 1 ||
-       cycle == 1)) {
+      (force || mPrintInterval == 1 ||
+       (mPrintInterval > 0 && (cycle % mPrintInterval) == 1) || cycle == 1)) {
+// Built up a field at a time rather than as one printf per combination:
+// wallclock, ETA and max|U| are independently present or absent, and the
+// leading fields must stay byte-identical whichever of them appear.
+// 256 is far more than the fields can produce; append() clamps regardless so
+// a future field cannot walk off the end.
+    char line[256];
+    int n = 0;
+    auto append = [&](const char* fmt, ...) {
+      if (n < 0 || n >= (int)sizeof(line)) return;
+      va_list ap;
+      va_start(ap, fmt);
+      int w = vsnprintf(line + n, sizeof(line) - n, fmt, ap);
+      va_end(ap);
+      n = (w < 0 || w >= (int)sizeof(line) - n) ? (int)sizeof(line) - 1 : n + w;
+    };
+
     // string big enough for >1 million time steps
+    append("Time step %7i  t = %15.7e", cycle, static_cast<double>(t));
     if (wallclock >= 0) {
+      append("  wallclock = %10.2f s", wallclock);
       // Project the time left from the mean cost of the steps run so far.
       // cycleFirst is where THIS process started stepping, which is not step 1
       // after a checkpoint restart; wallclock is measured from that same point,
@@ -789,17 +810,50 @@ void EW::printTime(int cycle, float_sw4 t, double wallclock, bool force,
       if (cycleFirst > 0 && stepsDone > 0 && stepsLeft > 0 && wallclock > 0) {
         char eta[32];
         format_eta(wallclock / stepsDone * stepsLeft, eta, sizeof(eta));
-        printf("Time step %7i  t = %15.7e  wallclock = %10.2f s  ETA = %s\n",
-               cycle, t, wallclock, eta);
-      } else
-        // No ETA to give: the caller did not supply the step range, or this is
-        // the last step and there is nothing left to project.
-        printf("Time step %7i  t = %15.7e  wallclock = %10.2f s\n", cycle, t,
-               wallclock);
-    } else
-      printf("Time step %7i  t = %15.7e\n", cycle, t);
+        append("  ETA = %s", eta);
+      }
+      // Otherwise no ETA: the caller gave no step range, or this is the last
+      // step and there is nothing left to project.
+    }
+    if (maxabs >= 0)
+      append("  max|U| = %8.2e", static_cast<double>(maxabs));
+    printf("%s\n", line);
     fflush(stdout);
   }
+}
+
+//-----------------------------------------------------------------------
+// Largest |U| over every grid and every rank, and whether the solution is
+// still finite. Cheap enough to leave on: one pass over the solution on the
+// printing cadence, so at the default printcycle=100 it costs on the order of
+// a hundredth of a percent of the run, against catching a divergence at the
+// step it happens rather than at the wall clock limit.
+//
+// The finite flag rides along in the same MPI_Allreduce as the maximum rather
+// than paying for a second collective -- MPI_MAX over {max|U|, 0 or 1} gives
+// the global maximum and the global OR together.
+//
+// Ghost points are included in the scan. That is safe rather than merely
+// harmless: set_to_zero is the first touch for every solution array
+// (solve.C:133), so no element is ever indeterminate, and thereafter the
+// ghosts hold boundary and halo values of the same solution. Including them
+// also means a NaN is caught in the step it appears, wherever it appears,
+// rather than one exchange later.
+//
+// Collective: every rank must call it. The caller gates on the time step
+// number, which is identical on all ranks.
+bool EW::solution_health(vector<Sarray>& a_U, float_sw4& maxabs) const {
+  float_sw4 local[2] = {0, 0};  // {max|U|, 1 if this rank holds a NaN or Inf}
+  for (int g = 0; g < mNumberOfGrids; g++) {
+    float_sw4 mg = 0;
+    if (!a_U[g].max_abs(mg)) local[1] = 1;
+    local[0] = local[0] > mg ? local[0] : mg;
+  }
+  float_sw4 global[2];
+  MPI_Allreduce(local, global, 2, m_mpifloat, MPI_MAX,
+                m_cartesian_communicator);
+  maxabs = global[0];
+  return global[1] == 0;
 }
 //-----------------------------------------------------------------------
 void EW::printPreamble(vector<Source *> &a_Sources, int event) const {

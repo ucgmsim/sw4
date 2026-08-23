@@ -155,6 +155,7 @@ public:
    float_sw4 minimum( int c=1 );
    float_sw4 sum( int c=1 );
    size_t count_nans();
+   bool max_abs( float_sw4& mx ) const;
    size_t count_nans( int& cfirst, int& ifirst, int& jfirst, int& kfirst );
    size_t check_match_cpu_gpu( EWCuda* cu, string name );
    size_t check_match_cpu_gpu( EWCuda* cu,  int& cfirst, int& ifirst, int& jfirst, int& kfirst, string name );
