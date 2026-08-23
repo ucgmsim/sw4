@@ -58,6 +58,39 @@ void EW::convert_material_to_mulambda( )
 } // end convert_material_to_mulambda
 
 //-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+// Locate the first point on this rank where 'bad' holds, scanning the grids in
+// order. Only ever reached on an error path: the callers test a global min, so
+// on ranks whose subdomain is clean nothing is found and the collective
+// CHECK_INPUTs further down report the failure instead.
+//
+// Serial and early-exit by design. These searches used to be '#pragma omp
+// parallel for' with CHECK_INPUT called from inside the loop, so every thread
+// that landed on a bad point wrote a chained-<< message to cout and called
+// MPI_Abort concurrently. The messages interleaved into unreadable fragments
+// and the racing aborts added a spurious "double free or corruption" and a
+// flex scanner abort on top of the real diagnostic. One point is all the
+// message needs, and finding it is not worth threading on the way to exit.
+template <typename F>
+static bool first_bad_point(int ngrids, const std::vector<int>& istart,
+                            const std::vector<int>& iend,
+                            const std::vector<int>& jstart,
+                            const std::vector<int>& jend,
+                            const std::vector<int>& kstart,
+                            const std::vector<int>& kend, F bad, int& gb,
+                            int& ib, int& jb, int& kb) {
+  for (int g = 0; g < ngrids; g++)
+    for (int k = kstart[g]; k <= kend[g]; k++)
+      for (int j = jstart[g]; j <= jend[g]; j++)
+        for (int i = istart[g]; i <= iend[g]; i++)
+          if (bad(g, i, j, k)) {
+            gb = g; ib = i; jb = j; kb = k;
+            return true;
+          }
+  return false;
+}
+
+
 void EW::check_materials()
 {
 
@@ -185,68 +218,56 @@ void EW::check_materials()
   }
    
 
+// Report the first offending point, once, from outside any parallel region.
+// See first_bad_point above.
+  int gb, ib, jb, kb;
+
   if( mins[0] <= 0.0 )
   {
-    for (int g = 0; g < mNumberOfGrids; g++)
-#pragma omp parallel for
-      for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-	for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	  for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	  {
-	    CHECK_INPUT( mRho[g](i,j,k) > 0., "Density= " << mRho[g](i,j,k)<< " in grid g= " << g << " at point " 
-			  << " (" << i <<","<<j<<","<<k<<") ");
-	  }
+     if( first_bad_point( mNumberOfGrids, m_iStart, m_iEnd, m_jStart, m_jEnd, m_kStart, m_kEnd,
+			  [&]( int g, int i, int j, int k ){ return !(mRho[g](i,j,k) > 0.); },
+			  gb, ib, jb, kb ) )
+	CHECK_INPUT( mRho[gb](ib,jb,kb) > 0., "Density= " << mRho[gb](ib,jb,kb) << " in grid g= " << gb
+		     << " at point " << " (" << ib <<","<<jb<<","<<kb<<") " );
   }
-   
+
   if( mins[3] < 0.0 )
   {
-    for (int g = 0; g < mNumberOfGrids; g++)
-#pragma omp parallel for
-      for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-	for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	  for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	  {
-	    CHECK_INPUT( mMu[g](i,j,k) >= 0., "mu= " << mMu[g](i,j,k)<< " in grid g= " << g << " at point " 
-			  << " (" << i <<","<<j<<","<<k<<") ");
-	  }
+     if( first_bad_point( mNumberOfGrids, m_iStart, m_iEnd, m_jStart, m_jEnd, m_kStart, m_kEnd,
+			  [&]( int g, int i, int j, int k ){ return !(mMu[g](i,j,k) >= 0.); },
+			  gb, ib, jb, kb ) )
+	CHECK_INPUT( mMu[gb](ib,jb,kb) >= 0., "mu= " << mMu[gb](ib,jb,kb) << " in grid g= " << gb
+		     << " at point " << " (" << ib <<","<<jb<<","<<kb<<") " );
   }
+
   if( mins[4] <= 0.0 )
   {
-    for (int g = 0; g < mNumberOfGrids; g++)
-#pragma omp parallel for
-      for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-	for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	  for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	  {
-	     CHECK_INPUT( mLambda[g](i,j,k) >= la_min_fact*mMu[g](i,j,k), "lambda= " << mLambda[g](i,j,k)<< " in grid g= " << g << " at point " 
-			 << " (" << i <<","<<j<<","<<k<<") "<<"mMu="<<mMu[g](i,j,k) );
-	  }
+     if( first_bad_point( mNumberOfGrids, m_iStart, m_iEnd, m_jStart, m_jEnd, m_kStart, m_kEnd,
+			  [&]( int g, int i, int j, int k ){
+			     return !(mLambda[g](i,j,k) >= la_min_fact*mMu[g](i,j,k)); },
+			  gb, ib, jb, kb ) )
+	CHECK_INPUT( mLambda[gb](ib,jb,kb) >= la_min_fact*mMu[gb](ib,jb,kb),
+		     "lambda= " << mLambda[gb](ib,jb,kb) << " in grid g= " << gb
+		     << " at point " << " (" << ib <<","<<jb<<","<<kb<<") " << "mMu=" << mMu[gb](ib,jb,kb) );
   }
+
   if( m_use_attenuation && !m_twilight_forcing)
   {
      if( mins[6] <= 0.0 )
      {
-	for (int g = 0; g < mNumberOfGrids; g++)
-#pragma omp parallel for
-	   for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-	      for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-		 for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-		 {
-		    CHECK_INPUT( mQs[g](i,j,k) >= 0., "Qs= " << mQs[g](i,j,k)<< " in grid g= " << g << " at point " 
-				 << " (" << i <<","<<j<<","<<k<<") ");
-		 }
+	if( first_bad_point( mNumberOfGrids, m_iStart, m_iEnd, m_jStart, m_jEnd, m_kStart, m_kEnd,
+			     [&]( int g, int i, int j, int k ){ return !(mQs[g](i,j,k) >= 0.); },
+			     gb, ib, jb, kb ) )
+	   CHECK_INPUT( mQs[gb](ib,jb,kb) >= 0., "Qs= " << mQs[gb](ib,jb,kb) << " in grid g= " << gb
+			<< " at point " << " (" << ib <<","<<jb<<","<<kb<<") " );
      }
      if( mins[7] <= 0.0 )
      {
-	for (int g = 0; g < mNumberOfGrids; g++)
-#pragma omp parallel for
-	   for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-	      for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-		 for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-		 {
-		    CHECK_INPUT( mQp[g](i,j,k) >= 0., "Qp= " << mQp[g](i,j,k)<< " in grid g= " << g << " at point " 
-				 << " (" << i <<","<<j<<","<<k<<") ");
-		 }
+	if( first_bad_point( mNumberOfGrids, m_iStart, m_iEnd, m_jStart, m_jEnd, m_kStart, m_kEnd,
+			     [&]( int g, int i, int j, int k ){ return !(mQp[g](i,j,k) >= 0.); },
+			     gb, ib, jb, kb ) )
+	   CHECK_INPUT( mQp[gb](ib,jb,kb) >= 0., "Qp= " << mQp[gb](ib,jb,kb) << " in grid g= " << gb
+			<< " at point " << " (" << ib <<","<<jb<<","<<kb<<") " );
      }
   }
 
