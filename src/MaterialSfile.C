@@ -421,7 +421,14 @@ void MaterialSfile::read_sfile()
 
   // ---------- azimuth on file
   double alpha = lonlataz[2], lon0 = lonlataz[0], lat0 = lonlataz[1];
-  CHECK_INPUT( fabs(alpha-mEW->getGridAzimuth()) < sizeof(float) ? 1e-4 : 1e-6, "ERROR: sfile azimuth must be equal "
+// The tolerance follows the working precision -- a single precision build
+// cannot pin the azimuth down more tightly than about 1e-4 degrees. The
+// parentheses matter: '<' binds tighter than '?:', so writing the tolerance
+// inline made this (fabs(..) < sizeof(float)) ? 1e-4 : 1e-6, which is a
+// nonzero double either way and therefore always true. The check silently
+// accepted any azimuth, including a 90 degree mismatch.
+  const double azTol = ( sizeof(float_sw4) == sizeof(float) ) ? 1e-4 : 1e-6;
+  CHECK_INPUT( fabs(alpha-mEW->getGridAzimuth()) < azTol, "ERROR: sfile azimuth must be equal "
                "to coordinate system azimuth" << " azimuth on sfile = " << alpha << 
                " azimuth of coordinate sytem = " << mEW->getGridAzimuth() );
 
