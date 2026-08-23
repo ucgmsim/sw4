@@ -105,6 +105,27 @@ static int sgd_slabs( int i0,int i1, int j0,int j1, int k0,int k1,
 	 sl[n][0]=p; sl[n][1]=q; sl[n][2]=r; sl[n][3]=s; sl[n][4]=t; sl[n][5]=u; n++;
       }
    };
+// The dead box comes from sgd_dead_range, which scans the FULL index range
+// including ghost points, whereas the box swept here is the interior
+// [first+reach, last-reach]. Intersect the two before decomposing. Without
+// this, a dead range reaching the array edge -- the normal case in k, since
+// there is no supergrid damping at the free surface, so dcz is zero there --
+// emits slabs starting at kfirst, and the stencil then reads kfirst-reach,
+// off the front of the array. Clamping cannot change which interior points
+// are swept: it only removes ghost planes that were never in the sweep box.
+   if( dead )
+   {
+      if( ia < i0 ) ia = i0;
+      if( ib > i1 ) ib = i1;
+      if( ja < j0 ) ja = j0;
+      if( jb > j1 ) jb = j1;
+      if( ka < k0 ) ka = k0;
+      if( kb > k1 ) kb = k1;
+// Nothing of the dead box survives inside the sweep box: there is no hole to
+// cut, so fall through to the single full-box slab.
+      if( ia > ib || ja > jb || ka > kb )
+	 dead = false;
+   }
    if( !dead )
    {
       add( k0,k1, j0,j1, i0,i1 );
