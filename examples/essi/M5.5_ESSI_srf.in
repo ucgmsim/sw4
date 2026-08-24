@@ -10,7 +10,11 @@ grid x=6000.0 y=9000.0 z=8000.0 h=40.0 lat=37.815351 lon=-122.265501 az=0.0 mlat
 # time t=20.0 utcstart=01/01/2017:00:00:00.000
 time steps=10 utcstart=01/01/2017:00:00:00.000
 
-supergrid gp=30
+# The SRF fault projection reaches y=1303.7 m, so a 30-point (1200 m) sponge
+# leaves it only 103.7 m = 2.6 grid points clear of the absorbing layer - less
+# than the 5 grid points the moment-tensor and dissipation stencils need. At
+# gp=25 the layer is 1000 m and the nearest subfault clears it by 303.7 m.
+supergrid gp=25
 # block model 1D 
 block z1=0.0 z2=500.0 vp=866.0 vs=500.0 rho=1800 
 block z1=500.0 vp=5196.0 vs=3000.0 rho=2632 

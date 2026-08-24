@@ -141,6 +141,50 @@ def read_essi(fname):
     return data0, data1, data2
 
 
+def verify_supergrid_metadata(fname, sta_names, width_m, width_gp,
+                              require_present=True):
+    """Check the supergrid metadata SW4 writes into a station file.
+
+    SGDEPTH is 0 for a station in the interior, which is a positive statement
+    rather than a default: the datasets are created with H5D_FILL_TIME_NEVER,
+    so an unwritten one reads back as garbage and this catches that mode.
+    width_m/width_gp are the expected file-level SGWIDTH/SGWIDTHGP.
+    require_present=False tolerates their absence, for a restart run whose
+    output file was created by an earlier invocation.
+    """
+    fid = h5py.File(fname, 'r')
+    ok = True
+    try:
+        have = 'SGWIDTH' in fid and 'SGWIDTHGP' in fid
+        if not have:
+            if require_present:
+                print('Supergrid metadata: file-level SGWIDTH/SGWIDTHGP missing')
+                return False
+            return True
+        got_m = float(np.array(fid['SGWIDTH']).squeeze())
+        got_gp = float(np.array(fid['SGWIDTHGP']).squeeze())
+        if abs(got_m - width_m) > 1e-6 * max(1.0, abs(width_m)):
+            print('Supergrid metadata: SGWIDTH = %g, expected %g' % (got_m, width_m))
+            ok = False
+        if abs(got_gp - width_gp) > 1e-6 * max(1.0, abs(width_gp)):
+            print('Supergrid metadata: SGWIDTHGP = %g, expected %g' % (got_gp, width_gp))
+            ok = False
+        for sta in sta_names:
+            grp = fid[sta]
+            for name in ('SGDEPTH', 'SGDEPTHGP'):
+                if name not in grp:
+                    print('Supergrid metadata: [%s/%s] missing' % (sta, name))
+                    ok = False
+                    continue
+                val = float(np.array(grp[name]).squeeze())
+                if val != 0.0:
+                    print('Supergrid metadata: [%s/%s] = %g, expected 0 (all ten '
+                          'loh1 stations are in the interior)' % (sta, name, val))
+                    ok = False
+    finally:
+        fid.close()
+    return ok
+
 def verify(pytest_dir, tolerance):
     ref_dir = pytest_dir + '/hdf5/loh1-h100-mr-1/'
     hdf5_dir = os.getcwd() + '/loh1-h100-mr-1-hdf5/'
@@ -174,6 +218,12 @@ def verify(pytest_dir, tolerance):
 
     # if verify == 1:
     #     print ('All %d stations data match!' % nsta)
+
+    # h=200, supergrid gp=30 -> a 6000 m layer, 30 grid points.
+    if not verify_supergrid_metadata(hdf5_fname,
+                                     ['sta%02d' % i for i in range(1, 11)],
+                                     6000.0, 30.0):
+        return False
 
     nimg = 0
     for filename in os.listdir(ref_dir):
@@ -264,6 +314,13 @@ def verify_sac_image(pytest_dir, tolerance):
 
     # if verify == 1:
     #     print ('All %d stations data match!' % nsta)
+
+    # Same geometry; tolerate absent metadata because the restart case reuses a
+    # station file created by an earlier invocation.
+    if not verify_supergrid_metadata(hdf5_fname,
+                                     ['sta%02d' % i for i in range(1, 11)],
+                                     6000.0, 30.0, require_present=False):
+        return False
 
     nimg = 0
     for filename in os.listdir(ref_dir):

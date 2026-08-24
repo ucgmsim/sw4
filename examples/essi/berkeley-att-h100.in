@@ -21,6 +21,11 @@ rfile filename=berkeley.rfile
 # threshold on vp and vs
 globalmaterial vsmin=500 vpmin=768
 
+# The default 30-point sponge is 3000 m at h=100, which puts the source at
+# (2500,2500) 500 m INSIDE both the x=0 and y=0 absorbing layers. 15 points
+# (1500 m) leaves it 1000 m = 10 grid points clear, twice the stencil margin.
+supergrid gp=15
+
 # wave speeds are specified at 1.0 Hz, 3 viscoelastic mechanisms (the default)
 attenuation phasefreq=1.0 nmech=3 maxfreq=10
 

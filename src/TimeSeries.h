@@ -87,6 +87,22 @@ float_sw4 getX() const {return mX;}
 float_sw4 getY() const {return mY;}
 float_sw4 getZ() const {return mZ;}
 
+// The grid point the station is actually recorded at, which is what the
+// supergrid predicate must be evaluated on - not the requested location.
+float_sw4 getGPX() const {return mGPX;}
+float_sw4 getGPY() const {return mGPY;}
+float_sw4 getGPZ() const {return mGPZ;}
+
+// Cached result of is_in_supergrid_layer(), so the SAC/USGS/HDF5 writers need
+// no round trip to EW. Three states, matching the downstream convention:
+// 0.0 = interior (clean), > 0 = inside the layer, and 'absent' is the reader's
+// problem, never written here.
+float_sw4 getSupergridDepth() const {return m_sg_depth;}
+int getSupergridDepthGP() const {return m_sg_depth_gp;}
+// The run's absorbing-layer width, for the file-level SGWIDTH/SGWIDTHGP
+// scalars. Returns false when the run has no supergrid at all.
+bool getSupergridWidth( double& width_m, double& width_gp ) const;
+
 float_sw4 getZtopo() const {return m_zTopo;}
 bool getZtype() const {return m_zRelativeToTopography;}
 float_sw4 getStartTime() const { return m_t0;}
@@ -170,14 +186,17 @@ double getWriteTime() {return m_writeTime;};
 // Resolve this station's output file name (path + name + suffix + extension).
 std::string hdf5FileName( std::string suffix );
 // Number of doubles packed by packHDF5Metadata, in on-disk dataset order.
-static const int s_nMetaDoubles = 14;
+static const int s_nMetaDoubles = 16;
 // Pack this station's small scalars for the single-writer metadata pass.
 void  packHDF5Metadata( int& npts, double* meta );
 int   getNptsWritten() {return m_nptsWritten;};
 #endif
 double getReadTime() {return m_readTime;};
 void addReadTime(double t) {m_readTime += t;};
-bool is_in_supergrid_layer();
+// Is this station's recording point inside the supergrid absorbing layer?
+// Optionally reports how far inside, in metres and in grid points. The default
+// arguments preserve every existing caller.
+bool is_in_supergrid_layer( float_sw4* depth_m = NULL, int* depth_gp = NULL );
 void misfitanddudp( TimeSeries* observed, TimeSeries* dudp,
                     float_sw4& misfit, float_sw4& dmisfit );
 void add( TimeSeries& A, TimeSeries& B, double wghA, double wghB );
@@ -219,6 +238,11 @@ bool m_myPoint; // set to true if this processor writes to the arrays
 std::string m_fileName, m_staName, m_hdf5Name;
 
 float_sw4 mX, mY, mZ, mGPX, mGPY, mGPZ; // original and actual location
+
+// How far the recording point is inside the supergrid absorbing layer:
+// 0 = interior, > 0 = inside. Filled by is_in_supergrid_layer().
+float_sw4 m_sg_depth;
+int m_sg_depth_gp;
 float_sw4 m_zTopo;
 
 bool m_zRelativeToTopography; // location is given relative to topography

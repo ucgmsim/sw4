@@ -749,6 +749,58 @@ bool check_for_nan( vector<Sarray*>& a_U, int nmech, int verbose, string name );
 // Verify the supergrid absorbing layer fits inside every grid that uses it.
 void check_supergrid_thickness() const;
 
+// ---------------------------------------------------------------------------
+// Supergrid geometry, in physical units.
+//
+// One shared definition, used by the receiver flag, the source guard and the
+// absorption metric. All three need the same question answered - "how far
+// inside the sponge is this point?" - and answering it three times invites
+// three different answers.
+//
+// Everything here is derived from what setup_supergrid() actually built, so
+// the predicate cannot drift from the tapers the solver uses:
+//   * a face is only a sponge if mbcGlobalType[side] == bSuperGrid. NOT
+//     m_bcType[g][side], which assign_local_bcs() overwrites with bProcessor
+//     on any rank that is not on the global boundary (EW.C:1023-1041).
+//   * the lateral tapers are defined on every grid; the z=0 taper only on the
+//     topmost grid and only when there is no topography; the z=zmax taper only
+//     on grid 0 (setupRun.C:2109-2137, and the matching per-grid gating of the
+//     vertical damping arrays in assign_supergrid_damping_arrays()).
+//   * the layer occupies width W measured inwards from the boundary, matching
+//     SuperGrid::PsiAux.
+// ---------------------------------------------------------------------------
+
+// Physical width of the absorbing layer on grid g, in metres.
+float_sw4 supergrid_width( int g ) const;
+
+// Which of the six faces of grid g carry a supergrid taper.
+// Side order is the usual SW4 one: 0:x=0 1:x=xmax 2:y=0 3:y=ymax 4:z=0 5:z=zmax
+void supergrid_faces( int g, bool face[6] ) const;
+
+// Signed penetration into the layer, in metres, per face: positive inside the
+// sponge, negative in the interior (magnitude = clearance from the layer
+// edge). Faces with no sponge get -1e38 so they never win a maximum.
+// Returns the largest entry - i.e. > 0 iff (x,y,z) is inside the layer - and
+// sets 'face' to the governing side.
+float_sw4 supergrid_penetration( float_sw4 x, float_sw4 y, float_sw4 z, int g,
+                                 int& face, float_sw4 d[6] ) const;
+
+// Human-readable name of a side index, for diagnostics.
+static const char* supergrid_face_name( int side );
+
+// Flag every receiver that sits inside the absorbing layer. Collective on
+// m_1d_communicator; prints from rank 0 in input order.
+void check_receivers_in_supergrid( std::vector<TimeSeries*>& a_TimeSeries );
+
+// Abort (or warn, under 'developer allowsourceinsupergrid=1') if any source
+// lies inside the absorbing layer or within the stencil margin of it.
+void check_sources_in_supergrid( std::vector<std::vector<Source*> >& a_GlobalUniqueSources );
+
+// Report the longest period the absorbing layer can absorb, and warn when the
+// source band asks for longer. Printed once per run.
+void report_supergrid_absorption( std::vector<Source*>& a_Sources,
+                                  int event ) const;
+
 void define_parallel_io( vector<Parallel_IO*>& parallel_io );
 
 void read_volimage( std::string &path, std::string &fname, vector<Sarray>& data );
@@ -1661,6 +1713,17 @@ int m_projection_cycle;
 
 bool m_checkfornan;
 bool m_failonnan;   // when set, MPI_Abort as soon as a NaN is detected
+// 'developer allowsourceinsupergrid=1': downgrade the source-in-the-sponge
+// abort to a warning. The diagnostic is still printed in full.
+bool m_allow_source_in_supergrid;
+// printPreamble() is re-entered per event and per inversion iteration, and
+// pytest-sw4mopt parses inversion stdout at a fixed line offset from the end,
+// so the absorption block must appear exactly once.
+mutable bool m_supergrid_absorption_reported;
+// Global min and max Vs over every grid, in m/s, persisted from the reductions
+// check_materials() already performs and used to throw away. -1 means "not
+// scanned" (the anisotropic path never calls check_materials).
+float_sw4 m_min_vs, m_max_vs;
 
 // testing
 float_sw4 m_max_error[3], m_l2_error[3];

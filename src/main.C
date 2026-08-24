@@ -190,6 +190,13 @@ main(int argc, char **argv)
     }
     else
     {
+// Flag any receiver sitting in the supergrid absorbing layer. Here rather than
+// in solve(), which is re-entered once per L-BFGS function evaluation: the
+// TimeSeries objects exist from parsing but the geometry is only valid after
+// setupRun()'s setup_supergrid().
+      if( GlobalTimeSeries.size() > 0 )
+         simulation.check_receivers_in_supergrid( GlobalTimeSeries[0] );
+
       if (myRank == 0)
       {
 	 int nth=1;

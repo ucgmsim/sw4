@@ -2056,6 +2056,15 @@ void EW::processDeveloper(char* buffer)
 	if( m_failonnan )
 	   m_checkfornan = true;
      }
+     else if( startswith("allowsourceinsupergrid=",token) )
+     {
+	// Downgrade the source-in-the-sponge abort to a warning. Lives under
+	// 'developer' because that command is parsed in both pass 2 and pass 4,
+	// so it takes effect whatever order the user's file is in - and because
+	// it means "you are on your own".
+	token += 23;
+	m_allow_source_in_supergrid = strcmp(token,"1")==0 || strcmp(token,"on")==0 || strcmp(token,"yes")==0;
+     }
 
 // //     if (startswith("update_processor_boundary=", token))
 // //     {

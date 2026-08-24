@@ -531,6 +531,8 @@ EW::EW(const string &fileName, vector<vector<Source *>> &a_GlobalSources,
       m_output_load(false),
 
       m_projection_cycle(1000), m_checkfornan(false), m_failonnan(false),
+      m_allow_source_in_supergrid(false),
+      m_supergrid_absorption_reported(false), m_min_vs(-1), m_max_vs(-1),
 
       m_error_log_file("TwilightErr.txt"), m_error_log(false),
       m_error_print(true), m_inner_loop(9), m_topography_exists(false),
@@ -861,6 +863,11 @@ void EW::printPreamble(vector<Source *> &a_Sources, int event) const {
 
   // Fail early on an unstable configuration rather than burning core-hours.
   check_supergrid_thickness();
+  // ... and say what the layer that does fit can actually absorb. Sibling, not
+  // an extension: the line above is a signature-free hard abort, this one is a
+  // printed diagnostic that needs the sources. printPreamble is the only point
+  // where the width, the materials and the sources all exist at once.
+  report_supergrid_absorption(a_Sources, event);
 
   if (!mQuiet && proc_zero()) {
     msg << "============================================================"
@@ -8332,6 +8339,559 @@ void EW::check_supergrid_thickness() const {
                "refinement layout) so this grid is thicker, or reduce the "
                "supergrid thickness via 'supergrid gp=<n>'.");
   }
+}
+
+//-----------------------------------------------------------------------
+// --- Supergrid geometry: one definition, shared by B1/B2/B3 -------------
+//
+// See the block comment on the declarations in EW.h for why these are on EW
+// (every input is private EW state) and why every face is gated on
+// mbcGlobalType[] rather than the rank-local m_bcType[g][].
+//-----------------------------------------------------------------------
+float_sw4 EW::supergrid_width(int g) const {
+  // setup_supergrid() forces m_use_sg_width, so in practice one scalar width
+  // serves all faces and all grids. The gp branch is kept so this function is
+  // correct if that ever changes.
+  if (m_use_sg_width)
+    return m_supergrid_width;
+  return m_sg_gp_thickness * mGridSize[g];
+}
+
+//-----------------------------------------------------------------------
+void EW::supergrid_faces(int g, bool face[6]) const {
+  for (int s = 0; s < 6; s++)
+    face[s] = false;
+  if (!m_use_supergrid)
+    return;
+
+  // Lateral tapers are defined for every grid, 0 .. mNumberOfGrids-1
+  // (setupRun.C, the loop that calls m_supergrid_taper_x/y[g].define_taper).
+  for (int s = 0; s < 4; s++)
+    face[s] = (mbcGlobalType[s] == bSuperGrid);
+
+  // z = 0 (top). Only the topmost grid carries this taper, and only when there
+  // is no topography: setup_supergrid() passes
+  //   !topographyExists() && (mbcGlobalType[4] == bSuperGrid)
+  // as the 'left' flag of m_supergrid_taper_z[mNumberOfGrids-1], and
+  // assign_supergrid_damping_arrays() zeroes the vertical damping on every
+  // curvilinear or intermediate refinement grid.
+  face[4] = (mbcGlobalType[4] == bSuperGrid) && !m_topography_exists &&
+            (g == mNumberOfGrids - 1);
+
+  // z = zmax (bottom). Only grid 0 carries this taper: the 'right' flag is
+  // passed as true only for m_supergrid_taper_z[0].
+  face[5] = (mbcGlobalType[5] == bSuperGrid) && (g == 0);
+}
+
+//-----------------------------------------------------------------------
+float_sw4 EW::supergrid_penetration(float_sw4 x, float_sw4 y, float_sw4 z,
+                                    int g, int &face, float_sw4 d[6]) const {
+  bool active[6];
+  supergrid_faces(g, active);
+  const float_sw4 W = supergrid_width(g);
+  // Far below any physical distance, so an inactive face never wins a maximum
+  // and never looks like a clearance.
+  const float_sw4 inactive = -1e38;
+
+  // Signed distance into the layer, matching SuperGrid::PsiAux: the taper is
+  // nonzero for x < x0 + W and for x > x1 - W, with x0 = 0 on every axis.
+  d[0] = active[0] ? W - x : inactive;
+  d[1] = active[1] ? x - (m_global_xmax - W) : inactive;
+  d[2] = active[2] ? W - y : inactive;
+  d[3] = active[3] ? y - (m_global_ymax - W) : inactive;
+  d[4] = active[4] ? W - z : inactive;
+  d[5] = active[5] ? z - (m_global_zmax - W) : inactive;
+
+  face = 0;
+  for (int s = 1; s < 6; s++)
+    if (d[s] > d[face])
+      face = s;
+  return d[face];
+}
+
+//-----------------------------------------------------------------------
+const char *EW::supergrid_face_name(int side) {
+  static const char *names[6] = {"x=0",      "x=xmax",   "y=0",
+                                 "y=ymax",   "z=0(top)", "z=zmax(bottom)"};
+  if (side < 0 || side > 5)
+    return "none";
+  return names[side];
+}
+
+//-----------------------------------------------------------------------
+// Flag every receiver inside the absorbing layer.
+//
+// Called once from main.C, after setupRun() has built the geometry and before
+// solve(). Deliberately NOT inside solve(), which is re-entered once per L-BFGS
+// function evaluation.
+//
+// The penetration is known only to the rank that owns the station, so the
+// values are gathered with one batched MPI_MAX reduction over the whole
+// station list with a below-any-physical-value sentinel - the same pattern
+// writeStationMetadataHDF5() uses - which also makes the printed order the
+// input order rather than the owner order.
+//
+// Collective: every rank in m_1d_communicator must call it.
+void EW::check_receivers_in_supergrid(vector<TimeSeries *> &a_TimeSeries) {
+  if (!m_use_supergrid)
+    return;
+  int total = static_cast<int>(a_TimeSeries.size());
+  if (total == 0)
+    return;
+
+  const int nrec = 3;  // {penetration in m, penetration in grid points, face}
+  const double sentinel = -1e38;
+  vector<double> lrec(static_cast<size_t>(total) * nrec, sentinel);
+  vector<double> grec(static_cast<size_t>(total) * nrec, sentinel);
+
+  for (int s = 0; s < total; s++) {
+    if (!a_TimeSeries[s]->myPoint())
+      continue;
+    float_sw4 depth = 0;
+    int depth_gp = 0;
+    a_TimeSeries[s]->is_in_supergrid_layer(&depth, &depth_gp);
+    int face;
+    float_sw4 d[6];
+    // Recompute only to report which face governs; is_in_supergrid_layer has
+    // already cached the depth on the station for the output writers.
+    supergrid_penetration(a_TimeSeries[s]->getGPX(), a_TimeSeries[s]->getGPY(),
+                          a_TimeSeries[s]->getGPZ(), a_TimeSeries[s]->m_grid0,
+                          face, d);
+    lrec[static_cast<size_t>(s) * nrec + 0] = double(depth);
+    lrec[static_cast<size_t>(s) * nrec + 1] = double(depth_gp);
+    lrec[static_cast<size_t>(s) * nrec + 2] = double(face);
+  }
+
+  MPI_Allreduce(lrec.data(), grec.data(), total * nrec, MPI_DOUBLE, MPI_MAX,
+                m_1d_communicator);
+
+  if (!proc_zero())
+    return;
+
+  int nflagged = 0, nunowned = 0, nprinted = 0;
+  const int maxprint = 20;
+  stringstream msg;
+  for (int s = 0; s < total; s++) {
+    double depth = grec[static_cast<size_t>(s) * nrec + 0];
+    if (depth == sentinel) {
+      nunowned++;
+      continue;
+    }
+    if (depth <= 0)
+      continue;
+    nflagged++;
+    if (nprinted < maxprint) {
+      nprinted++;
+      int face = static_cast<int>(grec[static_cast<size_t>(s) * nrec + 2]);
+      msg << "WARNING: receiver " << a_TimeSeries[s]->getStationName() << " is "
+          << depth << " m ("
+          << static_cast<int>(grec[static_cast<size_t>(s) * nrec + 1])
+          << " grid points) inside the supergrid absorbing layer at face "
+          << supergrid_face_name(face)
+          << "; its time series is not a ground-motion prediction." << endl;
+    }
+  }
+  if (nflagged > nprinted)
+    msg << "WARNING: ... and " << (nflagged - nprinted)
+        << " further receiver(s) inside the supergrid absorbing layer." << endl;
+
+  if (nflagged > 0)
+    msg << "Supergrid receiver check: " << nflagged << " of " << total
+        << " receivers are inside the supergrid absorbing layer." << endl;
+  else
+    msg << "Supergrid receiver check: all " << total
+        << " receivers are in the interior." << endl;
+  if (nunowned > 0)
+    msg << "Supergrid receiver check: " << nunowned << " of " << total
+        << " receivers have no owning rank and were not checked." << endl;
+  cout << msg.str();
+  cout.flush();
+}
+
+//-----------------------------------------------------------------------
+// Refuse to run a source that sits inside - or within the stencil margin of -
+// the supergrid absorbing layer.
+//
+// Inside the layer SW4 deliberately solves a damped, coordinate-stretched
+// equation instead of the wave equation, so a source there does not radiate
+// the moment it was given: its amplitude is divided by the stretching phi and
+// the long periods it emits are absorbed on the way out. A run like that
+// completes, looks plausible, and is wrong.
+//
+// Called from setupRun() immediately after setup_supergrid(). That is the
+// earliest valid point:
+//   * mbcGlobalType[] is NOT valid at source-parse time - 'boundary_conditions'
+//     and 'source' are in the same parse pass and their relative order is the
+//     user's choice, and default_bcs() runs later still.
+//   * the Source objects already exist, with globally consistent indices
+//     (Source::compute_grid_point MPI_Allreduces them in the constructor), and
+//     nothing moves a source between here and preprocessSources().
+//   * aborting here is before material setup, rfile/sfile reads and computeDT,
+//     i.e. before minutes of I/O.
+// It is deliberately NOT in preprocessSources(), which returns early unless
+// mIsInitialized and whose real work sits in an else that excludes m_testing,
+// so a testing-mode source would escape the check.
+//
+// Checking the assembled a_GlobalUniqueSources covers all three construction
+// sites (SRF, HDF5 rupture, point source) with one check.
+void EW::check_sources_in_supergrid(
+    vector<vector<Source *> > &a_GlobalUniqueSources) {
+  if (!m_use_supergrid)
+    return;
+  // These modes carry no Source objects at all.
+  if (m_twilight_forcing || m_energy_test || m_rayleigh_wave_test)
+    return;
+
+  // Margin, in grid points, between the source and the edge of the layer:
+  //   src_reach  = 3  the moment-tensor stencil spans ic-2 .. ic+3
+  //                   (Source::getsourcewgh / set_grid_point_sources4), so the
+  //                   source's own stencil must not reach into where phi != 1.
+  //   sgd_reach  = 2 at 4th order, 3 at 6th: addsgd4_ci sweeps +/-2 and
+  //                   addsgd6_ci +/-3 (addsgdc.C), so the source's outermost
+  //                   point must not be an argument of a dissipation operator
+  //                   centred inside the layer.
+  // Summed, not maxed - the two constraints are on different points. This is
+  // the same 5 grid points as STENCIL_MARGIN_GRIDPOINTS in the workflow's
+  // fault-buffer derivation; the two must agree.
+  const int src_reach = 3;
+  const int sgd_reach = (m_sg_damping_order >= 6) ? 3 : 2;
+  const int margin_pts = src_reach + sgd_reach;
+
+  int noffenders = 0, ntotal = 0;
+  const int maxdetail = 5;  // the Hayward SRF has ~6500 subfaults
+  stringstream msg;
+  float_sw4 worst_need = 0;  // largest inward move any source needs, metres
+  int worst_face = -1;
+
+  for (size_t e = 0; e < a_GlobalUniqueSources.size(); e++) {
+    for (size_t i = 0; i < a_GlobalUniqueSources[e].size(); i++) {
+      Source *s = a_GlobalUniqueSources[e][i];
+      if (s == NULL || s->ignore())
+        continue;
+      ntotal++;
+      int g = s->m_grid;
+      if (g < 0 || g >= mNumberOfGrids)
+        continue;
+      float_sw4 x = s->getX0(), y = s->getY0(), z = s->getZ0();
+      int face;
+      float_sw4 d[6];
+      float_sw4 pen = supergrid_penetration(x, y, z, g, face, d);
+      const float_sw4 h = mGridSize[g];
+      const float_sw4 margin = margin_pts * h;
+      // pen > -margin  <=>  clearance from the layer edge < margin
+      if (pen <= -margin)
+        continue;
+      noffenders++;
+      // metres this source must move inwards to satisfy W + margin_pts*h.
+      // Tracked over ALL offenders, not just the ones detailed below, so the
+      // summary advice is sufficient for the whole set.
+      float_sw4 need = pen + margin;
+      if (need > worst_need) {
+        worst_need = need;
+        worst_face = face;
+      }
+      if (noffenders > maxdetail)
+        continue;
+
+      double lon = 0, lat = 0;
+      computeGeographicCoord(double(x), double(y), lon, lat);
+
+      msg << "  source " << noffenders << " '" << s->getName() << "' at x=" << x
+          << " y=" << y << " z=" << z << " m (lat=" << lat << ", lon=" << lon
+          << "), grid " << g << ", h=" << h << " m" << endl;
+      if (pen > 0) {
+        // The real stretching the solver would apply here, on the governing
+        // axis, and the resulting source-normalisation error.
+        double phi = 1.0;
+        if (face == 0 || face == 1)
+          phi = m_supergrid_taper_x[g].stretching(x);
+        else if (face == 2 || face == 3)
+          phi = m_supergrid_taper_y[g].stretching(y);
+        else
+          phi = m_supergrid_taper_z[g].stretching(z);
+        msg << "    INSIDE the layer at face " << supergrid_face_name(face)
+            << ": " << pen << " m (" << (pen / h)
+            << " grid points) past its edge; supergrid stretching phi = " << phi
+            << " there, so the radiated amplitude is off by 1/phi = "
+            << (phi > 0 ? 1.0 / phi : 0.0) << endl;
+      } else {
+        msg << "    within the stencil margin of face "
+            << supergrid_face_name(face) << ": clearance " << (-pen) << " m ("
+            << (-pen / h) << " grid points), " << margin_pts
+            << " grid points required" << endl;
+      }
+      msg << "    needs to move " << need << " m further from face "
+          << supergrid_face_name(face) << endl;
+    }
+  }
+
+  if (noffenders == 0)
+    return;
+
+  stringstream out;
+  out << "***************************************************" << endl;
+  if (m_allow_source_in_supergrid)
+    out << "WARNING: " << noffenders << " of " << ntotal
+        << " source(s) are inside the supergrid absorbing layer, or within "
+        << margin_pts << " grid points of it." << endl;
+  else
+    out << "FATAL: " << noffenders << " of " << ntotal
+        << " source(s) are inside the supergrid absorbing layer, or within "
+        << margin_pts << " grid points of it." << endl;
+  out << "Inside the layer sw4 solves a damped, coordinate-stretched equation,"
+      << " not the wave equation," << endl
+      << "so such a source does not radiate the moment it was given and the"
+      << " simulation is not a" << endl
+      << "ground-motion prediction anywhere in the domain." << endl;
+  out << "The absorbing layer is " << supergrid_width(0) << " m wide ("
+      << (supergrid_width(0) / mGridSize[0])
+      << " grid points on the coarsest grid, h=" << mGridSize[0]
+      << " m); every source must clear it by a further " << margin_pts
+      << " grid points." << endl;
+  out << "Domain: 0 <= x <= " << m_global_xmax << ", 0 <= y <= "
+      << m_global_ymax << ", " << m_global_zmin << " <= z <= " << m_global_zmax
+      << " m." << endl;
+  out << msg.str();
+  if (noffenders > maxdetail)
+    out << "  ... and " << (noffenders - maxdetail) << " more." << endl;
+  if (worst_face >= 0) {
+    out << "Fix: move the offending source(s) at least " << worst_need
+        << " m away from face " << supergrid_face_name(worst_face)
+        << ", or extend the domain past that face by the same amount," << endl;
+    float_sw4 Wfit = supergrid_width(0) - worst_need;
+    if (Wfit > 0)
+      out << "  or shrink the sponge to 'supergrid width=" << Wfit
+          << "' (gp=" << static_cast<int>(Wfit / mGridSize[0])
+          << " on the coarsest grid) - but a narrower sponge absorbs"
+          << " correspondingly shorter periods." << endl;
+    else
+      out << "  shrinking the sponge cannot help: the sources are more than a"
+          << " sponge width past the boundary." << endl;
+  }
+  if (m_allow_source_in_supergrid)
+    out << "Continuing anyway because 'developer allowsourceinsupergrid=1' was"
+        << " set. You are on your own." << endl;
+  else
+    out << "Set 'developer allowsourceinsupergrid=1' to run anyway."
+        << endl;
+  out << "***************************************************" << endl;
+
+  if (m_myRank == 0) {
+    cout << out.str();
+    cout.flush();
+  }
+  if (!m_allow_source_in_supergrid) {
+    // Rank-0 cout then MPI_Abort, the parseInputFile idiom. NOT CHECK_INPUT:
+    // Require.h computes myRank and then never uses it, so CHECK_INPUT prints
+    // the whole message once per rank.
+    MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+}
+
+//-----------------------------------------------------------------------
+// Report the longest period the absorbing layer can absorb.
+//
+// A sibling of check_supergrid_thickness(), not an extension of it: that one is
+// a signature-free const hard abort, this one prints a diagnostic and needs the
+// sources. Called back to back from printPreamble(), which is the only point
+// where the width, the materials and the sources all exist at once -
+// setup_supergrid() runs before there are any materials.
+//
+// The criterion. Inside the layer the coordinate stretching is
+// phi(x) = 1 - (1-eps)*psi(x) with psi built from
+//   Psi0(xi) = xi^6 (462 - 1980 xi + 3465 xi^2 - 3080 xi^3 + 1386 xi^4
+//                    - 252 xi^5),
+// whose derivative is Psi0'(xi) = 2772 xi^5 (1-xi)^5, maximised at xi = 1/2 at
+// 2772/1024. The stretching is adiabatic for a wave of wavelength lambda when
+// lambda * max|psi'| << 2*pi, i.e. when
+//   T  <  W cos(theta) / (C * c),   C = (2772/1024)/(2*pi) = 0.4308374,
+// with theta the angle of incidence on the face (a grazing wave sees a
+// geometrically thinner layer). Longer periods are reflected instead of
+// absorbed, which is what makes a whole domain ring.
+//
+// Note the direction of the c dependence: T_max falls as c rises, because at a
+// fixed period the wavelength is longest in the fastest material. The binding
+// constraint is therefore the model's MAXIMUM Vs. Both ends of the Vs range are
+// printed, but the warning is keyed on the fast end; keying it on min Vs gives
+// a bound that essentially never fires.
+//
+// Printed once: printPreamble() is re-entered per event and per inversion
+// iteration, and pytest-sw4mopt parses inversion stdout at a fixed offset from
+// the end of the log.
+void EW::report_supergrid_absorption(vector<Source *> &a_Sources,
+                                     int event) const {
+  if (!m_use_supergrid || mQuiet || !proc_zero())
+    return;
+  if (m_supergrid_absorption_reported)
+    return;
+  m_supergrid_absorption_reported = true;
+
+  // Derive the constant from the polynomial rather than hardcoding it, so it
+  // tracks any edit to Psi0. Evaluated in double, matching the deliberate
+  // double evaluation of Psi0 itself.
+  const double xi = 0.5;  // argmax of Psi0'(xi) = 2772 xi^5 (1-xi)^5
+  const double psi0p_max =
+      2772.0 * xi * xi * xi * xi * xi * (1 - xi) * (1 - xi) * (1 - xi) *
+      (1 - xi) * (1 - xi);
+  const double C_adiab = psi0p_max / (2.0 * M_PI);
+
+  // Which faces are active anywhere, and the width.
+  bool anyface[6] = {false, false, false, false, false, false};
+  for (int g = 0; g < mNumberOfGrids; g++) {
+    bool f[6];
+    supergrid_faces(g, f);
+    for (int s = 0; s < 6; s++)
+      anyface[s] = anyface[s] || f[s];
+  }
+  const double W = double(supergrid_width(0));
+
+  stringstream msg;
+  msg << "============================================================" << endl;
+  msg << " Supergrid absorbing layer" << endl;
+  msg << "   width = " << W << " m (" << (W / mGridSize[0])
+      << " grid points on the coarsest grid, h=" << mGridSize[0] << " m)"
+      << endl;
+  msg << "   active faces:";
+  bool anyactive = false;
+  for (int s = 0; s < 6; s++)
+    if (anyface[s]) {
+      msg << " " << supergrid_face_name(s);
+      anyactive = true;
+    }
+  if (!anyactive)
+    msg << " none";
+  msg << endl;
+
+  // The Vs range. Both ends come from the reductions check_materials()
+  // already performs, so this needs no new communication. The anisotropic path
+  // never calls check_materials, which is why they can still be unset.
+  bool have_vs = !m_anisotropic && m_max_vs > 0 && m_min_vs > 0;
+  if (!have_vs) {
+    msg << "   longest absorbable period: not available (Vs range not scanned"
+        << (m_anisotropic ? "; anisotropic material" : "") << ")" << endl;
+    msg << "============================================================"
+        << endl;
+    cout << msg.str();
+    cout.flush();
+    return;
+  }
+
+  // T_max = W cos(theta) / (C * c), so T_max FALLS as c rises: at a given
+  // period the wavelength is longest in the fastest material, and it is the
+  // wavelength that has to be small against the layer. The binding case is
+  // therefore the FASTEST material in the model, not the slowest - keying this
+  // on min Vs would produce a bound so generous it could never fire (a 12 km
+  // sponge with a 500 m/s near-surface minimum "absorbs" to 56 s, including on
+  // runs observed to ring at 11-34 s). Both ends are printed so the reader can
+  // see the range; the warning uses the conservative one.
+  const double T_fast = W / (C_adiab * double(m_max_vs));  // conservative
+  const double T_slow = W / (C_adiab * double(m_min_vs));  // optimistic
+  msg << "   longest absorbable period T_max = W / (" << C_adiab
+      << " * Vs) at normal incidence:" << endl;
+  msg << "     " << T_fast << " s in the fastest material (Vs = " << m_max_vs
+      << " m/s) <- the binding case" << endl;
+  msg << "     " << T_slow << " s in the slowest material (Vs = " << m_min_vs
+      << " m/s)" << endl;
+
+  const double Tref = T_fast;
+  const int nang = 6;
+  const double ang[nang] = {0, 30, 45, 60, 75, 85};
+  msg << "   degraded by the angle of incidence theta (T_max * cos theta):"
+      << endl;
+  msg << "     theta (deg):";
+  for (int a = 0; a < nang; a++)
+    msg << "  " << ang[a];
+  msg << endl;
+  msg << "     T_max (s)  :";
+  for (int a = 0; a < nang; a++)
+    msg << "  " << Tref * cos(ang[a] * M_PI / 180.0);
+  msg << endl;
+
+  // Band edge: the longest period the sources actually put into the domain.
+  // Fallback ladder. 'prefilter fc2' and the attenuation 'maxfreq' are both
+  // UPPER corners, i.e. the shortest period, and would essentially never warn.
+  double T_band = -1;
+  string band_reason;
+  bool no_finite_band = false;
+  if (m_prefilter_sources && m_filter_ptr != NULL &&
+      m_filter_ptr->get_type() == bandPass &&
+      m_filter_ptr->get_corner_freq1() > 0) {
+    T_band = 1.0 / double(m_filter_ptr->get_corner_freq1());
+    band_reason = "prefilter bandpass low corner fc1";
+  } else {
+    // No band limit imposed. Fall back on the source time functions: a pulse
+    // with zero static offset has a longest significant period set by its own
+    // duration; a step-like one (Brune, Erf, Liu, an SRF, ...) leaves a
+    // permanent displacement, so its spectrum does not roll off at low
+    // frequency and there is no finite longest period at all.
+    double Tmaxsrc = -1;
+    for (size_t i = 0; i < a_Sources.size(); i++) {
+      Source *s = a_Sources[i];
+      if (s == NULL || s->ignore())
+        continue;
+      timeDep td = s->getTfunc();
+      bool pulse = (td == iRicker || td == iRickerInt || td == iGaussian ||
+                    td == iDBrune || td == iTriangle || td == iSawtooth ||
+                    td == iGaussianWindow || td == iDirac);
+      if (!pulse) {
+        no_finite_band = true;
+        break;
+      }
+      double f = double(s->getFrequency());
+      if (f <= 0)
+        continue;
+      // The same split as Source::limit_frequency: for these time functions
+      // mFreq is an angular frequency, for the rest it is a frequency.
+      bool angular = (td == iGaussian);
+      double T = angular ? 2.0 * M_PI / f : 1.0 / f;
+      if (T > Tmaxsrc)
+        Tmaxsrc = T;
+    }
+    if (!no_finite_band && Tmaxsrc > 0) {
+      T_band = Tmaxsrc;
+      band_reason = "longest source time function period";
+    } else if (!no_finite_band) {
+      no_finite_band = true;
+    }
+  }
+
+  if (no_finite_band) {
+    double Trec = mTimeIsSet[event] ? double(mTmax[event])
+                                   : double(mNumberOfTimeSteps[event]) *
+                                         double(mDt);
+    msg << "   source band: step-like source time function (non-zero static"
+        << " offset), so there is no" << endl;
+    msg << "     finite longest period. Over the " << Trec
+        << " s record, energy at periods longer than " << Tref
+        << " s is reflected by the layer rather than absorbed." << endl;
+  } else {
+    msg << "   source band: longest period " << T_band << " s (" << band_reason
+        << ")" << endl;
+    double shortfall = T_band / Tref;
+    if (shortfall > 1.0 && !m_testing) {
+      // T_max is proportional to W, so the shortfall IS the factor the width
+      // must grow by.
+      double Wneed = W * shortfall;
+      msg << "WARNING: the supergrid layer cannot absorb the source band: "
+          << T_band << " s requested, " << Tref << " s absorbable ("
+          << shortfall << "x short)." << endl;
+      msg << "WARNING:   T_max is proportional to the width, so the layer must"
+          << " grow to width=" << Wneed << " (gp="
+          << static_cast<int>(ceil(Wneed / mGridSize[0]))
+          << " on the coarsest grid), and the domain must grow with it to keep"
+          << " the sources and receivers in the interior." << endl;
+      msg << "WARNING:   Raising the supergrid damping does NOT help: the"
+          << " dissipation operator is O((k h)^4), which is ~1.7e-6 at 20 s on"
+          << " a 400 m grid, and raising dc destabilises the time step."
+          << endl;
+    } else if (shortfall > 1.0) {
+      msg << "   (testing mode: the layer is " << shortfall
+          << "x too thin for this band, not warning)" << endl;
+    }
+  }
+  msg << "============================================================" << endl;
+  cout << msg.str();
+  cout.flush();
 }
 
 //-----------------------------------------------------------------------

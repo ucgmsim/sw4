@@ -76,6 +76,8 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
   mGPX(0.0),
   mGPY(0.0),
   mGPZ(0.0),
+  m_sg_depth(0.0),
+  m_sg_depth_gp(0),
   m_zRelativeToTopography(topoDepth),
   m_zTopo(0.0),
   mWriteEvery(writeEvery),
@@ -1192,7 +1194,9 @@ write_sac_format(int npts, char *ofile, float *y, float btime, float dt, char *v
 //              10          11          12          13          14          15           16          17          18
 	       "NZYEAR  ", "NZJDAY  ", "NZHOUR  ", "NZMIN   ", "NZSEC   ", "NZMSEC   ", "KCMPNM  ", "STLA    ", "STLO    ",
 //              19          20          21          22          23          24          25
-	       "EVLA    ", "EVLO    ", "EVDP    ", "O       ", "CMPINC  ", "CMPAZ   ", "KSTNM   "
+	       "EVLA    ", "EVLO    ", "EVDP    ", "O       ", "CMPINC  ", "CMPAZ   ", "KSTNM   ",
+//              26          27          28
+	       "USER8   ", "USER9   ", "KUSER0  "
   };
 
   newhdr();
@@ -1256,6 +1260,24 @@ write_sac_format(int npts, char *ofile, float *y, float btime, float dt, char *v
 
   // set the station name
   setkhv( nm[25], const_cast<char*>(m_staName.c_str()), nerr);
+
+  // How far this station is inside the supergrid absorbing layer.
+  // USER8/USER9 and KUSER0 are the only free slots in SW4's SAC output, and
+  // the high indices are taken deliberately: USER0/USER1 are the conventional
+  // target for third-party pipelines. The value is the penetration clamped at
+  // zero, never a signed clearance - SAC's "undefined" sentinel is -12345, so
+  // a clearance of -12345 m would be indistinguishable from "not set".
+  if( m_ew != NULL && m_ew->usingSupergrid() )
+  {
+     // Recompute rather than trust the cache: the inversion drivers run the
+     // receiver check over the observations only, so a forward-solution station
+     // may not have been visited.
+     is_in_supergrid_layer();
+     setfhv( nm[26], static_cast<float>(m_sg_depth), nerr);
+     setfhv( nm[27], static_cast<float>(m_sg_depth_gp), nerr);
+     char sgtag[9] = "SGLAYER";
+     setkhv( nm[28], sgtag, nerr);
+  }
 
   if( (makeCopy) && (access( ofile, F_OK ) != -1) ) {
     // if the file exists, move it to a .bak before writing
@@ -1366,6 +1388,13 @@ void TimeSeries::write_usgs_format(string a_fileName)
    fprintf(fd, "# Actual location (WGS84 longitude, latitude) (deg): %e %e\n", m_rec_gp_lon, m_rec_gp_lat);
 // distance in horizontal plane
    fprintf(fd, "# Distance from target to actual location (m): %e\n", sqrt( (mX-mGPX)*(mX-mGPX)+(mY-mGPY)*(mY-mGPY) ) );
+// Emitted only when the station is actually inside the absorbing layer, so a
+// clean station's file stays byte-identical to before. Recomputed here for the
+// same reason as in write_sac_format.
+   is_in_supergrid_layer();
+   if( m_sg_depth > 0 )
+      fprintf(fd, "# WARNING: this station is %e m (%i grid points) inside the supergrid absorbing layer; the trace is NOT a ground-motion prediction\n",
+              (double)m_sg_depth, m_sg_depth_gp );
    fprintf(fd, "# nColumns: %i\n", m_nComp+1);
    
    fprintf(fd, "# Column 1: Time (s)\n");
@@ -3904,19 +3933,68 @@ float_sw4 TimeSeries::get_scalefactor() const
 }
 
 //-----------------------------------------------------------------------
-bool TimeSeries::is_in_supergrid_layer()
+// Is the recording point inside the supergrid absorbing layer, and if so how
+// far in?
+//
+// This delegates to EW::supergrid_penetration(), the one shared definition, and
+// is a deliberate behaviour change from the old index comparison against the
+// material-inversion "active" box. That predicate:
+//   * never consulted mbcGlobalType, so it returned true near a Dirichlet or
+//     periodic boundary in a run with no sponge at all;
+//   * never looked at the top face, so a z=0 sponge was invisible to it;
+//   * carried an accidental one-gridpoint offset from setup_supergrid's
+//     addlayer=1;
+//   * could not yield a distance.
+//
+// The penetration is evaluated at (mGPX,mGPY,mGPZ), the grid point actually
+// recorded, not at the requested (mX,mY,mZ).
+bool TimeSeries::is_in_supergrid_layer( float_sw4* depth_m, int* depth_gp )
 {
-   if( m_myPoint )
+   if( !m_myPoint || m_ew == NULL || m_grid0 < 0 ||
+       m_grid0 >= m_ew->getNumberOfGrids() )
    {
-return
-   m_i0<m_ew->m_iStartActGlobal[m_grid0] ||
-   m_ew->m_iEndActGlobal[m_grid0] < m_i0  ||
-   m_j0<m_ew->m_jStartActGlobal[m_grid0] || 
-   m_ew->m_jEndActGlobal[m_grid0] < m_j0  ||
-  (m_grid0==0 && m_ew->m_kEndActGlobal[m_grid0] < m_k0);
-   }
-   else
+      // Not this rank's station, or no grid point resolved for it: report
+      // nothing rather than a stale cache or an out-of-range grid index.
+      if( depth_m  != NULL ) *depth_m  = 0;
+      if( depth_gp != NULL ) *depth_gp = 0;
       return false;
+   }
+   int face;
+   float_sw4 d[6];
+   float_sw4 pen = m_ew->supergrid_penetration( mGPX, mGPY, mGPZ, m_grid0,
+                                                face, d );
+   // Clamped at zero: 0 means "in the interior", never a signed clearance.
+   m_sg_depth = pen > 0 ? pen : 0;
+   m_sg_depth_gp = 0;
+   if( pen > 0 )
+   {
+      // Rounded up, so any penetration at all is at least one grid point - but
+      // with a relative tolerance first, or an exact 5.0 computed in float32
+      // reads as 5.0000001 and reports 6.
+      double gp = double(pen) / double(m_ew->mGridSize[m_grid0]);
+      m_sg_depth_gp = static_cast<int>( ceil( gp - 1e-6*(1.0+gp) ) );
+      if( m_sg_depth_gp < 1 )
+         m_sg_depth_gp = 1;
+   }
+   if( depth_m  != NULL ) *depth_m  = m_sg_depth;
+   if( depth_gp != NULL ) *depth_gp = m_sg_depth_gp;
+   return pen > 0;
+}
+
+//-----------------------------------------------------------------------
+// The run's absorbing-layer width, in metres and in grid points on the
+// coarsest grid. Written file-level beside DELTA so a station file describes
+// its own sponge: the natural severity axis downstream is
+// supergrid_depth / width, and reconstructing the width from the run's config
+// would couple the data file to a file that may have been edited since.
+bool TimeSeries::getSupergridWidth( double& width_m, double& width_gp ) const
+{
+   width_m = width_gp = 0;
+   if( m_ew == NULL || !m_ew->usingSupergrid() )
+      return false;
+   width_m  = double( m_ew->supergrid_width(0) );
+   width_gp = width_m / double( m_ew->mGridSize[0] );
+   return true;
 }
 
 //-----------------------------------------------------------------------
@@ -4073,6 +4151,15 @@ void TimeSeries::packHDF5Metadata(int& npts, double* meta)
   float_sw4 epiLat, epiLon, epiDepth, earliestTime;
   m_ew->get_epicenter( epiLat, epiLon, epiDepth, earliestTime, m_event );
   meta[13] = double(earliestTime);
+
+  // How far this station is inside the supergrid absorbing layer. Doubles so
+  // they ride the existing MPI_DOUBLE reduction with no second collective.
+  // 0 means the interior, which is a positive statement, not a missing value.
+  // Recomputed rather than read from the cache, because the inversion drivers
+  // run the receiver check over the observations only.
+  is_in_supergrid_layer();
+  meta[14] = double(m_sg_depth);        // SGDEPTH   (metres)
+  meta[15] = double(m_sg_depth_gp);     // SGDEPTHGP (grid points)
 }
 
 //-----------------------------------------------------------------------

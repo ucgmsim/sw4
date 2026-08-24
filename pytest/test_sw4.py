@@ -239,18 +239,21 @@ def main_test(sw4_exe_dir="optimize_mp", pytest_dir ="none", testing_level=0, mp
                 'twilight', 'twilight', 'lamb',
                 'curvimeshrefine', 'curvimeshrefine', 'curvimeshrefine','curvimeshrefine',
                 'geodynbc','geodynbc',
-                'hdf5', 'hdf5', 'hdf5']
+                'hdf5', 'hdf5', 'hdf5',
+                'supergrid', 'supergrid', 'supergrid', 'supergrid']
 
-    all_cases = ['energy-nomr-2nd', 'energy-mr-4th', 'energy-mr-sg-order2', 'energy-mr-sg-order4', 'refine-el', 'refine-att', 'refine-att-2nd', 'tw-att', 'tw-topo-att', 'pointsource-sg', 'flat-twi', 'gauss-twi', 'lamb','gausshill-el','gauss-sg-mr','energy','gausshill-att','loh1-h100-mr-whi','loh1-h100-mr-geodynbc','loh1-h100-mr-hdf5','loh1-h100-mr-hdf5-sfile', 'loh1-h100-mr-restart-hdf5']
+    all_cases = ['energy-nomr-2nd', 'energy-mr-4th', 'energy-mr-sg-order2', 'energy-mr-sg-order4', 'refine-el', 'refine-att', 'refine-att-2nd', 'tw-att', 'tw-topo-att', 'pointsource-sg', 'flat-twi', 'gauss-twi', 'lamb','gausshill-el','gauss-sg-mr','energy','gausshill-att','loh1-h100-mr-whi','loh1-h100-mr-geodynbc','loh1-h100-mr-hdf5','loh1-h100-mr-hdf5-sfile', 'loh1-h100-mr-restart-hdf5',
+                 'sg-source', 'sg-margin', 'sg-rupture', 'sg-topface']
     
-    all_results =['energy.log', 'energy.log', 'energy.log', 'energy.log', 'TwilightErr.txt', 'TwilightErr.txt', 'TwilightErr.txt', 'TwilightErr.txt', 'TwilightErr.txt', 'PointSourceErr.txt', 'TwilightErr.txt', 'TwilightErr.txt', 'LambErr.txt','TwilightErr.txt','TwilightErr.txt','energy.log','TwilightErr.txt','whi.log','geodynbc.log','hdf5.log','hdf5-sfile.log', 'hdf5-restart.log']
-    num_meshes =[1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] # default number of meshes for level 0
+    all_results =['energy.log', 'energy.log', 'energy.log', 'energy.log', 'TwilightErr.txt', 'TwilightErr.txt', 'TwilightErr.txt', 'TwilightErr.txt', 'TwilightErr.txt', 'PointSourceErr.txt', 'TwilightErr.txt', 'TwilightErr.txt', 'LambErr.txt','TwilightErr.txt','TwilightErr.txt','energy.log','TwilightErr.txt','whi.log','geodynbc.log','hdf5.log','hdf5-sfile.log', 'hdf5-restart.log',
+                  'supergrid.log', 'supergrid.log', 'supergrid.log', 'supergrid.log']
+    num_meshes =[1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 1, 1] # default number of meshes for level 0
 
     # add more tests for higher values of the testing level
     if testing_level == 1:
-        num_meshes =[1, 1, 1, 1, 2, 2, 2, 3, 2, 2, 3, 3, 2, 2, 2, 1, 2, 1, 1, 1, 1, 1]
+        num_meshes =[1, 1, 1, 1, 2, 2, 2, 3, 2, 2, 3, 3, 2, 2, 2, 1, 2, 1, 1, 1, 1, 1, 2, 2, 1, 1]
     elif testing_level == 2:
-        num_meshes =[1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 1, 3, 1, 1, 1, 1, 1]
+        num_meshes =[1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 1, 3, 1, 1, 1, 1, 1, 2, 2, 1, 1]
 
     
     print("Running all tests for level", testing_level, "...")
@@ -331,7 +334,13 @@ def main_test(sw4_exe_dir="optimize_mp", pytest_dir ="none", testing_level=0, mp
                 #     print("DID YOU USE THE CORRECT SW4 EXECUTABLE? (SPECIFY DIRECTORY WITH -d OPTION)")
                 #     return False # bail out
 
-                if status.returncode!=0:
+                # Some supergrid cases assert that sw4 REFUSES to run: a
+                # non-zero exit is the expected result there, and
+                # verify_supergrid checks the diagnostic it printed.
+                expect_abort = case_dir in ('sg-source-1', 'sg-margin-1',
+                                            'sg-rupture-1')
+
+                if status.returncode!=0 and not expect_abort:
                     print('ERROR: Test', test_case, ': sw4 returned non-zero exit status=', status.returncode, 'aborting test')
                     print('run_cmd=', run_cmd)
                     print("DID YOU USE THE CORRECT SW4 EXECUTABLE? (SPECIFY DIRECTORY WITH -d OPTION)")
@@ -373,6 +382,9 @@ def main_test(sw4_exe_dir="optimize_mp", pytest_dir ="none", testing_level=0, mp
                     sw4_stdout_file_tmp.close()
                     if success == True:
                         success = verify_hdf5.verify_sac_image(pytest_dir, 1e-5)
+                elif result_file == 'supergrid.log':
+                    import verify_supergrid
+                    success = verify_supergrid.verify(pytest_dir, case_dir)
                 elif result_file == 'energy.log':
                     success = compare_energy(case_dir + sep + result_file, 1e-10, verbose)
                 else:

@@ -2421,6 +2421,16 @@ to be output in both formats.
 	\item The binary SAC files can be read by the SAC program. We also provide a matlab/octave script in
 		      {\tt tools/readsac.m}.
 	\item The ASCII text file format can be read by the Matlab/Octave script in {\tt tools/readusgs.m}.
+	\item Receivers must be placed in the {\em interior} of the computational domain, outside the
+	      super-grid layers, for the reason spelled out in Section~\ref{sec:supergrid}: the seismic wave
+	      equation is modified inside the layers, so a time history recorded there is not a ground
+	      motion prediction. \emph{SW4} checks this at start-up and prints one warning line per
+	      offending receiver plus a summary line, and records how far each receiver is inside the layer
+	      in the output itself --- {\tt USER8}/{\tt USER9} in SAC (Section~\ref{sec:sac-format}),
+	      {\tt SGDEPTH}/{\tt SGDEPTHGP} in HDF5 (Section~\ref{sec:sachdf5-format}), and a
+	      {\tt \# WARNING:} header line in the ASCII text format. A value of zero means the receiver is
+	      in the interior. A source in the layer is a harder error and stops the run; see
+	      {\tt allowsourceinsupergrid} in Section~\ref{keyword:developer}.
 	      %The ASCII text format was slightly modified with the addition of the strain output option. 
 	      %The Matlab/Octave script {\tt tools/readusgsold.m} can be used to read
 	      %the older version of ASCII text files.
@@ -4624,7 +4634,7 @@ command. Look in the source code to get a full understanding of what this comman
 	Syntax:\\
 	\tt
 	developer
-	cfl=... checkfornan=... \\
+	cfl=... checkfornan=... allowsourceinsupergrid=... \\
 	\bf Required parameters:\\
 	\rm
 	None
@@ -4637,11 +4647,18 @@ performed after each time step.
 		\multicolumn{4}{|c|}{\bf developer parameters}                        \\ \hline
 		\bf{Option} & \bf{Description}             & \bf{Type} & \bf{Default} \\ \hline \hline
 		cfl         & CFL number $(>0)$            & real      & 1.3          \\ \hline
-		checkfornan & Scan solution arrays for NaN & string    & off
+		checkfornan & Scan solution arrays for NaN & string    & off          \\ \hline
+		allowsourceinsupergrid & Run anyway when a source lies inside the
+		super-grid layer, or within five grid points of it, instead of stopping.
+		The full diagnostic is still printed, as a warning. The resulting
+		simulation is {\em not} a ground motion prediction: inside the layer
+		\emph{SW4} solves a damped, coordinate-stretched equation, so the source
+		does not radiate the moment it was given.
+		            & string    & off
 		\\ \hline
 	\end{tabular}
 \end{center}
-\index{developer parameters! cfl, checkfornan}
+\index{developer parameters! cfl, checkfornan, allowsourceinsupergrid}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \chapter{File formats}\label{chap:formats}
@@ -5289,6 +5306,27 @@ description of the file format.
 We provide a simplified Matlab/octave reader of SAC files called {\tt readsac.m} in the {\tt tools}
 directory. Note that only a subset of the header information is parsed by this reader.
 
+When the simulation uses super-grid boundary conditions, \emph{SW4} records how far the receiver is
+inside the super-grid absorbing layer in three otherwise unused header fields:
+
+\begin{center}
+	\begin{tabular}{|l|p{10cm}|} \hline
+		\bf{Field} & \bf{Meaning}                                                        \\ \hline \hline
+		USER8      & Distance into the super-grid layer, in meters. Zero means the receiver
+		is in the interior, i.e. the time history is a ground motion prediction.
+		\\ \hline
+		USER9      & The same distance in grid points, rounded up.                         \\ \hline
+		KUSER0     & The string {\tt SGLAYER}, marking {\tt USER8}/{\tt USER9} as carrying
+		this quantity.
+		\\ \hline
+	\end{tabular}
+\end{center}
+
+The distance is clamped at zero and is never a signed clearance from the layer, because SAC uses
+$-12345$ as its ``undefined'' value and a clearance of $-12345$ meters would be indistinguishable
+from a field that was never set. The three fields are left undefined when the simulation has no
+super-grid boundary, so {\tt USER8} $=-12345$ means ``not reported'', which is not the same as zero.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{sachdf5}\label{sec:sachdf5-format}
 \index{fileformats!sachdf5}
@@ -5298,6 +5336,17 @@ There are 4 global attributes in the root group of the file, including {\tt DATE
 (in UTC) recording the start of the simulation; {\tt UNIT}, the unit for the data (``m'', ``m/s'', etc.);
 {\tt DELTA}, the sample interval; and {\tt ORIGINTIME}, the origin time in seconds, relative to the start time
 of SW4 calculation and seismogram of the earliest source.
+
+When the simulation uses super-grid boundary conditions, two further root-group attributes describe
+the absorbing layer, so that the file describes its own geometry without reference to the input file:
+{\tt SGWIDTH}, the width of the layer in meters, and {\tt SGWIDTHGP}, the same width in grid points of
+the coarsest grid. Each station group then carries {\tt SGDEPTH}, how far that station is inside the
+layer in meters, and {\tt SGDEPTHGP}, the same distance in grid points. A value of zero means the
+station is in the interior, i.e. its time history is a ground motion prediction; any positive value
+means it is inside the layer, where \emph{SW4} solves a damped, coordinate-stretched equation and the
+time history is {\em not} a ground motion prediction. The natural severity measure is therefore
+{\tt SGDEPTH}/{\tt SGWIDTH}, which runs from just above 0 at the inner edge of the layer to 1 at the
+boundary.
 
 Then the time-series data of each station in separate groups, using the station name as the group name.
 Inside each group, there is the number of valid points stored in the data array, the station location
@@ -5319,6 +5368,8 @@ The HDF5 file stores data in an self-describing way, with the following fields:
 		UNIT                 & H5T\_STRING      & string\_len \\ \hline
 		DELTA                & H5T\_STD\_F32LE  & 1           \\ \hline
 		ORIGINTIME           & H5T\_STD\_F32LE  & 1           \\ \hline
+		SGWIDTH              & H5T\_STD\_F64LE  & 1           \\ \hline
+		SGWIDTHGP            & H5T\_STD\_F64LE  & 1           \\ \hline
 		Group /BK.BDM (station name)                          \\ \hline
 		ISNSEW               & H5T\_IEEE\_I32LE & 1           \\ \hline
 		LOC                  & H5T\_IEEE\_I32LE & 1           \\ \hline
@@ -5328,6 +5379,8 @@ The HDF5 file stores data in an self-describing way, with the following fields:
 		STX,STY,STZ          & H5T\_STD\_F32LE  & 3           \\ \hline
 		ACTUALSTX,STY,STZ    & H5T\_STD\_F32LE  & 3           \\ \hline
 		DISTFROMACTUAL       & H5T\_STD\_F32LE  & 1           \\ \hline
+		SGDEPTH              & H5T\_STD\_F64LE  & 1           \\ \hline
+		SGDEPTHGP            & H5T\_STD\_F64LE  & 1           \\ \hline
 		X or EW              & H5T\_STD\_F32LE  & NPTS        \\ \hline
 		XCMPAZ or EWCMPAZ    & H5T\_STD\_F32LE  & 1           \\ \hline
 		XCMPINC or EWCMPINC  & H5T\_STD\_F32LE  & 1           \\ \hline

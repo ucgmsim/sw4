@@ -1908,9 +1908,10 @@ int main(int argc, char **argv)
                  }
 #endif
 	      }
-	      for( int m = 0; m < GlobalObservations[e].size(); m++ )
-                 if( GlobalObservations[e][m]->is_in_supergrid_layer() )
-                    cout << "WARNING: station " << GlobalObservations[e][m]->getStationName() << " is inside the supergrid layer" << endl;
+// The unified check: physical, per-face, gated on mbcGlobalType so it cannot
+// fire in a run with no sponge at all, printed from rank 0 in input order, and
+// with a summary line so a clean station set is positively confirmed.
+	      simulation.check_receivers_in_supergrid( GlobalObservations[e] );
 	   }
 
 // Configure optimizer 

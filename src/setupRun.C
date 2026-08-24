@@ -147,6 +147,13 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
 // the parameters m_sg_thickness, m_sg_transition, m_supergrid_damping_coefficient
   setup_supergrid( );
 
+// Refuse to run a source inside the absorbing layer. This is the earliest
+// point at which the question can be answered: mbcGlobalType[] is only final
+// once default_bcs() above has run, and the Source objects have existed with
+// globally consistent grid indices since parsing. Aborting here is before
+// material setup, rfile/sfile reads and computeDT.
+  check_sources_in_supergrid( a_GlobalUniqueSources );
+
 // assign m_bcType and m_onesided based on the global boundary conditions and parallel overlap boundaries. 
   assign_local_bcs(); 
   initializePaddingCells();

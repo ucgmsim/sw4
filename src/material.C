@@ -180,6 +180,11 @@ void EW::check_materials()
   lmax = localMaxVpOverVs();  
   MPI_Allreduce(&lmax,&maxs[5],1,m_mpifloat,MPI_MAX,m_cartesian_communicator);
 
+// Keep the Vs range rather than only printing it: report_supergrid_absorption()
+// needs it and would otherwise have to reduce it a third time.
+  m_min_vs = mins[2];
+  m_max_vs = maxs[2];
+
   if( usingAttenuation() && !m_twilight_forcing)
   {
       lmin = localMin(mQs);

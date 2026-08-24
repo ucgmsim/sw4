@@ -1,0 +1,15 @@
+# The z=0 (top) face. 'lz=2' makes the free surface absorbing, so grid 0 carries
+# a sponge at BOTH z=0 and z=zmax. The receiver at z=200 is 800 m inside the top
+# layer; the old index-based predicate never looked at the top face and would
+# have called it interior. The source at z=2000 is clear of both z faces.
+fileio path=sg-topface-1
+grid x=6000 y=6000 z=4000 h=100
+time steps=2
+supergrid gp=10
+boundary_conditions lz=2
+block vp=6000 vs=3464 rho=2700
+# freq=20 -> a 0.31 s pulse against 0.67 s absorbable, so this case is also the
+# adequate-sponge negative: the shortfall warning must NOT fire.
+source x=3000 y=3000 z=2000 mxy=1e18 t0=0.1 freq=20 type=Gaussian
+rec x=3000 y=3000 z=2000 sta=interior file=interior usgsformat=1 sacformat=0
+rec x=3000 y=3000 z=200  sta=intop    file=intop    usgsformat=1 sacformat=0

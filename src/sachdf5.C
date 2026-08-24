@@ -414,6 +414,19 @@ int createTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, int totalSteps, f
   createWriteAttr(fid, "DELTA", H5T_NATIVE_FLOAT, attr_space1, &dt);
   createWriteAttr(fid, "DOWNSAMPLE", H5T_NATIVE_INT, attr_space1, &downsample);
 
+  // Width of the supergrid absorbing layer, so the file describes its own
+  // sponge: the natural severity axis downstream is SGDEPTH/SGWIDTH, and
+  // reconstructing the width from the run's config file would couple this
+  // file's self-description to a file that may have been edited since the run.
+  // Written once, by the single rank that creates the file.
+  {
+    double sgwidth = 0, sgwidthgp = 0;
+    if (TimeSeries[0]->getSupergridWidth(sgwidth, sgwidthgp)) {
+      createWriteAttr(fid, "SGWIDTH", H5T_NATIVE_DOUBLE, attr_space1, &sgwidth);
+      createWriteAttr(fid, "SGWIDTHGP", H5T_NATIVE_DOUBLE, attr_space1, &sgwidthgp);
+    }
+  }
+
   // o, origin time (seconds, relative to start time of SW4 calculation and seismogram, earliest source)
   createAttr(fid, "ORIGINTIME", H5T_NATIVE_FLOAT, attr_space1);
 
@@ -459,6 +472,14 @@ int createTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, int totalSteps, f
     createAttr(grp, "LOC", H5T_NATIVE_INT, attr_space1);
 
     createAttr(grp, "WINDOWS", H5T_NATIVE_DOUBLE, attr_space4);
+
+    // How far this station is inside the supergrid absorbing layer:
+    // 0 = interior, > 0 = inside (the trace is not a ground-motion
+    // prediction). Written by writeStationMetadataHDF5 below - keep the two in
+    // step, H5D_FILL_TIME_NEVER means a written-but-uncreated dataset is an
+    // error and an unwritten-but-created one is garbage.
+    createAttr(grp, "SGDEPTH", H5T_NATIVE_DOUBLE, attr_space1);
+    createAttr(grp, "SGDEPTHGP", H5T_NATIVE_DOUBLE, attr_space1);
 
     xyzcomponent = TimeSeries[ts]->getXYZcomponent();
     if( !xyzcomponent )
@@ -727,6 +748,8 @@ int writeStationMetadataHDF5(vector<TimeSeries*> & a_TimeSeries, EW *ew, string 
         openWriteAttr(grp, "ACTUALSTLA,STLO,STDP", H5T_NATIVE_DOUBLE, &m[6]);
         openWriteAttr(grp, "DISTFROMACTUAL",       H5T_NATIVE_DOUBLE, &m[9]);
         openWriteAttr(grp, "ACTUALSTX,STY,STZ",    H5T_NATIVE_DOUBLE, &m[10]);
+        openWriteAttr(grp, "SGDEPTH",              H5T_NATIVE_DOUBLE, &m[14]);
+        openWriteAttr(grp, "SGDEPTHGP",            H5T_NATIVE_DOUBLE, &m[15]);
 
         H5Gclose(grp);
       }

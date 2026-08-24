@@ -1,0 +1,10 @@
+# Supergrid guard: a source INSIDE the absorbing layer must abort.
+# h=100, gp=10 -> the layer is 1000 m wide, so 0 <= x <= 1000 is sponge.
+# The source at x=800 is 200 m (2 grid points) past its edge.
+fileio path=sg-source-1
+grid x=6000 y=6000 z=4000 h=100
+time steps=2
+supergrid gp=10
+block vp=6000 vs=3464 rho=2700
+source x=800 y=3000 z=1500 mxy=1e18 t0=0.1 freq=5 type=Gaussian
+rec x=3000 y=3000 z=0 sta=interior file=interior usgsformat=1 sacformat=0
