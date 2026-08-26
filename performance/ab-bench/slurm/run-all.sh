@@ -232,7 +232,9 @@ dash() {
       res=$(python3 - "$out" <<'PYX'
 import re, sys
 t = open(sys.argv[1], errors="replace").read()
-if "REFUSING TO RUN" in t: print("refused: bad allocation"); raise SystemExit
+# the guard prints REFUSING TO RUN and then, with FORCE=1, carries on -- so the
+# message alone is not a refusal. A correctness job read as "refused" once.
+if "REFUSING TO RUN" in t and "FORCE=1 set" not in t: print("refused: bad allocation"); raise SystemExit
 if "FAILED:" in t:
     print("build/module failure - see .out"); raise SystemExit
 geo = re.search(r'geometry\s+(\d+) cores -> (\d+) ranks x (\d+) threads', t)

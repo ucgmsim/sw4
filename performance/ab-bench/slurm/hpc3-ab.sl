@@ -127,6 +127,7 @@ if [ -n "${SLURM_JOB_ID:-}" ] && [ "$ALLOC" -gt 0 ] && [ "$ALLOC" -lt 8 ]; then
   echo "point is bit-exactness and the timings are irrelevant. This guard exists"
   echo "to stop meaningless TIMINGS, and it blocked exactly such a job once."
   [ -z "${FORCE:-}" ] && exit 1
+  echo "FORCE=1 set: continuing despite the allocation guard (correctness run)"
 fi
 if [ "$ALLOC" -gt 0 ] && [ "$PHYS" -gt 0 ] && [ "$ALLOC" -lt "$PHYS" ]; then
   echo " occupancy   $ALLOC of $PHYS cores -- SHARED NODE"
