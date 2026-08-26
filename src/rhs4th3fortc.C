@@ -405,6 +405,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 		  mu1zz = 0;
 		  mu2zz = 0;
 		  mu3zz = 0;
+		  #pragma GCC unroll 8
 		  for( q=1; q <= 8; q ++ )
 		  {
 		     //		     lap2mu= 0;
@@ -486,6 +487,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
             u3zip1=0;
             u3zim1=0;
             u3zim2=0;
+	    #pragma GCC unroll 8
 	    for( q=1 ; q <=8 ; q++ )
 	    {
 	       u3zip2 += bope(k,q)*u(3,i+2,j,q);
@@ -498,6 +500,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
             r1 = r1 + strx(i)*lau3zx;
 	    /*   (mu*w_x)_z: NOT CENTERED */
             mu3xz=0;
+            #pragma GCC unroll 8
             for( q=1 ; q<=8 ; q++ )
               mu3xz += bope(k,q)*( mu(i,j,q)*i12*
                   (-u(3,i+2,j,q) + 8*u(3,i+1,j,q)
@@ -529,6 +532,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
             u3zjp1=0;
             u3zjm1=0;
             u3zjm2=0;
+	    #pragma GCC unroll 8
 	    for( q=1 ; q <=8 ; q++ )
 	    {
 	       u3zjp2 += bope(k,q)*u(3,i,j+2,q);
@@ -543,6 +547,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 
 /* (mu*w_y)_z: NOT CENTERED */
             mu3yz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	       mu3yz += bope(k,q)*( mu(i,j,q)*i12*
                   (-u(3,i,j+2,q) + 8*u(3,i,j+1,q)
@@ -556,6 +561,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
             u1zip1=0;
             u1zim1=0;
             u1zim2=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	    {
 	       u1zip2 += bope(k,q)*u(1,i+2,j,q);
@@ -572,6 +578,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
             u2zjp1=0;
             u2zjm1=0;
             u2zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	    {
 	       u2zjp2 += bope(k,q)*u(2,i,j+2,q);
@@ -585,6 +592,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 
 /*   (la*u_x)_z: NOT CENTERED */
             lau1xz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	       lau1xz += bope(k,q)*( la(i,j,q)*i12*
                   (-u(1,i+2,j,q) + 8*u(1,i+1,j,q)
@@ -593,6 +601,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 
 /* (la*v_y)_z: NOT CENTERED */
             lau2yz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
               lau2yz += bope(k,q)*( la(i,j,q)*i12*
                   (-u(2,i,j+2,q) + 8*u(2,i,j+1,q)
@@ -664,10 +673,12 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 		  mu1zz = 0;
 		  mu2zz = 0;
 		  mu3zz = 0;
+		  #pragma GCC unroll 8
 		  for(  qb=1; qb <= 8 ; qb++ )
 		  {
 		     mucof = 0;
 		     lap2mu = 0;
+		     #pragma GCC unroll 8
 		     for(  mb=1; mb <= 8; mb++ )
 		     {
 			mucof  += acof(kb,qb,mb)*mu(i,j,nk-mb+1);
@@ -739,6 +750,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
             u3zip1=0;
             u3zim1=0;
             u3zim2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u3zip2 -= bope(kb,qb)*u(3,i+2,j,nk-qb+1);
@@ -752,6 +764,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 
     /*   (mu*w_x)_z: NOT CENTERED */
             mu3xz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               mu3xz -= bope(kb,qb)*( mu(i,j,nk-qb+1)*i12*
                   (-u(3,i+2,j,nk-qb+1) + 8*u(3,i+1,j,nk-qb+1)
@@ -784,6 +797,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
             u3zjp1=0;
             u3zjm1=0;
             u3zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u3zjp2 -= bope(kb,qb)*u(3,i,j+2,nk-qb+1);
@@ -797,6 +811,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 
 	    /* (mu*w_y)_z: NOT CENTERED */
             mu3yz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               mu3yz -= bope(kb,qb)*( mu(i,j,nk-qb+1)*i12*
                   (-u(3,i,j+2,nk-qb+1) + 8*u(3,i,j+1,nk-qb+1)
@@ -809,6 +824,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
             u1zip1=0;
             u1zim1=0;
             u1zim2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u1zip2 -= bope(kb,qb)*u(1,i+2,j,nk-qb+1);
@@ -825,6 +841,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
             u2zjp1=0;
             u2zjm1=0;
             u2zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u2zjp2 -= bope(kb,qb)*u(2,i,j+2,nk-qb+1);
@@ -838,6 +855,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 
 	    /*   (la*u_x)_z: NOT CENTERED */
             lau1xz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               lau1xz -= bope(kb,qb)*( la(i,j,nk-qb+1)*i12*
                  (-u(1,i+2,j,nk-qb+1) + 8*u(1,i+1,j,nk-qb+1)
@@ -846,6 +864,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 
 	    /* (la*v_y)_z: NOT CENTERED */
             lau2yz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
               lau2yz -= bope(kb,qb)*( la(i,j,nk-qb+1)*i12*
@@ -1259,6 +1278,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 		  mu1zz = 0;
 		  mu2zz = 0;
 		  mu3zz = 0;
+		  #pragma GCC unroll 8
 		  for( q=1; q <= 8; q ++ )
 		  {
 		     //		     lap2mu= 0;
@@ -1340,6 +1360,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
             u3zip1=0;
             u3zim1=0;
             u3zim2=0;
+	    #pragma GCC unroll 8
 	    for( q=1 ; q <=8 ; q++ )
 	    {
 	       u3zip2 += bope(k,q)*u(3,i+2,j,q);
@@ -1352,6 +1373,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
             r1 = r1 + strx(i)*lau3zx;
 	    /*   (mu*w_x)_z: NOT CENTERED */
             mu3xz=0;
+            #pragma GCC unroll 8
             for( q=1 ; q<=8 ; q++ )
               mu3xz += bope(k,q)*( mu(i,j,q)*i12*
                   (-u(3,i+2,j,q) + 8*u(3,i+1,j,q)
@@ -1383,6 +1405,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
             u3zjp1=0;
             u3zjm1=0;
             u3zjm2=0;
+	    #pragma GCC unroll 8
 	    for( q=1 ; q <=8 ; q++ )
 	    {
 	       u3zjp2 += bope(k,q)*u(3,i,j+2,q);
@@ -1397,6 +1420,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 
 /* (mu*w_y)_z: NOT CENTERED */
             mu3yz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	       mu3yz += bope(k,q)*( mu(i,j,q)*i12*
                   (-u(3,i,j+2,q) + 8*u(3,i,j+1,q)
@@ -1410,6 +1434,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
             u1zip1=0;
             u1zim1=0;
             u1zim2=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	    {
 	       u1zip2 += bope(k,q)*u(1,i+2,j,q);
@@ -1426,6 +1451,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
             u2zjp1=0;
             u2zjm1=0;
             u2zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	    {
 	       u2zjp2 += bope(k,q)*u(2,i,j+2,q);
@@ -1439,6 +1465,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 
 /*   (la*u_x)_z: NOT CENTERED */
             lau1xz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	       lau1xz += bope(k,q)*( la(i,j,q)*i12*
                   (-u(1,i+2,j,q) + 8*u(1,i+1,j,q)
@@ -1447,6 +1474,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 
 /* (la*v_y)_z: NOT CENTERED */
             lau2yz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
               lau2yz += bope(k,q)*( la(i,j,q)*i12*
                   (-u(2,i,j+2,q) + 8*u(2,i,j+1,q)
@@ -1518,10 +1546,12 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 		  mu1zz = 0;
 		  mu2zz = 0;
 		  mu3zz = 0;
+		  #pragma GCC unroll 8
 		  for(  qb=1; qb <= 8 ; qb++ )
 		  {
 		     mucof = 0;
 		     lap2mu = 0;
+		     #pragma GCC unroll 8
 		     for(  mb=1; mb <= 8; mb++ )
 		     {
 			mucof  += acof(kb,qb,mb)*mu(i,j,nk-mb+1);
@@ -1593,6 +1623,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
             u3zip1=0;
             u3zim1=0;
             u3zim2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u3zip2 -= bope(kb,qb)*u(3,i+2,j,nk-qb+1);
@@ -1606,6 +1637,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 
     /*   (mu*w_x)_z: NOT CENTERED */
             mu3xz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               mu3xz -= bope(kb,qb)*( mu(i,j,nk-qb+1)*i12*
                   (-u(3,i+2,j,nk-qb+1) + 8*u(3,i+1,j,nk-qb+1)
@@ -1638,6 +1670,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
             u3zjp1=0;
             u3zjm1=0;
             u3zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u3zjp2 -= bope(kb,qb)*u(3,i,j+2,nk-qb+1);
@@ -1651,6 +1684,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 
 	    /* (mu*w_y)_z: NOT CENTERED */
             mu3yz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               mu3yz -= bope(kb,qb)*( mu(i,j,nk-qb+1)*i12*
                   (-u(3,i,j+2,nk-qb+1) + 8*u(3,i,j+1,nk-qb+1)
@@ -1663,6 +1697,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
             u1zip1=0;
             u1zim1=0;
             u1zim2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u1zip2 -= bope(kb,qb)*u(1,i+2,j,nk-qb+1);
@@ -1679,6 +1714,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
             u2zjp1=0;
             u2zjm1=0;
             u2zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u2zjp2 -= bope(kb,qb)*u(2,i,j+2,nk-qb+1);
@@ -1692,6 +1728,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 
 	    /*   (la*u_x)_z: NOT CENTERED */
             lau1xz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               lau1xz -= bope(kb,qb)*( la(i,j,nk-qb+1)*i12*
                  (-u(1,i+2,j,nk-qb+1) + 8*u(1,i+1,j,nk-qb+1)
@@ -1700,6 +1737,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 
 	    /* (la*v_y)_z: NOT CENTERED */
             lau2yz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
               lau2yz -= bope(kb,qb)*( la(i,j,nk-qb+1)*i12*

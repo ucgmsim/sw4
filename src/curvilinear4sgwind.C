@@ -346,6 +346,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 	       // averaging the coefficient
 // 54*8*8+25*8 = 3656 ops, tot=3939
 	       float_sw4 mucofu2, mucofuv, mucofuw, mucofvw, mucofv2, mucofw2;
+	       #pragma GCC unroll 8
 	       for( int q=1 ; q <= 8 ; q++ )
 	       {
 		  mucofu2=0;
@@ -354,6 +355,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 		  mucofvw=0;
 		  mucofv2=0;
 		  mucofw2=0;
+		  #pragma GCC unroll 8
 		  for( int m=1 ; m <= 8 ; m++ )
 		  {
 		     mucofu2 += 
@@ -477,6 +479,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 	       float_sw4 dudrm2 = 0, dudrm1=0, dudrp1=0, dudrp2=0;
 	       float_sw4 dvdrm2 = 0, dvdrm1=0, dvdrp1=0, dvdrp2=0;
 	       float_sw4 dwdrm2 = 0, dwdrm1=0, dwdrp1=0, dwdrp2=0;
+	       #pragma GCC unroll 8
 	       for( int q=1 ; q <= 8 ; q++ )
 	       {
 		  dudrm2 += bope(k,q)*u(1,i-2,j,q);
@@ -562,6 +565,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 	       dwdrm1 = 0;
 	       dwdrp1 = 0;
 	       dwdrp2 = 0;
+	       #pragma GCC unroll 8
 	       for( int q=1 ; q <= 8 ; q++ )
 	       {
 		  dudrm2 += bope(k,q)*u(1,i,j-2,q);
@@ -634,6 +638,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 
 	       // pr and qr derivatives at once
 // in loop: 8*(53+53+43) = 1192 ops, tot=6037
+	       #pragma GCC unroll 8
 	       for( int q=1 ; q <= 8 ; q++ )
 	       {
 		  // (u-eq)
@@ -1702,6 +1707,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 	       // averaging the coefficient
 // 54*8*8+25*8 = 3656 ops, tot=3939
 	       float_sw4 mucofu2, mucofuv, mucofuw, mucofvw, mucofv2, mucofw2;
+	       #pragma GCC unroll 8
 	       for( int q=nk-7 ; q <= nk ; q++ )
 	       {
 		  mucofu2=0;
@@ -1710,6 +1716,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 		  mucofvw=0;
 		  mucofv2=0;
 		  mucofw2=0;
+		  #pragma GCC unroll 8
 		  for( int m=nk-7 ; m <= nk ; m++ )
 		  {
 		     mucofu2 += 
@@ -1835,6 +1842,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 	       float_sw4 dudrm2 = 0, dudrm1=0, dudrp1=0, dudrp2=0;
 	       float_sw4 dvdrm2 = 0, dvdrm1=0, dvdrp1=0, dvdrp2=0;
 	       float_sw4 dwdrm2 = 0, dwdrm1=0, dwdrp1=0, dwdrp2=0;
+	       #pragma GCC unroll 8
 	       for( int q=nk-7 ; q <= nk ; q++ )
 	       {
 		  dudrm2 -= bope(nk-k+1,nk-q+1)*u(1,i-2,j,q);
@@ -1920,6 +1928,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 	       dwdrm1 = 0;
 	       dwdrp1 = 0;
 	       dwdrp2 = 0;
+	       #pragma GCC unroll 8
 	       for( int q=nk-7 ; q <= nk ; q++ )
 	       {
 		  dudrm2 -= bope(nk-k+1,nk-q+1)*u(1,i,j-2,q);
@@ -1992,6 +2001,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 
 	       // pr and qr derivatives at once
 // in loop: 8*(53+53+43) = 1192 ops, tot=6037
+	       #pragma GCC unroll 8
 	       for( int q=nk-7 ; q <= nk ; q++ )
 	       {
 		  // (u-eq)
