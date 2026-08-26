@@ -209,7 +209,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 // bandwidth: the one phase that is a single long parallel loop was flat while
 // bc, which forks 42 times, degraded 6.5-8.0x. Div-stress carries 3 barriers
 // per Cartesian call and 5 per curvilinear call; this removes all but one.
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1) nowait
       for( int k= klowb; k <= klowe ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -724,7 +724,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 // is compute-bound on every target (AI 32.3 flop/B single against a machine
 // balance of 8.4-24.5), so it has traffic budget to spend. This is the CPU
 // analogue of the loop fission that gave 3x in the published GPU port.
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1)
    for( int k= kmidb ; k <= kmide ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -1021,7 +1021,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 	    SW4_CURV_LU_STORE(1, r1*ijac);
 	 }
 
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1)
    for( int k= kmidb ; k <= kmide ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -1327,7 +1327,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
 	    SW4_CURV_LU_STORE(2, r2*ijac);
 	 }
 
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1)
    for( int k= kmidb ; k <= kmide ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -1569,7 +1569,7 @@ static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlas
    }
    if( upper )
    {
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1) nowait
       for( int k= khighb; k <= khighe ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd

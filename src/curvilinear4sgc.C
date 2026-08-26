@@ -152,7 +152,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 // bandwidth: the one phase that is a single long parallel loop was flat while
 // bc, which forks 42 times, degraded 6.5-8.0x. Div-stress carries 3 barriers
 // per Cartesian call and 5 per curvilinear call; this removes all but one.
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1) nowait
       for( int k= 1; k <= 6 ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -651,6 +651,37 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	       SW4_CURV_LU_STORE(3, r3*ijac);
 	    }
    }
+// schedule(static,1) on every collapsed (k,j) loop in the RHS kernels, and
+// no nowait between the three fissioned interior loops below. Both are about
+// the cache, and the arithmetic is from a production log (3125077, 384 ranks
+// x 4 threads, 2 ranks per Genoa CCD):
+//
+//   g3 (66% of all points): 142x181 interior + 6 halo/side = 29.7K pts/plane.
+//   This kernel streams 10 scalars per plane (u x3, mu, la, met x4, jac), so
+//   one k-plane is 1.19 MB and the 5-plane stencil window is 5.9 MB.
+//   L2 is 1 MB/core; the L3 share is 4 MB/thread, 16 MB/rank.
+//
+// The default schedule(static) on a collapsed (k,j) space hands each thread a
+// contiguous k-RANGE, so four threads walk four different 5.9 MB windows:
+// 24 MB demanded from a 16 MB share, and every k-plane is re-fetched from
+// DRAM for each of the 5 k-iterations it takes part in -- times three for the
+// fission. Div-stress on the curvilinear grids was bandwidth-bound at the node
+// roofline (~560 GB/s, calibrated from the Updates phase) on a kernel with
+// 32 flop/byte of arithmetic intensity: 6.8 flops/cycle achieved against an
+// issue-bound ~20 for the interior loop.
+//
+// schedule(static,1) interleaves j-ROWS on the same k-plane across threads:
+// one shared 5.9 MB window in the rank's L3, and each thread's private
+// j-reuse set (5 rows x 5 planes x 10 scalars x 154 pts x 4 B = 150 KB) in
+// its L2. Same iteration count per thread, same arithmetic per point, no
+// barriers added. Dropping nowait between the fissioned loops keeps all four
+// threads on the same loop and hence the same window; three barriers per call
+// at four threads is noise. The closures keep nowait: they are 6 k-levels and
+// write disjoint slices.
+//
+// The fission comment above claims this kernel is compute-bound at AI 32.3
+// flop/B. That is true only when the window is cache-resident. It was not.
+//
 // Fissioned by output component. The three sections below (u-, v-, w-equation)
 // are provably independent: each assigns every cof/mux temporary before reading
 // it, and each touches only its own accumulator -- verified by scanning for
@@ -665,7 +696,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 // is compute-bound on every target (AI 32.3 flop/B single against a machine
 // balance of 8.4-24.5), so it has traffic budget to spend. This is the CPU
 // analogue of the loop fission that gave 3x in the published GPU port.
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1)
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -962,7 +993,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	    SW4_CURV_LU_STORE(1, r1*ijac);
 	 }
 
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1)
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -1268,7 +1299,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	    SW4_CURV_LU_STORE(2, r2*ijac);
 	 }
 
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1)
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -1509,7 +1540,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	 }
    if( onesided[5]==1 )
    {
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1) nowait
       for( int k= nk-5; k <= nk ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd

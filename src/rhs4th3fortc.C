@@ -114,7 +114,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 // bandwidth: the one phase that is a single long parallel loop was flat while
 // bc, which forks 42 times, degraded 6.5-8.0x. Div-stress carries 3 barriers
 // per Cartesian call and 5 per curvilinear call; this removes all but one.
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1) nowait
    for( k= k1; k <= k2 ; k++ )
       for( j=jfirst+2; j <= jlast-2 ; j++ )
 //#pragma simd deprecated
@@ -352,7 +352,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 	 }
       if( onesided[4]==1 )
       {
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1) nowait
 	 for( k=1 ; k<= 6 ; k++ )
 /* the centered stencil can be used in the x- and y-directions */
 	    for( j=jfirst+2; j<=jlast-2; j++ )
@@ -615,7 +615,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
       }
       if( onesided[5] == 1 )
       {
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1) nowait
 	 for(  k = nk-5 ; k <= nk ; k++ )
 	    for(  j=jfirst+2; j<=jlast-2; j++ )
 	       //#pragma simd
@@ -987,7 +987,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
               mu3yz,mu1zx,u1zip2,u1zip1,u1zim1,u1zim2,\
 	      u2zjp2,u2zjp1,u2zjm1,u2zjm2,mu2zy,lau1xz,lau2yz,kb,qb,mb,muz1,muz2,muz3,muz4)
    {
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1) nowait
    for( k= k1; k <= k2 ; k++ )
       for( j=jfirst+2; j <= jlast-2 ; j++ )
 	 //#pragma simd
@@ -1225,7 +1225,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 	 }
       if( onesided[4]==1 )
       {
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1) nowait
 	 for( k=1 ; k<= 6 ; k++ )
 /* the centered stencil can be used in the x- and y-directions */
 	    for( j=jfirst+2; j<=jlast-2; j++ )
@@ -1488,7 +1488,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
       }
       if( onesided[5] == 1 )
       {
-#pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) schedule(static,1) nowait
 	 for(  k = nk-5 ; k <= nk ; k++ )
 	    for(  j=jfirst+2; j<=jlast-2; j++ )
 	       //#pragma simd
