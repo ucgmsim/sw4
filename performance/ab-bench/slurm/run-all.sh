@@ -26,7 +26,7 @@ STEPS="${STEPS:-200}"
 MEM="${MEM:-96G}"
 WALL="${WALL:-3:00:00}"
 MODULES_ENV="${MODULES:-}"
-DO_ARCHIVE=1; DO_SUBMIT=1; DO_WATCH=1; DRY=0; PACKAGE=0; INTERVAL="${INTERVAL:-90}"
+DO_ARCHIVE=1; DO_SUBMIT=1; DO_WATCH=1; DRY=0; PACKAGE=0; ONLY=""; INTERVAL="${INTERVAL:-90}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,12 +42,15 @@ while [[ $# -gt 0 ]]; do
     --watch-only) DO_ARCHIVE=0; DO_SUBMIT=0; shift;;
     --dry-run) DRY=1; shift;;
     --package) PACKAGE=1; shift;;
+    --only) ONLY="$2"; DO_ARCHIVE=0; shift 2;;
     --interval) INTERVAL="$2"; shift 2;;
     -h|--help)
       sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
       echo "Options: -A ACCOUNT --size S|M|L|XL --reps N --steps N --mem X --wall H:MM:SS"
       echo "         --no-archive --no-submit --no-watch --watch-only --dry-run --interval SEC"
       echo "         --package   submit the 2026-08-26 kernel package matrix instead (see script)"
+      echo "         --only A,B  submit only the named matrix rows; implies --no-archive and APPENDS"
+      echo "                     to .ab-jobs, so already-queued jobs keep being watched"
       exit 0;;
     *) echo "unknown option: $1" >&2; exit 2;;
   esac
@@ -132,20 +135,28 @@ MATRIX=(
 # production per-rank plane sizes and ranks-per-CCD; see the case comment.
 if [ "$PACKAGE" = 1 ]; then
   PKG_BASE="${PKG_BASE:-d60411e8}"
+  # Whole-node rank count. genoa is 168 cores = 42x4, but a partition/QoS cap
+  # on CPUs per job refused exactly those submissions once; set PKG_RANKS to
+  # the largest multiple of 2 that fits (e.g. 32 for a 128-CPU cap, 40 for one
+  # reserved core). The layout pair uses PKG_RANKS x4 vs PKG_RANKS/2 x8 at the
+  # extent prod-full would pick for PKG_RANKS, so both solve the same grid.
+  PKG_RANKS="${PKG_RANKS:-42}"
+  PKG_HALF=$(( PKG_RANKS / 2 ))
+  PKG_L=$(python3 -c "print(int(round(175*(${PKG_RANKS})**0.5/4))*400)")
   PKG_ENV="BASE=$PKG_BASE HEAD_REF=HEAD PRECISION=single STEPS=150 REPS=4"
   # genoa is 2x EPYC 9634 = 168 cores. 42x4 fills the node: the L3 is ours,
   # the DRAM contention is production's, and 4 threads/rank is the production
   # layout. If a whole node will not schedule, P-full-16 is the shared-node
   # fallback -- same per-rank geometry, but the L3 share is unknown.
   MATRIX=(
-    "P-full-42|$P_GENOA|2:30:00|1|42|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=42"
+    "P-full-$PKG_RANKS|$P_GENOA|2:30:00|1|$PKG_RANKS|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=$PKG_RANKS"
     "P-full-16|$P_GENOA|2:30:00|1|16|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=16"
     # Layout pair at a FIXED problem (SW4_BENCH_L pinned to the 42-rank extent).
     # Prediction: before the package, 8 threads/rank loses badly to 4 (eight
     # private stencil windows vs four); after it, the gap mostly closes because
     # the window is shared. Both sides of both jobs solve the same grid.
-    "P-lay42x4|$P_GENOA|2:30:00|1|42|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=42 SW4_BENCH_L=113600"
-    "P-lay21x8|$P_GENOA|2:30:00|1|21|8|96G|$AB|$PKG_ENV CASES=prod-full RANKS=21 SW4_BENCH_L=113600"
+    "P-lay${PKG_RANKS}x4|$P_GENOA|2:30:00|1|$PKG_RANKS|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=$PKG_RANKS SW4_BENCH_L=$PKG_L"
+    "P-lay${PKG_HALF}x8|$P_GENOA|2:30:00|1|$PKG_HALF|8|96G|$AB|$PKG_ENV CASES=prod-full RANKS=$PKG_HALF SW4_BENCH_L=$PKG_L"
     # Correctness. Under STRICT_FP (no FMA re-contraction) the whole package
     # must be bit-exact: the unroll preserves summation order, the schedule
     # change moves iterations between threads without changing any of them,
@@ -162,11 +173,12 @@ if [ "$PACKAGE" = 1 ]; then
 fi
 
 if [ "$DO_SUBMIT" = 1 ]; then
-  : > "$STATE"
+  [ -z "$ONLY" ] && : > "$STATE"
   echo
   printf "%-10s %-7s %-6s %-9s %-9s %s\n" JOB PART LAYOUT WALL SIZE JOBID
   for row in "${MATRIX[@]}"; do
     IFS='|' read -r name part wall nodes ntasks cpt mem script envs <<< "$row"
+    if [ -n "$ONLY" ] && ! grep -qx "$name" <<< "${ONLY//,/$'\n'}"; then continue; fi
     if [ "$script" = "$COMM" ]; then
       layout="${nodes}n x${ntasks}x${cpt}"
       geom=(--nodes="$nodes" --ntasks-per-node="$ntasks" --cpus-per-task="$cpt")
