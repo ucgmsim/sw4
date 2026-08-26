@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include "Sarray.h"
 #include "EW.h"
 #include "CurvilinearInterface2.h"
@@ -38,6 +40,7 @@ CurvilinearInterface2::CurvilinearInterface2( int a_gc, EW* a_ew )
    m_reltol= 1e-6;
    m_abstol= 1e-6;
    m_maxit = 30;
+   m_lhs_cof_built = false;
    m_gc = a_gc;
    m_gf = a_gc+1;
    m_ew = a_ew;
@@ -503,6 +506,7 @@ void CurvilinearInterface2::impose_ic( std::vector<Sarray>& a_U, float_sw4 t,
    DPlane xd(3,m_ib,m_ie,m_jb,m_je), rhsd(3,m_ib,m_ie,m_jb,m_je);
    DPlane lhsd(3,m_ib,m_ie,m_jb,m_je), resd(3,m_ib,m_ie,m_jb,m_je);
    interface_rhs_d( rhsd, U_c, U_f, F_c, F_f, Alpha_c, Alpha_f );
+#pragma omp parallel for collapse(2)
    for( int c=1 ; c <= 3 ;c++)
       for( int j=m_jb ; j <= m_je ; j++ )
          for( int i=m_ib ; i <= m_ie ; i++ )
@@ -511,6 +515,7 @@ void CurvilinearInterface2::impose_ic( std::vector<Sarray>& a_U, float_sw4 t,
 
    // Initial residual
    double maxresloc=0;
+#pragma omp parallel for collapse(2) reduction(max:maxresloc)
    for( int c=1 ; c <= 3 ;c++)
      for( int j=m_jb+5 ; j <= m_je-5 ; j++ )
        for( int i=m_ib+5 ; i <= m_ie-5 ; i++ )
@@ -535,6 +540,7 @@ void CurvilinearInterface2::impose_ic( std::vector<Sarray>& a_U, float_sw4 t,
    while( maxres > m_reltol*maxres0 && scalef*maxres > m_abstol && iter <= m_maxit )
    {
       iter++;
+#pragma omp parallel for
       for( int j=m_Mass_block.m_jb ; j <= m_Mass_block.m_je ; j++ )
          for( int i=m_Mass_block.m_ib ; i <= m_Mass_block.m_ie ; i++ )
 	 {
@@ -561,6 +567,7 @@ void CurvilinearInterface2::impose_ic( std::vector<Sarray>& a_U, float_sw4 t,
 
 // 4.e. Compute residual and its norm
       maxresloc=0;
+#pragma omp parallel for collapse(2) reduction(max:maxresloc)
       for( int c=1 ; c <= 3 ;c++)
 	  for( int j=m_jb+5 ; j <= m_je-5 ; j++ )
 	     for( int i=m_ib+5 ; i <= m_ie-5 ; i++ )
@@ -711,6 +718,7 @@ void CurvilinearInterface2::interface_lhs_d( DPlane& lhsd, DPlane& xd )
    const double w1=17.0/48;
    lhs_Lu_d( xd, lhsd );
 
+#pragma omp parallel for collapse(2)
    for( int c=1 ; c <= 3; c++ )
       for( int j=lhsd.jb ; j <= lhsd.je ; j++ )
          for( int i=lhsd.ib ; i <= lhsd.ie ; i++ )
@@ -718,8 +726,16 @@ void CurvilinearInterface2::interface_lhs_d( DPlane& lhsd, DPlane& xd )
    if( !m_tw && !m_psource )
       bnd_zero_d(lhsd,m_nghost);
 
-   DPlane prollhsd(3,m_ibf,m_ief,m_jbf,m_jef);
+   // Reused rather than heap-allocated per call; DPlane's sizing constructor
+   // zero-fills, so the buffers are zeroed here to keep that guarantee for
+   // whatever prolongate2D_d / lhs_icstresses_curv_d leave untouched.
+   if( m_prol_scratch.nc == 0 )
+      m_prol_scratch = DPlane(3,m_ibf,m_ief,m_jbf,m_jef);
+   else
+      std::fill( m_prol_scratch.data.begin(), m_prol_scratch.data.end(), 0.0 );
+   DPlane& prollhsd = m_prol_scratch;
    prolongate2D_d( lhsd, prollhsd );
+#pragma omp parallel for collapse(2)
    for( int c=1 ; c <= 3 ;c++)
       for( int j=prollhsd.jb ; j <= prollhsd.je ; j++ )
          for( int i=prollhsd.ib ; i <= prollhsd.ie ; i++ )
@@ -729,8 +745,13 @@ void CurvilinearInterface2::interface_lhs_d( DPlane& lhsd, DPlane& xd )
       bnd_zero_d(prollhsd,m_nghost);
    restrict2D_d( lhsd, prollhsd );
 
-   DPlane Bc(3,lhsd.ib,lhsd.ie,lhsd.jb,lhsd.je);
+   if( m_bc_scratch.nc == 0 )
+      m_bc_scratch = DPlane(3,lhsd.ib,lhsd.ie,lhsd.jb,lhsd.je);
+   else
+      std::fill( m_bc_scratch.data.begin(), m_bc_scratch.data.end(), 0.0 );
+   DPlane& Bc = m_bc_scratch;
    lhs_icstresses_curv_d( xd, Bc );
+#pragma omp parallel for collapse(2)
    for( int c=1 ; c <= 3; c++ )
       for( int j=lhsd.jb ; j <= lhsd.je ; j++ )
          for( int i=lhsd.ib ; i <= lhsd.ie ; i++ )
@@ -1005,19 +1026,46 @@ void CurvilinearInterface2::lhs_Lu_d( DPlane& xd, DPlane& lhsd )
    const int jfirst = m_jb;
 #define strx_d(i) m_strx_c[(i-ifirst)]
 #define stry_d(j) m_stry_c[(j-jfirst)]
+   // The six stress coefficients and ijac are functions of mu, lambda, the
+   // metric, the Jacobian and the supergrid stretching only -- none of which
+   // change in time -- so they are built once here instead of on every Jacobi
+   // iteration of every solve of every timestep. Same expressions in the same
+   // order, so the stored values are bit-identical to the ones the inline
+   // version produced.
+   // Rebuild if a future call site ever passes different bounds; today both
+   // call sites are impose_ic's single lhsd, sized (3,m_ib,m_ie,m_jb,m_je).
+   if( m_lhs_cof_built && ( m_lhs_cof.ib != lhsd.ib || m_lhs_cof.ie != lhsd.ie ||
+                            m_lhs_cof.jb != lhsd.jb || m_lhs_cof.je != lhsd.je ) )
+      m_lhs_cof_built = false;
+   if( !m_lhs_cof_built )
+   {
+      m_lhs_cof = DPlane( 7, lhsd.ib, lhsd.ie, lhsd.jb, lhsd.je );
+#pragma omp parallel for
+      for( int j=lhsd.jb; j <= lhsd.je ;j++ )
+	 for( int i=lhsd.ib; i <= lhsd.ie ;i++ )
+	 {
+	    double mu = m_mu_c(i,j,1), la = m_lambda_c(i,j,1);
+	    double met2 = m_met_c(2,i,j,1), met3 = m_met_c(3,i,j,1), met4 = m_met_c(4,i,j,1);
+	    double sx = strx_d(i), sy = stry_d(j);
+	    m_lhs_cof(1,i,j) = ((2*mu+la)*met2*sx*met2*sx + mu*(met3*sy*met3*sy+met4*met4));
+	    m_lhs_cof(2,i,j) = ((2*mu+la)*met3*sy*met3*sy + mu*(met2*sx*met2*sx+met4*met4));
+	    m_lhs_cof(3,i,j) = ((2*mu+la)*met4*met4 + mu*(met2*sx*met2*sx+met3*sy*met3*sy));
+	    m_lhs_cof(4,i,j) = (mu+la)*met2*met3*sx*sy;
+	    m_lhs_cof(5,i,j) = (mu+la)*met2*met4*sx;
+	    m_lhs_cof(6,i,j) = (mu+la)*met3*met4*sy;
+	    m_lhs_cof(7,i,j) = m_ghcof[0]/(double)m_jac_c(i,j,1);
+	 }
+      m_lhs_cof_built = true;
+   }
+#pragma omp parallel for
    for( int j=lhsd.jb; j <= lhsd.je ;j++ )
+#pragma omp simd
       for( int i=lhsd.ib; i <= lhsd.ie ;i++ )
       {
-         double ijac = m_ghcof[0]/(double)m_jac_c(i,j,1);
-         double mu = m_mu_c(i,j,1), la = m_lambda_c(i,j,1);
-         double met2 = m_met_c(2,i,j,1), met3 = m_met_c(3,i,j,1), met4 = m_met_c(4,i,j,1);
-         double sx = strx_d(i), sy = stry_d(j);
-         double mucofu2 = ((2*mu+la)*met2*sx*met2*sx + mu*(met3*sy*met3*sy+met4*met4));
-	 double mucofv2 = ((2*mu+la)*met3*sy*met3*sy + mu*(met2*sx*met2*sx+met4*met4));
-	 double mucofw2 = ((2*mu+la)*met4*met4 + mu*(met2*sx*met2*sx+met3*sy*met3*sy));
-	 double mucofuv = (mu+la)*met2*met3*sx*sy;
-	 double mucofuw = (mu+la)*met2*met4*sx;
-	 double mucofvw = (mu+la)*met3*met4*sy;
+         double mucofu2 = m_lhs_cof(1,i,j), mucofv2 = m_lhs_cof(2,i,j);
+         double mucofw2 = m_lhs_cof(3,i,j), mucofuv = m_lhs_cof(4,i,j);
+         double mucofuw = m_lhs_cof(5,i,j), mucofvw = m_lhs_cof(6,i,j);
+         double ijac    = m_lhs_cof(7,i,j);
          lhsd(1,i,j) = (mucofu2*xd(1,i,j) + mucofuv*xd(2,i,j) + mucofuw*xd(3,i,j))*ijac;
 	 lhsd(2,i,j) = (mucofuv*xd(1,i,j) + mucofv2*xd(2,i,j) + mucofvw*xd(3,i,j))*ijac;
          lhsd(3,i,j) = (mucofuw*xd(1,i,j) + mucofvw*xd(2,i,j) + mucofw2*xd(3,i,j))*ijac;

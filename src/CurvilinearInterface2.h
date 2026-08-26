@@ -36,6 +36,20 @@ class CurvilinearInterface2
    bool m_isbndry[4]; // side is physical boundary
 
    float_sw4 m_reltol, m_abstol;
+
+   // --- Jacobi-iteration working storage (see impose_ic / interface_lhs_d) ---
+   // interface_lhs_d() heap-allocated both of these planes on every call, i.e.
+   // twice per Jacobi iteration, of every solve, of every timestep. Reused now;
+   // still zero-filled before use so the semantics are unchanged.
+   DPlane m_prol_scratch, m_bc_scratch;
+   // lhs_Lu_d()'s six stress coefficients are built from mu, lambda, the
+   // metric, the Jacobian and the supergrid stretching -- all time-invariant --
+   // yet were recomputed on every Jacobi iteration. Built once, on first use.
+   // nc=7: mucofu2, mucofv2, mucofw2, mucofuv, mucofuw, mucofvw, ijac. ijac is
+   // kept as its own component rather than folded into the other six so the
+   // arithmetic in lhs_Lu_d stays operation-for-operation identical.
+   DPlane m_lhs_cof;
+   bool m_lhs_cof_built;
    int m_maxit;
 
    float_sw4 *m_strx_c, *m_strx_f, *m_stry_c, *m_stry_f;
