@@ -26,7 +26,7 @@ STEPS="${STEPS:-200}"
 MEM="${MEM:-96G}"
 WALL="${WALL:-3:00:00}"
 MODULES_ENV="${MODULES:-}"
-DO_ARCHIVE=1; DO_SUBMIT=1; DO_WATCH=1; DRY=0; INTERVAL="${INTERVAL:-90}"
+DO_ARCHIVE=1; DO_SUBMIT=1; DO_WATCH=1; DRY=0; PACKAGE=0; INTERVAL="${INTERVAL:-90}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,11 +41,13 @@ while [[ $# -gt 0 ]]; do
     --no-watch)   DO_WATCH=0; shift;;
     --watch-only) DO_ARCHIVE=0; DO_SUBMIT=0; shift;;
     --dry-run) DRY=1; shift;;
+    --package) PACKAGE=1; shift;;
     --interval) INTERVAL="$2"; shift 2;;
     -h|--help)
       sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
       echo "Options: -A ACCOUNT --size S|M|L|XL --reps N --steps N --mem X --wall H:MM:SS"
       echo "         --no-archive --no-submit --no-watch --watch-only --dry-run --interval SEC"
+      echo "         --package   submit the 2026-08-26 kernel package matrix instead (see script)"
       exit 0;;
     *) echo "unknown option: $1" >&2; exit 2;;
   esac
@@ -120,6 +122,44 @@ MATRIX=(
   # the script default would have compared.
   "P-comm|$P_GENOA|4:00:00|4|16|4|96G|$COMM|BASE=e6ccbba HEAD_REF=HEAD SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS_PER_NODE=16"
 )
+
+# ---------------------------------------------------------------- package ----
+# The 2026-08-26 kernel package as ONE unit: d60411e8 -> HEAD, i.e.
+#   2e32c921  vectorise the SBP boundary closures (67 unroll pragmas)
+#   59f18318  curvilinear MR interface: hoist invariants, stop allocating, thread
+#   59f354ef  RHS kernels: share the k-plane window across threads
+# All on the prod-full case, because the third commit's effect exists only at
+# production per-rank plane sizes and ranks-per-CCD; see the case comment.
+if [ "$PACKAGE" = 1 ]; then
+  PKG_BASE="${PKG_BASE:-d60411e8}"
+  PKG_ENV="BASE=$PKG_BASE HEAD_REF=HEAD PRECISION=single STEPS=150 REPS=4"
+  # genoa is 2x EPYC 9634 = 168 cores. 42x4 fills the node: the L3 is ours,
+  # the DRAM contention is production's, and 4 threads/rank is the production
+  # layout. If a whole node will not schedule, P-full-16 is the shared-node
+  # fallback -- same per-rank geometry, but the L3 share is unknown.
+  MATRIX=(
+    "P-full-42|$P_GENOA|2:30:00|1|42|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=42"
+    "P-full-16|$P_GENOA|2:30:00|1|16|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=16"
+    # Layout pair at a FIXED problem (SW4_BENCH_L pinned to the 42-rank extent).
+    # Prediction: before the package, 8 threads/rank loses badly to 4 (eight
+    # private stencil windows vs four); after it, the gap mostly closes because
+    # the window is shared. Both sides of both jobs solve the same grid.
+    "P-lay42x4|$P_GENOA|2:30:00|1|42|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=42 SW4_BENCH_L=113600"
+    "P-lay21x8|$P_GENOA|2:30:00|1|21|8|96G|$AB|$PKG_ENV CASES=prod-full RANKS=21 SW4_BENCH_L=113600"
+    # Correctness. Under STRICT_FP (no FMA re-contraction) the whole package
+    # must be bit-exact: the unroll preserves summation order, the schedule
+    # change moves iterations between threads without changing any of them,
+    # and the MR reductions are max(). One thread removes any doubt about
+    # thread ordering; the 4-thread job then proves the schedule change and
+    # the MR threading are order-independent. Both MUST come back bit-exact.
+    "P-strict-1t|$P_GENOA|1:30:00|1|4|1|32G|$AB|BASE=$PKG_BASE HEAD_REF=HEAD PRECISION=single CASES=prod-full,prod-mr,prod-curvi STEPS=100 REPS=2 STRICT=1 RANKS=4 THREADS_OVERRIDE=1 FORCE=1"
+    "P-strict-4t|$P_GENOA|1:30:00|1|4|4|32G|$AB|BASE=$PKG_BASE HEAD_REF=HEAD PRECISION=single CASES=prod-full STEPS=100 REPS=2 STRICT=1 RANKS=4"
+    # The old cube cases, so the package is also read against the numbers every
+    # previous round produced. Expect the closure and MR commits to show here
+    # and the schedule commit not to (the window already fits).
+    "P-cube|$P_GENOA|4:00:00|1|16|4|96G|$AB|$PKG_ENV CASES=prod,prod-mr,prod-curvi SIZE=M RANKS=16"
+  )
+fi
 
 if [ "$DO_SUBMIT" = 1 ]; then
   : > "$STATE"

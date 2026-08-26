@@ -56,7 +56,7 @@ Options
   --reps N           timed repetitions, interleaved         (default: $REPS)
   --ranks N          MPI ranks                 (default: $RANKS)
   --threads N        OMP_NUM_THREADS           (default: cores/ranks)
-  --cases LIST       comma list from: cart,cart-mr,curvi,curvi-mr,prod,prod-curvi,prod-mr,aniso
+  --cases LIST       comma list from: cart,cart-mr,curvi,curvi-mr,prod,prod-curvi,prod-mr,prod-full,aniso
                      (default: $CASES)
   --launcher CMD     override the MPI launcher, e.g. "srun" or
                      "mpirun --allow-run-as-root --bind-to core"
@@ -247,6 +247,50 @@ emit_case() {  # $1=name  -> writes $OUTDIR/cases/$1.in
         echo "source x=15000 y=15000 z=8000 mxy=1e18 t0=0.36 freq=16.6667 type=Gaussian"
         for r in 1 2 3; do
           echo "rec x=$((15000+r*2500)) y=$((15000+r*2000)) z=0 file=st0$r writeEvery=1000000"
+        done
+        ;;
+      prod-full)
+        # Production GEOMETRY, which none of the other cases have and which the
+        # cache behaviour of the RHS kernels depends on. From the 3125077 log
+        # (384 ranks x 4 threads, 2 ranks per Genoa CCD): the h=100 curvilinear
+        # grid holds 66% of all points and each rank's slab of it is 142x181
+        # interior = 154x193 with halos, ~30K points per k-plane. At 10 scalars
+        # per plane that is a 5.9 MB stencil window per thread against 1 MB of
+        # L2 and a 4 MB L3 share -- which is why Div-stress ran memory-bound.
+        # The cube cases give ~5K points per rank-plane at SIZE=M/16 ranks; the
+        # window fits, and the effect is invisible.
+        #
+        # So the horizontal extent is set from RANKS to hold the per-rank
+        # h=100 plane at ~175x175 regardless of rank count (SW4 splits the
+        # rank grid 2D via MPI_Dims_create: 4->2x2, 16->4x4, 42->7x6), and the
+        # vertical layout mirrors production: two Cartesian levels below a
+        # topography zmax with a refinement INSIDE the curvilinear region,
+        # i.e. 4 grids, 2 of them curvilinear, 3 refinement interfaces. Base
+        # h=400 as in production, so gp=30 is the production 12 km sponge.
+        # nz per grid: g0 35, g1 37, g2 18, g3 50 (production 51/84/21/58).
+        # ~2M points per rank, ~250 B/point resident.
+        #
+        # SW4_BENCH_L overrides the extent; REQUIRED when comparing layouts at
+        # different rank counts, exactly as NX is for the cube cases.
+        local L; L="${SW4_BENCH_L:-$(python3 -c "print(int(round(175*(${RANKS})**0.5/4))*400)")}"
+        local xc; xc=$(python3 -c "print(${L}/2)")
+        # dt = 0.024 measured on this exact case (4 ranks, single precision);
+        # it is set by the curvilinear h=100 grid and does not depend on L.
+        echo "grid h=400 x=$L y=$L z=30000"
+        echo "time t=$(python3 -c "print(f'{${STEPS}*0.024:.6g}')")"
+        echo "boundary_conditions"
+        echo "supergrid gp=${SW4_BENCH_SGGP:-30}"
+        echo "refinement zmax=16000"
+        echo "topography input=gaussian zmax=8500 order=3 gaussianAmp=1500 gaussianXc=$xc gaussianYc=$xc gaussianLx=$(python3 -c "print(${L}/5)") gaussianLy=$(python3 -c "print(${L}/5)")"
+        echo "refinement zmax=5000"
+        echo "block vp=4000 vs=2000 rho=2600 qp=100 qs=50"
+        # production's attenuation line verbatim
+        [ -z "${SW4_BENCH_NOATT:-}" ] && echo "attenuation phasefreq=0.5 nmech=3 maxfreq=10"
+        # source in g1 (Cartesian, 8.5-16 km), well inside the sponge-free interior
+        echo "source x=$xc y=$xc z=12000 mxy=1e18 t0=0.36 freq=16.6667 type=Gaussian"
+        for r in 1 2 3; do
+          # spaced as a fraction of L so they stay out of the 12 km sponge at every rank count
+          echo "rec x=$(python3 -c "print(${xc}+${r}*${L}/50)") y=$(python3 -c "print(${xc}+${r}*${L}/60)") z=0 file=st0$r writeEvery=1000000"
         done
         ;;
       aniso)
