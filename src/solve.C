@@ -331,8 +331,8 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   
 // Set up timers
   double time_start_init = MPI_Wtime();
-  double time_measure[20];
-  double time_sum[10]={0,0,0,0,0,0,0,0,0,0};
+  double time_measure[24];
+  double time_sum[12]={0,0,0,0,0,0,0,0,0,0,0,0};
   //  double bc_time_measure[5]={0,0,0,0,0};
 
 // Sort sources wrt spatial location, needed for thread parallel computing
@@ -669,6 +669,20 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
     if( trace &&  m_myRank == dbgproc )
        cout <<" after evalPredictor" << endl;
 
+// Split the Comm. column into the wait that precedes the exchange and the
+// exchange itself. communicate_array is blocking, so without this barrier
+// each rank's receive absorbs whatever load imbalance the RHS left behind and
+// the Comm. column reports imbalance as though it were interconnect time.
+// That is exactly how the ab-genoa round read a Div-stress scheduling defect
+// as a 0.63x-0.37x "communication regression" (jobs 8649028 and 8649030).
+// Costs two barriers per step against ~50 ms of work, and only when
+// reporttiming is on, so it cannot affect a production run.
+    if( m_output_detailed_timing )
+    {
+       MPI_Barrier( m_1d_communicator );
+       time_measure[20] = MPI_Wtime();
+    }
+
 // communicate across processor boundaries
     for(int g=0 ; g < mNumberOfGrids ; g++ )
        communicate_array( Up[g], g );
@@ -860,6 +874,13 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 
        if( m_output_detailed_timing )
           time_measure[13] = MPI_Wtime();
+
+// Same wait/transfer split as the predictor exchange above.
+       if( m_output_detailed_timing )
+       {
+          MPI_Barrier( m_1d_communicator );
+          time_measure[21] = MPI_Wtime();
+       }
 
 // communicate across processor boundaries
        for(int g=0 ; g < mNumberOfGrids ; g++ )
@@ -1121,6 +1142,12 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
              time_measure[10]-time_measure[9] + time_measure[12]-time_measure[11] +
              time_measure[19]-time_measure[18]; // updates
           time_sum[9] += time_essi;
+// Sub-columns of Comm.: [10] is the pre-exchange wait, i.e. the load imbalance
+// the barrier above makes visible, and [11] is the exchange itself. They sum
+// to time_sum[5] exactly, so the Comm. column keeps the meaning it has always
+// had and stays comparable with every A/B run recorded so far.
+          time_sum[10] += time_measure[20]-time_measure[2] + time_measure[21]-time_measure[13]; // comm wait
+          time_sum[11] += time_measure[3]-time_measure[20] + time_measure[14]-time_measure[21]; // comm transfer
        }
        else
        { // 2nd order in time algorithm
@@ -1134,6 +1161,8 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
           time_sum[7] = 0;
           time_sum[8] = 0;
           time_sum[9] = 0;
+          time_sum[10] = 0;
+          time_sum[11] = 0;
        }
 
 // Periodic breakdown so the phase split is visible WITHOUT waiting for the run

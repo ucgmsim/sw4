@@ -34,20 +34,109 @@
 #include <iostream>
 #include <cmath>
 #include <cstdlib>
+#include <new>
+#include <atomic>
 #include <fcntl.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/mman.h>
+#endif
 
 using namespace std;
 
 // Default value 
 
 //-----------------------------------------------------------------------
+// Opt-out switch, read once: SW4_HUGEPAGES=0 (or n/N) forces every allocation
+// back to the 64-byte path. On by default so the A/B against the production
+// base measures this along with everything else; the paired P-full-nohp row in
+// run-all.sh sets it to 0 on both sides, and the difference between the two
+// rows is the huge-page effect on its own. Whether it stays the default is for
+// that measurement to decide -- the reasoning below is a cache/TLB model, and
+// the last change in this series shipped on a model of the same kind and
+// measured backwards on every layout.
+static bool sarray_hugepages_enabled()
+{
+   static const bool on = []() {
+      const char* e = getenv( "SW4_HUGEPAGES" );
+      return !( e != NULL && ( e[0] == '0' || e[0] == 'n' || e[0] == 'N' ) );
+   }();
+   return on;
+}
+
+//-----------------------------------------------------------------------
+// Why 2 MB alignment plus MADV_HUGEPAGE, and not just the 64-byte alignment
+// the vector loads need:
+//
+// One curvilinear k-plane at the production decomposition is 29.7K points x
+// 4 B = 1.19 MB, i.e. ~290 pages at the 4 KB default, and the RHS kernel's
+// stencil window spans 5 planes over 10 distinct arrays -- ~14,500 pages live
+// at once. Zen 4's L2 DTLB holds ~3,000 entries, so the kernel cannot keep its
+// own working set mapped and every stencil sweep pays page-walks on top of the
+// cache traffic. The Updates phase is worse: it streams the whole subdomain,
+// 596 B/point/step, and touches nothing twice.
+//
+// A 2 MB page covers 512 of those 4 KB pages, which brings the same window
+// down to ~29 TLB entries. Transparent huge pages only back a region that is
+// 2 MB-aligned, and glibc's operator new is not, so the alignment is the part
+// that actually does the work; the madvise call matters when the system is set
+// to THP=madvise rather than THP=always (see
+// /sys/kernel/mm/transparent_hugepage/enabled).
+//
+// The size is not rounded up to a whole huge page, so the tail past the last
+// one simply stays on 4 KB pages; the only overhead is the 64-byte header plus
+// the colour below, at most ~64 KB on an array of several MB. The threshold
+// keeps small arrays -- 2D planes, coefficient tables -- on the ordinary path,
+// where that overhead and a 2 MB alignment would cost more than they return.
+//
+// The colour offset is not optional. Aligning every array to 2 MB is what lets
+// THP back it, but it also lines all of them up on the same cache sets: the RHS
+// kernel streams ten arrays at once and if their k-planes start at the same
+// offset modulo the L2 index range, all ten compete for one set. Measured on an
+// i7-9700 (256 KB 4-way L2), plain 2 MB alignment cost 15-18% -- on Div-stress
+// AND on Updates, and Updates never touches the loop schedule the rest of this
+// series changes, which is how the allocator was identified as the cause. So
+// the mapping stays 2 MB-aligned (that is what THP requires) while the pointer
+// handed back is displaced into it by a per-allocation colour, restoring the
+// spread that glibc's arbitrary mmap offsets used to provide by accident.
+// The colour is a multiple of 1 KB, so the 64-byte vector alignment survives,
+// and it cycles over 64 values, i.e. the low 64 KB of the set index.
+//
+// First-touch NUMA placement still works, at 2 MB granularity instead of 4 KB.
+// That is harmless here because an Sarray belongs to one rank and a rank's
+// threads sit inside one NUMA domain; it would matter if a single array were
+// shared across sockets, which none is.
 float_sw4* Sarray::allocate( size_t n )
 {
    if( n == 0 )
       return NULL;
-   return static_cast<float_sw4*>(
-      ::operator new[]( n*sizeof(float_sw4), std::align_val_t(s_alignment) ) );
+   const size_t bytes = n*sizeof(float_sw4);
+   const bool huge = bytes >= s_hugepage_threshold && sarray_hugepages_enabled();
+   const size_t align = huge ? s_hugepage : s_alignment;
+
+// The header keeps the base pointer so deallocate can free the real allocation
+// whatever the colour was; 64 bytes of it preserves the vector alignment.
+   const size_t hdr = s_alignment;
+   size_t colour = 0;
+   if( huge )
+   {
+      static std::atomic<size_t> next( 0 );
+      colour = s_colour_step*( next++ % s_colour_count );
+   }
+   const size_t total = bytes + hdr + colour;
+
+   void* raw = NULL;
+// posix_memalign, not operator new[], because deallocate must be able to free
+// both paths with one call -- see the pairing note in Sarray.h.
+   if( posix_memalign( &raw, align, total ) != 0 || raw == NULL )
+      throw std::bad_alloc();
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+   if( huge )
+      madvise( raw, total, MADV_HUGEPAGE ); // advisory: failure is not an error
+#endif
+   char* p = static_cast<char*>(raw) + hdr + colour;
+   reinterpret_cast<void**>(p)[-1] = raw;
+   return reinterpret_cast<float_sw4*>(p);
 }
 
 //-----------------------------------------------------------------------
@@ -55,7 +144,9 @@ void Sarray::deallocate( float_sw4*& p )
 {
    if( p != NULL )
    {
-      ::operator delete[]( p, std::align_val_t(s_alignment) );
+// Never free p itself: allocate displaces it into the mapping by the colour
+// offset and stashes the real base in the word just below it.
+      free( reinterpret_cast<void**>(p)[-1] );
       p = NULL;
    }
 }

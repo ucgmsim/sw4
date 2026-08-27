@@ -388,6 +388,18 @@ mkdir -p "$OUTDIR/logs"
   echo "--- cpu ---"
   (lscpu 2>/dev/null | grep -iE 'model name|^cpu\(s\)|core\(s\) per socket|socket|thread\(s\) per core|^flags' | cut -c1-300) || true
   echo "--- memory ---"; (free -h 2>/dev/null | head -2) || true
+  # Transparent huge pages decide how much Sarray's 2 MB alignment is worth.
+  # "always" means glibc's large mmaps were already huge-backed and the
+  # alignment only tops up the coverage; "madvise" means the MADV_HUGEPAGE call
+  # in Sarray::allocate is what earns it; "never" means neither does anything
+  # and the TLB result should be read as a null. Read on the COMPUTE node --
+  # the login node's setting is not necessarily the same.
+  echo "--- transparent huge pages ---"
+  for f in enabled defrag; do
+    [ -r /sys/kernel/mm/transparent_hugepage/$f ] \
+      && echo "$f: $(cat /sys/kernel/mm/transparent_hugepage/$f)"
+  done
+  echo "SW4_HUGEPAGES=${SW4_HUGEPAGES:-(unset, i.e. on)}"
   echo "--- compilers ---"
   for c in cc gcc g++ icpx gfortran mpicxx; do
     command -v $c >/dev/null && echo "$c: $($c --version 2>&1 | head -1)"

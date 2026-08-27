@@ -32,6 +32,56 @@
 
 #include "sw4.h"
 #include <sys/types.h>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+//-----------------------------------------------------------------------
+// Chunk size for schedule(static,chunk) on the collapse(2) (k,j) loop nests
+// below. There are three ways to hand a collapsed (k,j) space to a team and
+// only one of them suits a 4th-order stencil:
+//
+//   schedule(static)    one contiguous k-RANGE per thread, so each thread
+//                       walks its own 5-plane stencil window and the team
+//                       holds nthreads of them at once. At the production
+//                       decomposition that is 24 MB against a 16 MB L3
+//                       share, so every k-plane is refetched from DRAM.
+//   schedule(static,1)  j-rows round-robin. The team shares one k-plane
+//                       window, but a thread's consecutive rows are j and
+//                       j+nthreads, whose 5-row j-windows overlap in ONE row
+//                       rather than four: it buys the shared plane by giving
+//                       up the row reuse. Measured 0.73-0.98x on Div-stress
+//                       in every A/B layout tried (ab-genoa 8649002, 8649007,
+//                       8649028, 8649029, 8649030 -- 4x1 through 40x4),
+//                       against a predicted 1.6-1.8x.
+//   schedule(static,C)  with C = ceil(nj/nthreads): thread t takes j-block t
+//                       of every k-plane. Contiguous in j, so the 4/5 row
+//                       reuse is back, and the team still advances through
+//                       the k-planes together, so the 5-plane window is
+//                       fetched once per team rather than once per thread.
+//                       Both properties at once, which is the point.
+//
+// C is a runtime value because nj and the team size both are. Chunks per
+// plane is ceil(nj/C) == nthreads whenever nj >= nthreads, so thread t owns
+// the same j-block on every plane and its rows stay hot in L2 from one plane
+// to the next; when nj < nthreads the loop is too thin for any of this to
+// matter. Numerically inert: this moves iterations between threads, changes
+// no arithmetic, and these loops carry no reductions.
+static inline int sw4_jblock( int jbeg, int jend )
+{
+   int nj = jend - jbeg + 1;
+   int nthr = 1;
+#ifdef _OPENMP
+   nthr = omp_get_num_threads();
+#endif
+   if( nj < 1 )
+      nj = 1;
+   if( nthr < 1 )
+      nthr = 1;
+   return (nj + nthr - 1)/nthr;
+}
+
 // OP is a template parameter so the dispatch resolves at compile time. This is
 // the port of 86fd071 that its own commit message flagged as left undone: with
 // OP=='=' the store was `lu = a1*lu + sgn*r*ijac` with a1 == 0, and the
@@ -123,6 +173,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 
 #pragma omp parallel
    {
+   const int jblk = sw4_jblock( jfirst+2, jlast-2 );
    int kstart = kfirst+2;
    int kend   = klast-2;
    if( onesided[5] == 1 )
@@ -152,7 +203,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 // bandwidth: the one phase that is a single long parallel loop was flat while
 // bc, which forks 42 times, degraded 6.5-8.0x. Div-stress carries 3 barriers
 // per Cartesian call and 5 per curvilinear call; this removes all but one.
-#pragma omp for collapse(2) schedule(static,1) nowait
+#pragma omp for collapse(2) schedule(static,jblk) nowait
       for( int k= 1; k <= 6 ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -651,7 +702,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	       SW4_CURV_LU_STORE(3, r3*ijac);
 	    }
    }
-// schedule(static,1) on every collapsed (k,j) loop in the RHS kernels, and
+// schedule(static,jblk) on every collapsed (k,j) loop in the RHS kernels, and
 // no nowait between the three fissioned interior loops below. Both are about
 // the cache, and the arithmetic is from a production log (3125077, 384 ranks
 // x 4 threads, 2 ranks per Genoa CCD):
@@ -670,17 +721,33 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 // 32 flop/byte of arithmetic intensity: 6.8 flops/cycle achieved against an
 // issue-bound ~20 for the interior loop.
 //
-// schedule(static,1) interleaves j-ROWS on the same k-plane across threads:
-// one shared 5.9 MB window in the rank's L3, and each thread's private
-// j-reuse set (5 rows x 5 planes x 10 scalars x 154 pts x 4 B = 150 KB) in
-// its L2. Same iteration count per thread, same arithmetic per point, no
-// barriers added. Dropping nowait between the fissioned loops keeps all four
-// threads on the same loop and hence the same window; three barriers per call
-// at four threads is noise. The closures keep nowait: they are 6 k-levels and
-// write disjoint slices.
+// The first attempt at this, schedule(static,1), shared the window and LOST:
+// 0.73-0.98x on Div-stress across five A/B layouts from 4x1 to 40x4 (ab-genoa
+// 8649002, 8649007, 8649028, 8649029, 8649030), against a predicted 1.6-1.8x.
+// Sharing the plane is necessary but not sufficient -- a thread also has to
+// keep its OWN rows, and round-robin j gives up 4/5 of the row reuse to buy
+// the shared plane. jblk = ceil(nj/nthreads) buys both at once: see
+// sw4_jblock at the head of this file. Each thread's private j-reuse set
+// (5 rows x 5 planes x 10 scalars x 154 pts x 4 B = 150 KB) still fits its
+// L2. Same iteration count per thread, same arithmetic per point, no barriers
+// added. Dropping nowait between the fissioned loops keeps all four threads
+// on the same loop and hence the same window; three barriers per call at four
+// threads is noise. The closures keep nowait: they are 6 k-levels and write
+// disjoint slices.
 //
-// The fission comment above claims this kernel is compute-bound at AI 32.3
-// flop/B. That is true only when the window is cache-resident. It was not.
+// The fission comment below claims this kernel is compute-bound at AI 32.3
+// flop/B. That is true only while the window is cache-resident, which on this
+// decomposition it was not.
+//
+// UNVALIDATED on the target. What is measured is that static,1 lost; that
+// jblk wins is an inference from the same cache model that predicted static,1
+// would win, so it is owed an A/B before it is believed. The development box
+// cannot settle it -- one rank there covers the whole domain, so a k-plane is
+// 6.4 MB and the window cannot fit any of its caches whatever the schedule --
+// and its run-to-run spread is ~15%. Falsifiable: if divstress on the M cases
+// does not beat BOTH d60411e (default static) and 9ecde64 (static,1), the
+// cache model is wrong for this kernel and the honest move is to revert to
+// whichever of the two measures fastest.
 //
 // Fissioned by output component. The three sections below (u-, v-, w-equation)
 // are provably independent: each assigns every cof/mux temporary before reading
@@ -696,7 +763,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 // is compute-bound on every target (AI 32.3 flop/B single against a machine
 // balance of 8.4-24.5), so it has traffic budget to spend. This is the CPU
 // analogue of the loop fission that gave 3x in the published GPU port.
-#pragma omp for collapse(2) schedule(static,1)
+#pragma omp for collapse(2) schedule(static,jblk)
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -993,7 +1060,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	    SW4_CURV_LU_STORE(1, r1*ijac);
 	 }
 
-#pragma omp for collapse(2) schedule(static,1)
+#pragma omp for collapse(2) schedule(static,jblk)
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -1299,7 +1366,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	    SW4_CURV_LU_STORE(2, r2*ijac);
 	 }
 
-#pragma omp for collapse(2) schedule(static,1)
+#pragma omp for collapse(2) schedule(static,jblk)
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -1540,7 +1607,7 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	 }
    if( onesided[5]==1 )
    {
-#pragma omp for collapse(2) schedule(static,1) nowait
+#pragma omp for collapse(2) schedule(static,jblk) nowait
       for( int k= nk-5; k <= nk ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd

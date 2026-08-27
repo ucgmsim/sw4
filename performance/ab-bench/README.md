@@ -48,12 +48,61 @@ from SW4's own `developer reporttiming=1` breakdown:
 Watch `divstress` for stencil work and `comm` for the halo exchange. `total` is
 diluted by `forcing`, which is unrepresentative in twilight cases.
 
+### `comm` is mostly not communication
+
+`communicate_array` is blocking, so a rank's receive absorbs whatever load
+imbalance the phases before it left behind, and `comm` bills that to the
+interconnect. Under `reporttiming=1` the run log now splits it:
+
+```
+Comm. split (average):   wait 3.856e+00   transfer 4.895e-02   (wait = pre-exchange load imbalance)
+```
+
+`wait` + `transfer` add up to the `comm` column exactly, so the column itself
+keeps the meaning it has in every result recorded so far. Underneath it is a
+per-rank spread table -- min, max, which rank held the max, and max/mean per
+phase. Read that before believing any story about `comm`: the first production
+round reported 0.63x-0.37x "communication regressions" that were a Div-stress
+scheduling defect showing up one phase downstream.
+
+A single-rank or single-node run has nothing to exchange, so `transfer` is
+microseconds there and the whole column is imbalance between threads' arrival.
+
 Correctness is checked on **both** Linf and L2. Linf is a max and misses ~1e-8
 relative changes that the L2 sum catches — this actually happened during the
 series. If the harness reports `NON-DETERMINISTIC across reps`, that is
 expected for anything touching an OpenMP reduction (SW4's energy diagnostic is
 not reproducible above one thread) and means timings are still valid but the
 correctness check is not.
+
+### Huge pages
+
+`Sarray` aligns allocations of 4 MB and up to 2 MB and calls `MADV_HUGEPAGE`,
+to keep the RHS stencil window inside the L2 DTLB. It is **on by default** and
+unvalidated on a production node. How much it is worth depends entirely on the
+node's transparent-huge-page setting, which `platform.txt` now records: under
+`always` the large mmaps were already huge-backed and the alignment only tops
+up the coverage; under `madvise` the call is what earns it; under `never`
+neither does anything.
+
+`SW4_HUGEPAGES=0` forces every allocation back to the plain path, which is what
+makes this separable rather than a confound. The `--package` matrix submits the
+pair: `P-full-N` takes the flag's default and `P-full-nohp` sets it to 0 on both
+sides, so the difference between those two rows is the huge-page effect alone.
+The base side is unaffected either way -- it predates the allocator and ignores
+the variable.
+
+```bash
+SW4_HUGEPAGES=0 ./sw4 case.in     # plain allocation
+./sw4 case.in                     # huge pages (default)
+```
+
+Note the arrays are *coloured* inside the 2 MB mapping rather than starting at
+its base. Aligning ten co-streamed arrays to the same large power of two puts
+them all on the same cache sets; measured on an i7-9700 that cost 15-18% on
+Div-stress **and** on Updates. If a future change touches the allocator, check
+Updates as well as Div-stress -- Updates uses no stencil and no loop schedule,
+so a regression there points at memory layout and nothing else.
 
 Note `--strict-fp` builds both sides with `SW4_STRICT_FP=ON`, which disables FMA
 contraction. Two changes in the series (the peel-param unroll and the

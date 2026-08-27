@@ -301,6 +301,17 @@ if command -v srun >/dev/null; then
 fi
 export OMP_PROC_BIND=close OMP_PLACES=cores
 
+# Sarray's huge-page switch. sbatch's default --export=ALL already carries it
+# in from the submitting env and srun would pass it on, but that is two layers
+# of implicit behaviour deciding what a benchmark measures; re-export it here
+# so the chain is visible in this file. Unset means the built-in default, so an
+# unset variable is deliberately left unset rather than given a value here.
+# platform.txt records which way it went, so the caveat travels with the result.
+if [ -n "${SW4_HUGEPAGES:-}" ]; then
+  export SW4_HUGEPAGES
+  echo "SW4_HUGEPAGES=$SW4_HUGEPAGES (Sarray huge-page path)"
+fi
+
 echo "+ ./performance/ab-bench/ab-bench.sh ${ARGS[*]}"
 echo
 ./performance/ab-bench/ab-bench.sh "${ARGS[@]}"

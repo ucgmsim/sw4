@@ -2,6 +2,56 @@
 #include <cstdlib>
 #include <cmath>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+//-----------------------------------------------------------------------
+// Chunk size for schedule(static,chunk) on the collapse(2) (k,j) loop nests
+// below. There are three ways to hand a collapsed (k,j) space to a team and
+// only one of them suits a 4th-order stencil:
+//
+//   schedule(static)    one contiguous k-RANGE per thread, so each thread
+//                       walks its own 5-plane stencil window and the team
+//                       holds nthreads of them at once. At the production
+//                       decomposition that is 24 MB against a 16 MB L3
+//                       share, so every k-plane is refetched from DRAM.
+//   schedule(static,1)  j-rows round-robin. The team shares one k-plane
+//                       window, but a thread's consecutive rows are j and
+//                       j+nthreads, whose 5-row j-windows overlap in ONE row
+//                       rather than four: it buys the shared plane by giving
+//                       up the row reuse. Measured 0.73-0.98x on Div-stress
+//                       in every A/B layout tried (ab-genoa 8649002, 8649007,
+//                       8649028, 8649029, 8649030 -- 4x1 through 40x4),
+//                       against a predicted 1.6-1.8x.
+//   schedule(static,C)  with C = ceil(nj/nthreads): thread t takes j-block t
+//                       of every k-plane. Contiguous in j, so the 4/5 row
+//                       reuse is back, and the team still advances through
+//                       the k-planes together, so the 5-plane window is
+//                       fetched once per team rather than once per thread.
+//                       Both properties at once, which is the point.
+//
+// C is a runtime value because nj and the team size both are. Chunks per
+// plane is ceil(nj/C) == nthreads whenever nj >= nthreads, so thread t owns
+// the same j-block on every plane and its rows stay hot in L2 from one plane
+// to the next; when nj < nthreads the loop is too thin for any of this to
+// matter. Numerically inert: this moves iterations between threads, changes
+// no arithmetic, and these loops carry no reductions.
+static inline int sw4_jblock( int jbeg, int jend )
+{
+   int nj = jend - jbeg + 1;
+   int nthr = 1;
+#ifdef _OPENMP
+   nthr = omp_get_num_threads();
+#endif
+   if( nj < 1 )
+      nj = 1;
+   if( nthr < 1 )
+      nthr = 1;
+   return (nj + nthr - 1)/nthr;
+}
+
+
 //extern "C" {
 
 // OP is a template parameter, so the dispatch below resolves at compile time.
@@ -99,6 +149,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
               mu3yz,mu1zx,u1zip2,u1zip1,u1zim1,u1zim2,\
 	      u2zjp2,u2zjp1,u2zjm1,u2zjm2,mu2zy,lau1xz,lau2yz,kb,qb,mb,muz1,muz2,muz3,muz4)
    {
+   const int jblk = sw4_jblock( jfirst+2, jlast-2 );
 // nowait on every omp for in this region. Each loop writes a disjoint slice
 // of lu -- the closures write k=1..6 and k=nk-5..nk while the interior writes
 // k1..k2 (k1=7 when the low closure runs, k2=nk-6 when the high one does), and
@@ -114,7 +165,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 // bandwidth: the one phase that is a single long parallel loop was flat while
 // bc, which forks 42 times, degraded 6.5-8.0x. Div-stress carries 3 barriers
 // per Cartesian call and 5 per curvilinear call; this removes all but one.
-#pragma omp for collapse(2) schedule(static,1) nowait
+#pragma omp for collapse(2) schedule(static,jblk) nowait
    for( k= k1; k <= k2 ; k++ )
       for( j=jfirst+2; j <= jlast-2 ; j++ )
 //#pragma simd deprecated
@@ -352,7 +403,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
 	 }
       if( onesided[4]==1 )
       {
-#pragma omp for collapse(2) schedule(static,1) nowait
+#pragma omp for collapse(2) schedule(static,jblk) nowait
 	 for( k=1 ; k<= 6 ; k++ )
 /* the centered stencil can be used in the x- and y-directions */
 	    for( j=jfirst+2; j<=jlast-2; j++ )
@@ -615,7 +666,7 @@ static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, i
       }
       if( onesided[5] == 1 )
       {
-#pragma omp for collapse(2) schedule(static,1) nowait
+#pragma omp for collapse(2) schedule(static,jblk) nowait
 	 for(  k = nk-5 ; k <= nk ; k++ )
 	    for(  j=jfirst+2; j<=jlast-2; j++ )
 	       //#pragma simd
@@ -987,7 +1038,8 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
               mu3yz,mu1zx,u1zip2,u1zip1,u1zim1,u1zim2,\
 	      u2zjp2,u2zjp1,u2zjm1,u2zjm2,mu2zy,lau1xz,lau2yz,kb,qb,mb,muz1,muz2,muz3,muz4)
    {
-#pragma omp for collapse(2) schedule(static,1) nowait
+   const int jblk = sw4_jblock( jfirst+2, jlast-2 );
+#pragma omp for collapse(2) schedule(static,jblk) nowait
    for( k= k1; k <= k2 ; k++ )
       for( j=jfirst+2; j <= jlast-2 ; j++ )
 	 //#pragma simd
@@ -1225,7 +1277,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
 	 }
       if( onesided[4]==1 )
       {
-#pragma omp for collapse(2) schedule(static,1) nowait
+#pragma omp for collapse(2) schedule(static,jblk) nowait
 	 for( k=1 ; k<= 6 ; k++ )
 /* the centered stencil can be used in the x- and y-directions */
 	    for( j=jfirst+2; j<=jlast-2; j++ )
@@ -1488,7 +1540,7 @@ static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jla
       }
       if( onesided[5] == 1 )
       {
-#pragma omp for collapse(2) schedule(static,1) nowait
+#pragma omp for collapse(2) schedule(static,jblk) nowait
 	 for(  k = nk-5 ; k <= nk ; k++ )
 	    for(  j=jfirst+2; j<=jlast-2; j++ )
 	       //#pragma simd

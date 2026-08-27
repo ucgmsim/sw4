@@ -2059,14 +2059,14 @@ void EW::print_execution_time(double t1, double t2, string msg) {
 }
 
 //-----------------------------------------------------------------------
-void EW::print_execution_times(double times[10]) {
-  const int nt = 10;
+void EW::print_execution_times(double times[12]) {
+  const int nt = 12;
   double *time_sums = new double[nt * no_of_procs()];
   MPI_Gather(times, nt, MPI_DOUBLE, time_sums, nt, MPI_DOUBLE, 0,
              m_1d_communicator);
   bool printavgs = true; // print averages or one line per proc?
   if (!mQuiet && proc_zero()) {
-    double avgs[nt] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    double avgs[nt] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     for (int p = 0; p < no_of_procs(); p++)
       for (int c = 0; c < nt; c++)
         avgs[c] += time_sums[nt * p + c];
@@ -2135,6 +2135,54 @@ void EW::print_execution_times(double times[10]) {
         cout << endl;
       }
     }
+    // Comm. is a blocking exchange, so its column has always been
+    // (wait + transfer) with no way to tell which. These two split it, using
+    // the barrier solve.C places in front of each exchange under reporttiming;
+    // they sum to the Comm. column above.
+    cout << "Comm. split (average):   wait " << avgs[10] << "   transfer "
+         << avgs[11] << "   (wait = pre-exchange load imbalance)" << endl;
+
+    // An average hides the thing that decides a hybrid run's wall clock:
+    // whether one rank is holding up the rest. max/mean is the imbalance
+    // factor -- 1.0 is balanced, 1.5 says the slowest rank spends half again
+    // what the average one does and everybody waits for it at the next
+    // exchange. Deliberately NOT headed "Total  Div-stress ...": ab-bench
+    // parses the average table by that header and must not match this one.
+    const char *pname[nt] = {"Total",  "Div-stress", "Forcing",   "BC",
+                             "SG",     "Comm.",      "MR",        "Img+T-Ser",
+                             "Updates", "ESSI",      "Comm-wait", "Comm-xfer"};
+    cout << "\n          Per-rank spread over " << no_of_procs() << " ranks"
+         << endl;
+    cout << "Phase        min        max        max@rank   max/mean" << endl;
+// setf(ios::left) alone does not clear the right-adjust bit, and this function
+// leaves the stream right-adjusted on exit -- so the second call would print
+// the rank and the ratio jammed together. Pass the adjustfield mask.
+    cout.setf(ios::left, ios::adjustfield);
+    cout.precision(3);
+    for (int c = 0; c < nt; c++) {
+      double mn = time_sums[c], mx = time_sums[c];
+      int argmx = 0;
+      for (int p = 1; p < no_of_procs(); p++) {
+        double v = time_sums[nt * p + c];
+        if (v < mn)
+          mn = v;
+        if (v > mx) {
+          mx = v;
+          argmx = p;
+        }
+      }
+      cout.width(13);
+      cout << pname[c];
+      cout.width(11);
+      cout << mn;
+      cout.width(11);
+      cout << mx;
+      cout.width(11);
+      cout << argmx;
+      cout.width(11);
+      cout << (avgs[c] > 0 ? mx / avgs[c] : 1.0) << endl;
+    }
+
     cout.setf(ios::right);
     cout.precision(6);
     cout << "----------------------------------------\n" << endl;

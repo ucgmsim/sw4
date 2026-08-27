@@ -26,6 +26,14 @@ STEPS="${STEPS:-200}"
 MEM="${MEM:-96G}"
 WALL="${WALL:-3:00:00}"
 MODULES_ENV="${MODULES:-}"
+# The commit every A/B is taken against: the one the last production run was
+# built from. Pinning it here is what makes the matrix answer the question that
+# matters -- "is HEAD faster than what we are actually running" -- instead of
+# "is HEAD faster than whatever baseline the script defaults to". hpc3-ab.sl's
+# own default is 23a3410, which predates the entire optimisation series, so a
+# matrix that does not set BASE silently measures months of work at once and
+# cannot tell you whether the last day helped. Move this when production moves.
+PROD_BASE="${PROD_BASE:-d60411e8}"
 DO_ARCHIVE=1; DO_SUBMIT=1; DO_WATCH=1; DRY=0; PACKAGE=0; ONLY=""; INTERVAL="${INTERVAL:-90}"
 
 while [[ $# -gt 0 ]]; do
@@ -40,15 +48,23 @@ while [[ $# -gt 0 ]]; do
     --no-submit)  DO_SUBMIT=0; shift;;
     --no-watch)   DO_WATCH=0; shift;;
     --watch-only) DO_ARCHIVE=0; DO_SUBMIT=0; shift;;
-    --dry-run) DRY=1; shift;;
+    # --dry-run must not move anything. It archived a completed round's results
+    # once, which is a surprising thing for a command whose entire purpose is
+    # to show what WOULD happen. Nothing was lost -- archiving is a move -- but
+    # a dry run has no business touching the filesystem.
+    --dry-run) DRY=1; DO_ARCHIVE=0; shift;;
     --package) PACKAGE=1; shift;;
     --only) ONLY="$2"; DO_ARCHIVE=0; shift 2;;
     --interval) INTERVAL="$2"; shift 2;;
+    --base) PROD_BASE="$2"; shift 2;;
     -h|--help)
       sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
       echo "Options: -A ACCOUNT --size S|M|L|XL --reps N --steps N --mem X --wall H:MM:SS"
       echo "         --no-archive --no-submit --no-watch --watch-only --dry-run --interval SEC"
-      echo "         --package   submit the 2026-08-26 kernel package matrix instead (see script)"
+      echo "         --base REF  A/B every job against REF (default $PROD_BASE,"
+      echo "                     the commit the last production run was built from)"
+      echo "         --package   submit the whole-node package matrix instead: everything"
+      echo "                     since the base as ONE unit, on prod-full (see script)"
       echo "         --only A,B  submit only the named matrix rows; implies --no-archive and APPENDS"
       echo "                     to .ab-jobs, so already-queued jobs keep being watched"
       exit 0;;
@@ -99,7 +115,10 @@ fi
 # two reps into curvi-mr, having built in 14-89s. This is ~4x less work with 3x
 # the walltime, and the prod cases have no twilight sin/cos so they are much
 # cheaper per point.
-PROD_ENV="CASES=prod,prod-mr SIZE=M STEPS=150 REPS=4"
+# Every row carries BASE_ENV so the whole matrix answers one question against
+# one reference. The only row that deliberately does not is P-comm; see there.
+BASE_ENV="BASE=$PROD_BASE HEAD_REF=HEAD"
+PROD_ENV="$BASE_ENV CASES=prod,prod-mr SIZE=M STEPS=150 REPS=4"
 MATRIX=(
   # the headline: production settings, production layout, both precisions
   "P-gen-sp|$P_GENOA|6:00:00|1|16|4|96G|$AB|$PROD_ENV PRECISION=single RANKS=16"
@@ -109,32 +128,47 @@ MATRIX=(
   # Layout pair. NX is pinned so both solve the SAME problem: per-rank sizing
   # would give the 2-rank job a 1/8-size grid and make the absolute times
   # meaningless, which is exactly what happened in the first attempt.
-  "P-lay16|$P_GENOA|6:00:00|1|16|4|96G|$AB|CASES=prod STEPS=150 REPS=4 PRECISION=single RANKS=16 NX=235 TIMEVAL=0.2983"
-  "P-lay2|$P_GENOA|6:00:00|1|2|32|96G|$AB|CASES=prod STEPS=150 REPS=4 PRECISION=single RANKS=2 NX=235 TIMEVAL=0.2983"
+  "P-lay16|$P_GENOA|6:00:00|1|16|4|96G|$AB|$BASE_ENV CASES=prod STEPS=150 REPS=4 PRECISION=single RANKS=16 NX=235 TIMEVAL=0.2983"
+  "P-lay2|$P_GENOA|6:00:00|1|2|32|96G|$AB|$BASE_ENV CASES=prod STEPS=150 REPS=4 PRECISION=single RANKS=2 NX=235 TIMEVAL=0.2983"
   # single-precision correctness. STRICT_FP removes FMA re-contraction and one
   # thread removes reduction ordering, so this MUST come back bit-exact.
   # Anything else is a real defect and outranks all remaining optimisation work.
-  "P-strict|$P_GENOA|1:00:00|1|4|1|32G|$AB|CASES=prod,prod-mr SIZE=S STEPS=100 REPS=2 PRECISION=single STRICT=1 RANKS=4 THREADS_OVERRIDE=1 FORCE=1"
+  "P-strict|$P_GENOA|1:00:00|1|4|1|32G|$AB|$BASE_ENV CASES=prod,prod-mr SIZE=S STEPS=100 REPS=2 PRECISION=single STRICT=1 RANKS=4 THREADS_OVERRIDE=1 FORCE=1"
   # falsifiable prediction: SG cost was measured INDEPENDENT of gp, because the
   # sweep covers the whole grid either way. gp=12 and gp=30 should cost the
   # same. If they differ, the premise behind the windowing work is wrong.
-  "P-sg12|$P_GENOA|3:00:00|1|16|4|96G|$AB|CASES=prod SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS=16 SW4_BENCH_SGGP=12"
-  "P-sg30|$P_GENOA|3:00:00|1|16|4|96G|$AB|CASES=prod SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS=16 SW4_BENCH_SGGP=30"
-  # halo exchange at HEAD across nodes. BASE=e6ccbba pins this to the revert
-  # point so it measures the hand-packing, not the reverted non-blocking attempt
-  # the script default would have compared.
+  "P-sg12|$P_GENOA|3:00:00|1|16|4|96G|$AB|$BASE_ENV CASES=prod SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS=16 SW4_BENCH_SGGP=12"
+  "P-sg30|$P_GENOA|3:00:00|1|16|4|96G|$AB|$BASE_ENV CASES=prod SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS=16 SW4_BENCH_SGGP=30"
+  # halo exchange at HEAD across nodes. The ONE row deliberately off PROD_BASE:
+  # BASE=e6ccbba pins it to the revert point so it measures the hand-packing,
+  # not the reverted non-blocking attempt. Nothing between PROD_BASE and HEAD
+  # touches parallelStuff.C, so putting this row on the common base would spend
+  # four nodes for four hours to measure a guaranteed 1.00x.
   "P-comm|$P_GENOA|4:00:00|4|16|4|96G|$COMM|BASE=e6ccbba HEAD_REF=HEAD SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS_PER_NODE=16"
 )
 
 # ---------------------------------------------------------------- package ----
-# The 2026-08-26 kernel package as ONE unit: d60411e8 -> HEAD, i.e.
+# Everything since the last production run as ONE unit: PROD_BASE -> HEAD.
+#
 #   2e32c921  vectorise the SBP boundary closures (67 unroll pragmas)
 #   59f18318  curvilinear MR interface: hoist invariants, stop allocating, thread
-#   59f354ef  RHS kernels: share the k-plane window across threads
-# All on the prod-full case, because the third commit's effect exists only at
-# production per-rank plane sizes and ranks-per-CCD; see the case comment.
+#   59f354ef  RHS kernels: share the k-plane window across threads -- static,1
+#   (working tree) schedule(static,jblk): static,1 measured 0.73-0.98x on
+#             Div-stress in the first round, so this replaces it with a chunk
+#             that keeps j contiguous AND shares the k-plane
+#   (working tree) Sarray 2 MB-aligned + MADV_HUGEPAGE, cache-coloured
+#   (working tree) comm wait/transfer split + per-rank spread (timing only)
+#
+# Mostly on the prod-full case, because the schedule commits' effect exists only
+# at production per-rank plane sizes and ranks-per-CCD; see the case comment.
+#
+# Read P-full-$PKG_RANKS against P-full-nohp before drawing any conclusion about
+# the allocator: they differ only by SW4_HUGEPAGES, so the pair is a clean 2x2
+# against the commit range and the difference between them IS the huge-page
+# effect. The base side is identical in both (it predates the allocator and
+# ignores the variable), which is what makes the comparison legitimate.
 if [ "$PACKAGE" = 1 ]; then
-  PKG_BASE="${PKG_BASE:-d60411e8}"
+  PKG_BASE="${PKG_BASE:-$PROD_BASE}"
   # Whole-node rank count. genoa is 168 cores = 42x4, but a partition/QoS cap
   # on CPUs per job refused exactly those submissions once; set PKG_RANKS to
   # the largest multiple of 2 that fits (e.g. 32 for a 128-CPU cap, 40 for one
@@ -151,6 +185,14 @@ if [ "$PACKAGE" = 1 ]; then
   MATRIX=(
     "P-full-$PKG_RANKS|$P_GENOA|2:30:00|1|$PKG_RANKS|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=$PKG_RANKS"
     "P-full-16|$P_GENOA|2:30:00|1|16|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=16"
+    # Same job as P-full-$PKG_RANKS with the huge-page path switched off, so
+    # the allocator is isolated from the kernel work. UNVALIDATED on any real
+    # node: the development box throttles ~15% run to run, which is larger than
+    # the effect, and it runs THP=always so its large mmaps were already
+    # huge-backed. If this row beats the huge-page row, the alignment is
+    # costing more in cache aliasing than it returns in TLB reach and the flag
+    # should default off.
+    "P-full-nohp|$P_GENOA|2:30:00|1|$PKG_RANKS|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=$PKG_RANKS SW4_HUGEPAGES=0"
     # Layout pair at a FIXED problem (SW4_BENCH_L pinned to the 42-rank extent).
     # Prediction: before the package, 8 threads/rank loses badly to 4 (eight
     # private stencil windows vs four); after it, the gap mostly closes because
@@ -173,7 +215,11 @@ if [ "$PACKAGE" = 1 ]; then
 fi
 
 if [ "$DO_SUBMIT" = 1 ]; then
-  [ -z "$ONLY" ] && : > "$STATE"
+  # Truncate the state file only for a real submission. This sat above the DRY
+  # check and so a --dry-run cleared the record of the jobs already being
+  # watched, which is the same class of bug as the archiving one above: a
+  # command that only prints what it would do must not edit anything.
+  [ -z "$ONLY" ] && [ "$DRY" = 0 ] && : > "$STATE"
   echo
   printf "%-10s %-7s %-6s %-9s %-9s %s\n" JOB PART LAYOUT WALL SIZE JOBID
   for row in "${MATRIX[@]}"; do

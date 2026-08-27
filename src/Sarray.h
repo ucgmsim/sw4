@@ -59,7 +59,8 @@ public:
    Sarray();
    ~Sarray() {deallocate( m_data );}
 
-   // Data is allocated 64-byte aligned. glibc's operator new returns pointers
+   // Data is allocated at least 64-byte aligned (2 MB for the large arrays,
+   // see s_hugepage below). glibc's operator new returns pointers
    // 16 bytes past a page boundary (the malloc chunk header), so plain
    // new float_sw4[] is only ever 16-byte aligned -- measured, not assumed.
    // Every 64-byte AVX-512 load from such a base straddles a cache-line
@@ -67,7 +68,19 @@ public:
    // we deploy to. Allocation and deallocation must stay paired: cycleSolution-
    // Arrays rotates m_data between Um/U/Up via reference(), so a mismatched
    // deallocator would surface as a corrupt free several timesteps later.
+   // Both paths therefore go through posix_memalign and free(), never
+   // operator new[]/delete[]: one deallocator has to serve both alignments.
    static constexpr size_t s_alignment = 64;
+   // Allocations at or above s_hugepage_threshold are 2 MB-aligned and
+   // MADV_HUGEPAGE'd to keep the stencil window inside the L2 DTLB; see the
+   // note above Sarray::allocate. SW4_HUGEPAGES=0 disables it at run time.
+   static constexpr size_t s_hugepage = 2*1024*1024;
+   static constexpr size_t s_hugepage_threshold = 4*1024*1024;
+   // Cache colouring for the huge-page path: consecutive large arrays are
+   // displaced by a different multiple of s_colour_step so they do not all
+   // land on the same L2 sets. See the note above Sarray::allocate.
+   static constexpr size_t s_colour_step = 1024;
+   static constexpr size_t s_colour_count = 64;
    static float_sw4* allocate( size_t n );
    static void deallocate( float_sw4*& p );
 //   void define( CartesianProcessGrid* cartcomm, int nc );
