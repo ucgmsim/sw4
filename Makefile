@@ -50,16 +50,16 @@ endif
 
 ifeq ($(optlevel),DEBUG)
    FFLAGS    = -g -O0
-   CXXFLAGS  = -g -I../src -DBZ_DEBUG -O0 -std=c++11
+   CXXFLAGS  = -g -I../src -DBZ_DEBUG -O0 -std=c++17
    CFLAGS    = -g -O0
 else ifeq ($(optlevel),PROFILE)
    FFLAGS   = -g -O3
-   CXXFLAGS = -g -O3 -I../src -std=c++11
+   CXXFLAGS = -g -O3 -I../src -std=c++17
    CFLAGS   = -g -O3 
 else
    FFLAGS   = -O3
 # AP (160419) Note that cmake uses -O3 instead of -O for CXX and C
-   CXXFLAGS = -O3 -I../src -std=c++11
+   CXXFLAGS = -O3 -I../src -std=c++17
    CFLAGS   = -O3 
 endif
 
@@ -358,7 +358,7 @@ $(builddir)/%.o:src/%.C
 
 $(builddir)/RandomizedMaterial.o:src/RandomizedMaterial.C
 	/bin/mkdir -p $(builddir)
-	 cd $(builddir); $(CXX) $(CXXFLAGS) -std=c++11 -c ../$< 
+	 cd $(builddir); $(CXX) $(CXXFLAGS) -std=c++17 -c ../$< 
 
 clean:
 	/bin/mkdir -p $(optdir)

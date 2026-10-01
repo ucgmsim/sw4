@@ -36,6 +36,12 @@ endif()
 
 project(SW4 C CXX Fortran)
 
+# The sources use C++17 features (e.g. `if constexpr` in rhs4th3fortc.C). Without
+# an explicit standard each compiler uses its own default, and those older than
+# C++17 (e.g. Apple clang) emit a -Wc++17-extensions warning for every use.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/configs/")
 
 include(CTest)
