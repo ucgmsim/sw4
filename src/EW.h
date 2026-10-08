@@ -1727,7 +1727,10 @@ bool m_output_load;
 int m_projection_cycle;
 
 bool m_checkfornan;
-bool m_failonnan;   // when set, MPI_Abort as soon as a NaN is detected
+bool m_failonnan;   // when set, MPI_Abort as soon as a NaN or Inf is detected
+// The run is declared diverged, and aborted, once max|U| exceeds this (on the
+// printing cadence, see solve.C). <= 0 disables. Default 1e30, see EW.C.
+float_sw4 m_divergence_limit;
 // 'developer allowsourceinsupergrid=1': downgrade the source-in-the-sponge
 // abort to a warning. The diagnostic is still printed in full.
 bool m_allow_source_in_supergrid;
