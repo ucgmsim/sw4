@@ -107,6 +107,12 @@ expect = "success"
 stdout_regex = "outside the sfile and keep the material of earlier material commands"
 
 [[run]]
+name = "checkpoint-time"
+params = { material = "block vp=4000 vs=2300 rho=2500\ncheckpoint time=0.2 file=chk" }
+expect = "failure"
+stdout_regex = "use cycle= or cycleInterval="
+
+[[run]]
 name = "station-outside"
 params = { stations = [["IN", 1000, 0], ["OUT", 30000, 0]] }
 expect = "success"

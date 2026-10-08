@@ -4157,14 +4157,19 @@ void EW::processCheckPoint(char* buffer)
     {
        if (startswith("#", token) || startswith(" ", buffer))
           break;
-       //      if (startswith("cycle=", token) )
-       //      {
-       //	 token += 6; // skip cycle=
-       //	 CHECK_INPUT( atoi(token) >= 0., err << "cycle must be a non-negative integer, not: " << token);
-       //	 cycle = atoi(token);
-       //	 timingSet = true;
-       //      }
-      if (startswith("cycleInterval=", token) )
+      // A single checkpoint after time step `cycle` (CheckPoint::timeToWrite).
+      if (startswith("cycle=", token) )
+      {
+	 token += 6; // skip cycle=
+	 CHECK_INPUT( atoi(token) >= 1, err << "cycle must be a positive integer, not: " << token);
+	 cycle = atoi(token);
+	 timingSet = true;
+      }
+      else if (startswith("time=", token) || startswith("timeInterval=", token) )
+      {
+	 CHECK_INPUT( false, err << "checkpoint is written by time step only; use cycle= or cycleInterval=, not " << token);
+      }
+      else if (startswith("cycleInterval=", token) )
       {
 	 token += 14; // skip cycleInterval=
 	 CHECK_INPUT( atoi(token) >= 0., err << "cycleInterval must be a non-negative integer, not: " << token);
@@ -4278,7 +4283,7 @@ void EW::processCheckPoint(char* buffer)
 
    if( m_check_point == CheckPoint::nil )
       m_check_point = new CheckPoint(this);
-   if( cycleInterval > 0 )
+   if( cycleInterval > 0 || cycle > 0 )
       m_check_point->set_checkpoint_file( filePrefix, cycle, cycleInterval, bufsize, useHDF5, compressionMode, compressionPar );
    if( restartFileGiven )
    {
