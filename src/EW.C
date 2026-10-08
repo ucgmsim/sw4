@@ -376,13 +376,13 @@ void energy4_ci(int ifirst, int ilast, int jfirst, int jlast, int kfirst,
                 int *onesided, float_sw4 *__restrict__ a_um,
                 float_sw4 *__restrict__ a_u, float_sw4 *__restrict__ a_up,
                 float_sw4 *__restrict__ a_rho, float_sw4 h, float_sw4 *a_strx,
-                float_sw4 *a_stry, float_sw4 *a_strz, float_sw4 &a_energy);
+                float_sw4 *a_stry, float_sw4 *a_strz, double &a_energy);
 void energy4c_ci(int ifirst, int ilast, int jfirst, int jlast, int kfirst,
                  int klast, int i1, int i2, int j1, int j2, int k1, int k2,
                  int *onesided, float_sw4 *__restrict__ a_um,
                  float_sw4 *__restrict__ a_u, float_sw4 *__restrict__ a_up,
                  float_sw4 *__restrict__ a_rho, float_sw4 *__restrict__ a_jac,
-                 float_sw4 &a_energy);
+                 float_sw4 *a_strx, float_sw4 *a_stry, double &a_energy);
 void addgradrho_ci(int ifirst, int ilast, int jfirst, int jlast, int kfirst,
                    int klast, int ifirstact, int ilastact, int jfirstact,
                    int jlastact, int kfirstact, int klastact, int nk,
@@ -6487,8 +6487,9 @@ void EW::get_cgparameters(int &maxit, int &maxrestart, float_sw4 &tolerance,
 void EW::compute_energy(float_sw4 dt, bool write_file, vector<Sarray> &Um,
                         vector<Sarray> &U, vector<Sarray> &Up, int step,
                         int event) {
-  // Compute energy
-  float_sw4 energy = 0;
+  // Compute energy. Accumulated in double (also in float builds, where a
+  // float sum over the grid gave ~1e-3 step-to-step noise).
+  double energy = 0;
   for (int g = 0; g < mNumberOfGrids; g++) {
     int istart = m_iStartInt[g];
     int iend = m_iEndInt[g];
@@ -6500,7 +6501,7 @@ void EW::compute_energy(float_sw4 dt, bool write_file, vector<Sarray> &Um,
     float_sw4 *u_ptr = U[g].c_ptr();
     float_sw4 *um_ptr = Um[g].c_ptr();
     float_sw4 *rho_ptr = mRho[g].c_ptr();
-    float_sw4 locenergy;
+    double locenergy;
     int *onesided_ptr = m_onesided[g];
     //      if( topographyExists() && g == mNumberOfGrids-1 )
     if (topographyExists() && g >= mNumberOfCartesianGrids) {
@@ -6513,7 +6514,7 @@ void EW::compute_energy(float_sw4 dt, bool write_file, vector<Sarray> &Um,
       energy4c_ci(m_iStart[g], m_iEnd[g], m_jStart[g], m_jEnd[g], m_kStart[g],
                   m_kEnd[g], istart, iend, jstart, jend, kstart, kend,
                   onesided_ptr, um_ptr, u_ptr, up_ptr, rho_ptr, mJ[g].c_ptr(),
-                  locenergy);
+                  m_sg_str_x[g], m_sg_str_y[g], locenergy);
       // FTNC	 else
       // FTNC	    energy4c(&m_iStart[g], &m_iEnd[g], &m_jStart[g], &m_jEnd[g],
       // &m_kStart[g], &m_kEnd[g], FTNC		     &istart, &iend, &jstart,
@@ -6534,9 +6535,9 @@ void EW::compute_energy(float_sw4 dt, bool write_file, vector<Sarray> &Um,
     }
     energy += locenergy;
   }
-  energy /= (dt * dt);
-  float_sw4 energytmp = energy;
-  MPI_Allreduce(&energytmp, &energy, 1, m_mpifloat, MPI_SUM,
+  energy /= (static_cast<double>(dt) * dt);
+  double energytmp = energy;
+  MPI_Allreduce(&energytmp, &energy, 1, MPI_DOUBLE, MPI_SUM,
                 m_cartesian_communicator);
   int eglobal = local_to_global_event(event);
   m_energy_test->record_data(energy, step, write_file, m_myRank,
