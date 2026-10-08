@@ -54,6 +54,33 @@ using namespace std;
 
 
 //-----------------------------------------------------------------------
+// dir + "/" + file without "." segments and repeated slashes ("././x//y" ->
+// "x/y"); ".." is kept, so symlinks resolve as before. The sfile is opened
+// through MPI-IO, and Open MPI 4.1's sharedfp/lockedfile component copies
+// the name into a 256-byte buffer, aborting on a longer path.
+static string join_sfile_path( const string& dir, const string& file )
+{
+   const string path = dir + "/" + file;
+   string out = (!path.empty() && path[0] == '/') ? "/" : "";
+   size_t pos = 0;
+   while( pos <= path.size() )
+   {
+      size_t next = path.find('/', pos);
+      if( next == string::npos )
+         next = path.size();
+      const string seg = path.substr(pos, next - pos);
+      if( !seg.empty() && seg != "." )
+      {
+         if( !out.empty() && out.back() != '/' )
+            out += '/';
+         out += seg;
+      }
+      pos = next + 1;
+   }
+   return out.empty() ? string(".") : out;
+}
+
+//-----------------------------------------------------------------------
 MaterialSfile::MaterialSfile( EW* a_ew, const string a_file, const string a_directory):
    mEW(a_ew),
    m_model_file(a_file),
@@ -420,7 +447,7 @@ void MaterialSfile::read_sfile()
   m_zminloc = zmin;
   m_zmaxloc = zmax;
 
-  string fname = m_model_dir + "/" + m_model_file;
+  string fname = join_sfile_path(m_model_dir, m_model_file);
 
   hid_t file_id, dataset_id, datatype_id, h5_dtype, group_id, grid_id, memspace_id, filespace_id, attr_id, plist_id, dxpl;
   int prec;
