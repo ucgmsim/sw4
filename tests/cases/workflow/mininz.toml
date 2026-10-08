@@ -8,7 +8,7 @@ timeout = 600
 
 [params]
 t = 6.0
-fc2 = 0.15
+fc2 = 0.3
 image_dt = 1.0
 hfine = 400.0
 
