@@ -439,17 +439,21 @@ def station_relations(ctx: Ctx) -> bool:
 
 @check("rechdf5_only_requested")
 def rechdf5_only_requested(ctx: Ctx) -> bool:
-    """out.h5 holds exactly the stations of its infile, each with data (NPTS > 0)."""
+    """Each rechdf5 outfile (option `files`, default ["out.h5"]) holds exactly
+    the stations of its infile, each with data (NPTS > 0)."""
     ok = True
     for r in ctx.run_names:
         with h5py.File(ctx.run_dir(r) / "stations.h5") as f:
             want = {k for k in f if isinstance(f[k], h5py.Group)}
-        d = read_rechdf5(ctx.run_dir(r) / "out.h5")
-        got = set(d["stations"])
-        extra = sorted(got - want)
-        empty = sorted(n for n, s in d["stations"].items() if int(s["NPTS"].ravel()[0]) == 0)
-        print(f"  {r}: stations {sorted(got)}; not in infile {extra}; empty (NPTS=0) {empty}")
-        ok &= not extra and not empty
+        for fname in ctx.opts.get("files", ["out.h5"]):
+            d = read_rechdf5(ctx.run_dir(r) / fname)
+            got = set(d["stations"])
+            extra = sorted(got - want)
+            missing = sorted(want - got)
+            empty = sorted(n for n, s in d["stations"].items() if int(s["NPTS"].ravel()[0]) <= 0)
+            print(f"  {r}/{fname}: stations {sorted(got)}; not in infile {extra}; missing {missing}; "
+                  f"empty (NPTS<=0) {empty}")
+            ok &= not extra and not missing and not empty
     return ok
 
 

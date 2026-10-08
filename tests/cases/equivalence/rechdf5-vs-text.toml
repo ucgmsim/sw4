@@ -24,6 +24,12 @@ rec = ""
 name = "both"
 params = { rec = "{{rec_lines}}", station_mode = "xy" }
 
+# A text receiver named like rechdf5 station N (sta=N), at another position,
+# plus a second rechdf5 command writing velocity to its own file.
+[[run]]
+name = "clash"
+params = { rec = "rec x=1000 y=1000 z=0 sta=N file=clashN usgsformat=1 sacformat=0 nsew=1\nrechdf5 infile=stations.h5 outfile=vel.h5 variables=velocity", station_mode = "xy" }
+
 [[check]]
 name = "agree"
 kind = "traces_agree"
@@ -38,4 +44,18 @@ name = "no-extra-groups"
 kind = "rechdf5_only_requested"
 runs = ["both"]
 description = "Text `rec` receivers must not leak into the rechdf5 file: the workflow reader requires NPTS equal across its groups."
-xfail = "Every `rec` receiver is also written to out.h5 as an empty group (NPTS=0); one sharing a rechdf5 station's name silently replaces that station's data with nothing."
+
+[[check]]
+name = "name-clash-intact"
+kind = "traces_agree"
+runs = ["both", "clash"]
+a_ignore = "txt"
+bitwise = true
+description = "A text receiver sharing rechdf5 station N's name leaves out.h5 untouched: identical to the run without it."
+
+[[check]]
+name = "name-clash-no-extra-groups"
+kind = "rechdf5_only_requested"
+runs = ["clash"]
+files = ["out.h5", "vel.h5"]
+description = "Each rechdf5 outfile holds exactly its infile's stations, with data, however many rechdf5 and rec commands the run has."

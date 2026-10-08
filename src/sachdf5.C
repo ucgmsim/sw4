@@ -263,7 +263,10 @@ int openWriteData(hid_t loc, const char *name, hid_t type_id, void *data, int nd
 }
 
 
-int createTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, int totalSteps, float_sw4 delta, string suffix)
+// Create one SAC-HDF5 file holding exactly the stations in TimeSeries, all of
+// which must resolve to the same file name.
+static int createOneTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, const string& filename,
+                                       int totalSteps, float_sw4 delta, bool setStripe)
 {
   bool is_debug = false;
 
@@ -287,8 +290,6 @@ int createTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, int totalSteps, f
   start_time = MPI_Wtime();
 
   std::string path = TimeSeries[0]->getPath();
-  std::string name = TimeSeries[0]->gethdf5FileName();
-  std::string filename;
 
   char setstripe[4096], *env;
   int disablestripe=0, stripecount=128, stripesize=512;
@@ -299,6 +300,10 @@ int createTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, int totalSteps, f
 
   // Cori Lustre has cscratch in path
   if (path.find("cscratch") == std::string::npos) 
+      disablestripe = 1;
+
+  // The Lustre stripe settings apply to the directory, so set them once.
+  if (!setStripe)
       disablestripe = 1;
 
   // Set stripe parameters for time-series data
@@ -326,16 +331,6 @@ int createTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, int totalSteps, f
       fflush(stdout);
   }
 
-  // Build the file name
-  if( path != "." )
-    filename = path;
-
-  filename.append(name);
-  filename.append(suffix);
-
-  if (filename.find(".hdf5") == string::npos && filename.find(".h5") == string::npos) 
-    filename.append(".hdf5");
- 
   if (is_debug) {
     printf("Start create time-history HDF5 file [%s], %d steps\n", filename.c_str(), totalSteps);
     fflush(stdout);
@@ -606,6 +601,49 @@ int createTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, int totalSteps, f
   printf("Created SAC HDF5 file [%s] time %e seconds\n", filename.c_str(), elapsed_time);
   fflush(stdout);
   return 1;
+}
+
+//-----------------------------------------------------------------------
+// Create the SAC-HDF5 output file(s) for the stations in a_TimeSeries.
+//
+// Only stations with HDF5 output belong in a file: text/SAC receivers (`rec`)
+// share the same list but must not appear as (empty) groups, and a text
+// receiver named like an HDF5 station must not displace it. Stations from
+// different rechdf5 commands may also name different output files, so the
+// list is split by the file each station will later open and write to
+// (TimeSeries::hdf5FileName), and every file gets only its own stations.
+int createTimeSeriesHDF5File(vector<TimeSeries*> & a_TimeSeries, int totalSteps, float_sw4 delta, string suffix)
+{
+  std::map<string, vector<TimeSeries*> > byfile;
+  vector<string> order;
+  for (size_t ts = 0; ts < a_TimeSeries.size(); ts++) {
+    if (!a_TimeSeries[ts]->getUseHDF5())
+      continue;
+    string fname = a_TimeSeries[ts]->hdf5FileName(suffix);
+    if (byfile.find(fname) == byfile.end())
+      order.push_back(fname);
+    byfile[fname].push_back(a_TimeSeries[ts]);
+  }
+
+  int ret = 0;
+  for (size_t f = 0; f < order.size(); f++) {
+    int r = createOneTimeSeriesHDF5File(byfile[order[f]], order[f], totalSteps, delta, f == 0);
+    if (r < 0)
+      ret = r;
+    else if (ret == 0)
+      ret = r;
+  }
+  return ret;
+}
+
+//-----------------------------------------------------------------------
+// True if any station in the list writes SAC-HDF5 output.
+bool anyTimeSeriesHDF5(const vector<TimeSeries*> & a_TimeSeries)
+{
+  for (size_t ts = 0; ts < a_TimeSeries.size(); ts++)
+    if (a_TimeSeries[ts]->getUseHDF5())
+      return true;
+  return false;
 }
 
 //-----------------------------------------------------------------------

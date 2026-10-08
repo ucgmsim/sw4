@@ -569,7 +569,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   // Tang: if write HDF5 data and not restart, have rank 0 create the HDF5 file with all necessary groups, attributes, and datasets
   // Disable HDF5 file locking so we can have multiple writer to open and write different datasets of the same file
   setenv("HDF5_USE_FILE_LOCKING", "FALSE", 1);
-  if ( a_TimeSeries.size() > 0 && a_TimeSeries[0]->getUseHDF5()) {
+  if ( anyTimeSeriesHDF5(a_TimeSeries) ) {
     for (int tsi = 0; tsi < a_TimeSeries.size(); tsi++) 
       a_TimeSeries[tsi]->resetHDF5file();
     if(m_myRank == 0 && !m_check_point->do_restart()) 
