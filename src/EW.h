@@ -388,6 +388,11 @@ bool usingSupergrid(){return m_use_supergrid;};
 void setup_supergrid( );
    //void supergrid_taper_material();
 void assign_supergrid_damping_arrays();
+// Keep the supergrid damping coefficient inside the stability bound of the
+// time stepping (see SuperGrid::damping_spectral_radius): the default
+// coefficient is reduced on layers too narrow for it, an explicit one is
+// warned about. Called once the damping arrays are final.
+void limit_supergrid_damping();
 
 // MR coefficients
 void setup_MR_coefficients( vector<Sarray>& Rho, vector<Sarray>& Mu, 
@@ -1588,6 +1593,7 @@ bool m_use_supergrid;
 int m_sg_gp_thickness; //, m_sg_gp_transition;
 int m_sg_damping_order; // 4 or 6 order dissipation operator
 float_sw4 m_supergrid_damping_coefficient;
+bool m_sg_damping_user_set = false; // dc= given on the supergrid command
 float_sw4 m_supergrid_width; // width in physical units
 bool m_use_sg_width; // use width instead of gp
 vector<SuperGrid> m_supergrid_taper_x, m_supergrid_taper_y;
