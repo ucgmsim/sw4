@@ -1758,6 +1758,7 @@ int m_inner_loop;
 bool m_mesh_refinements;
 bool m_matrices_decomposed;
 float_sw4 m_citol, m_cirelfact;
+std::vector<float_sw4> m_cirelfact_adapted; // per interface, see consintp()
 int m_cimaxiter;
 
 vector<float_sw4*> m_cimat1;
