@@ -52,6 +52,10 @@
 
 #define USE_DSET_ATTR 1
 
+// Paged aggregation for the time-series file (see createTimeSeriesHDF5File).
+#define SW4_HDF5_DEFAULT_PAGE_SIZE (1024 * 1024)
+#define SW4_HDF5_PAGE_BUFFER (64 * 1024 * 1024)
+
 #ifdef USE_HDF5
 
 #include "sachdf5.h"
@@ -361,12 +365,42 @@ int createTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, int totalSteps, f
 
   fapl = H5Pcreate(H5P_FILE_ACCESS);
   H5Pset_alignment(fapl, 32767, alignment);
-  fid = H5Fcreate(filename.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
+
+  // Build the file through HDF5's page buffer. Each station is a group of
+  // about twenty tiny datasets (USE_DSET_ATTR) and its waveforms, and without
+  // paging every one of them is its own small synchronous write: on a network
+  // filesystem that is ~40 ms a station, which for tens of thousands of
+  // stations keeps every other rank waiting at the barrier after this call
+  // for over half an hour. Paged aggregation gathers the metadata and the
+  // small datasets into whole pages, written as the buffer fills and at
+  // close. SW4_HDF5_PAGED=0 restores the old unpaged layout;
+  // SW4_HDF5_PAGE_SIZE sets the page size in bytes.
+  hid_t fcpl = H5Pcreate(H5P_FILE_CREATE);
+  bool paged = true;
+  hsize_t page_size = SW4_HDF5_DEFAULT_PAGE_SIZE;
+  if ((env = getenv("SW4_HDF5_PAGED")) != NULL)
+    paged = atoi(env) != 0;
+  if ((env = getenv("SW4_HDF5_PAGE_SIZE")) != NULL && atoll(env) >= 512)
+    page_size = (hsize_t)atoll(env);
+  if (paged) {
+    // Paged aggregation needs the 1.10 file format; readers from HDF5 1.10
+    // on (h5py, netCDF-4, xarray) open it.
+    H5Pset_libver_bounds(fapl, H5F_LIBVER_V110, H5F_LIBVER_LATEST);
+    H5Pset_file_space_strategy(fcpl, H5F_FSPACE_STRATEGY_PAGE, 0, 1);
+    H5Pset_file_space_page_size(fcpl, page_size);
+    // The buffer only lives while this rank builds the file; the ranks that
+    // later write their stations open it without one.
+    size_t buffer = ((size_t)SW4_HDF5_PAGE_BUFFER / page_size) * page_size;
+    H5Pset_page_buffer_size(fapl, buffer < page_size ? page_size : buffer, 0, 0);
+  }
+
+  fid = H5Fcreate(filename.c_str(), H5F_ACC_TRUNC, fcpl, fapl);
   if (fid < 0) {
     printf("Error: H5Fcreate failed\n");
     return -1;
   }
   H5Pclose(fapl);
+  H5Pclose(fcpl);
 
   // Set stripe parameters for files created after sac file (e.g. images)
   if (disablestripe != 1) {
