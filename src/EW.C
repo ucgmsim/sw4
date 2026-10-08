@@ -1463,6 +1463,68 @@ int EW::computeNearestGridPoint2(int &a_i, int &a_j, int &a_k, int &a_g,
 }
 
 //-----------------------------------------------------------------------
+int EW::computeReceiverGridPoint(int &a_i, int &a_j, int &a_k, int &a_g,
+                                 double a_x, double a_y, double a_z) {
+  // Same grid selection and vertical rounding as computeNearestGridPoint2,
+  // but i and j are rounded to the nearest node instead of floored, and the
+  // owner is the rank for which the *rounded* node is interior.
+  int success = 0;
+  if (a_z >= m_zmin[mNumberOfCartesianGrids - 1]) {
+    int g = 0;
+    while (g < mNumberOfCartesianGrids && a_z < m_zmin[g])
+      g++;
+    a_g = g;
+    double h = mGridSize[g];
+    a_i = static_cast<int>(round(a_x / h + 1));
+    a_j = static_cast<int>(round(a_y / h + 1));
+    a_k = static_cast<int>(round((a_z - m_zmin[g]) / h + 1));
+
+    VERIFY2(a_i >= 1 - m_ghost_points &&
+                a_i <= m_global_nx[a_g] + m_ghost_points,
+            "Grid Error: i (" << a_i << ") is out of bounds: ( " << 1 << ","
+                              << m_global_nx[a_g] << ")" << " x,y,z = " << a_x
+                              << " " << a_y << " " << a_z);
+    VERIFY2(a_j >= 1 - m_ghost_points &&
+                a_j <= m_global_ny[a_g] + m_ghost_points,
+            "Grid Error: j (" << a_j << ") is out of bounds: ( " << 1 << ","
+                              << m_global_ny[a_g] << ")" << " x,y,z = " << a_x
+                              << " " << a_y << " " << a_z);
+    VERIFY2(a_k >= m_kStart[a_g] && a_k <= m_kEnd[a_g],
+            "Grid Error: k (" << a_k << ") is out of bounds: ( " << 1 << ","
+                              << m_kEnd[a_g] - m_ghost_points << ")"
+                              << " x,y,z = " << a_x << " " << a_y << " "
+                              << a_z);
+    success = interior_point_in_proc(a_i, a_j, a_g);
+  } else {
+    // Curvilinear. The inverse mapping evaluates its interpolation stencil at
+    // the low node floor(q); the rounded node is floor(q) or floor(q)+1, so
+    // every rank that has floor(q) in its padded (ghost-including) range runs
+    // the mapping (interior=false). They all compute the same (g,s) from the
+    // communicated interface data; the rank that has the rounded node as an
+    // interior point owns the receiver.
+    int g = mNumberOfCartesianGrids;
+    float_sw4 q, r, s;
+    for (; g < mNumberOfGrids; g++) {
+      if (m_gridGenerator->inverse_grid_mapping(this, a_x, a_y, a_z, g, q, r, s,
+                                                false)) {
+        double h = mGridSize[g];
+        int i = static_cast<int>(round(a_x / h + 1));
+        int j = static_cast<int>(round(a_y / h + 1));
+        if (interior_point_in_proc(i, j, g)) {
+          success = 1;
+          a_g = g;
+          a_i = i;
+          a_j = j;
+          a_k = static_cast<int>(round(s));
+        }
+        break; // first grid containing the point, as in computeNearestGridPoint2
+      }
+    }
+  }
+  return success;
+}
+
+//-----------------------------------------------------------------------
 int EW::computeInvGridMap(float_sw4 &a_i, float_sw4 &a_j, float_sw4 &a_k,
                           int &a_g, float_sw4 a_x, float_sw4 a_y,
                           float_sw4 a_z) {

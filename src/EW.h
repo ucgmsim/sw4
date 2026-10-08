@@ -511,6 +511,19 @@ int computeNearestGridPoint2(int & a_i,
 			     float_sw4 a_y, 
 			     float_sw4 a_z);
 
+// Receivers: the grid node nearest to (a_x,a_y,a_z) in all three directions
+// (computeNearestGridPoint2 returns the low corner in i and j, which sources
+// need as a stencil base). Returns true on the single rank that owns that node
+// as an interior point. Coordinates are double regardless of float_sw4 so that
+// float and double builds pick the same node.
+int computeReceiverGridPoint(int & a_i,
+			     int & a_j,
+			     int & a_k,
+			     int & a_g,
+			     double a_x,
+			     double a_y,
+			     double a_z);
+
 int computeInvGridMap( float_sw4& a_i, float_sw4& a_j, float_sw4& a_k, int& a_g,
                        float_sw4 a_x, float_sw4 a_y, float_sw4 a_z );
 

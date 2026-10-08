@@ -183,7 +183,7 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
 
 
 // 2. Find nearest grid point and its grid.
-   m_myPoint = a_ew->computeNearestGridPoint2( m_i0, m_j0, m_k0, m_grid0, mX, mY, mZ );
+   m_myPoint = a_ew->computeReceiverGridPoint( m_i0, m_j0, m_k0, m_grid0, mX, mY, mZ );
 
    //   if( m_myPoint )
    //   cout << "station at ("<< mX  << " " << mY << " " << mZ <<" placed at grid point " <<
