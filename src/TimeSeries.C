@@ -110,7 +110,10 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
   m_epi_lon(-122.5),
   m_epi_depth(0.0),
   m_epi_time_offset(0.0),
-  m_x_azimuth(0.0),
+  // Set here, not with the other precomputations below, so it is valid on
+  // ranks that do not own the station too: the rank creating the SAC-HDF5
+  // file writes every station's component azimuths from it.
+  m_x_azimuth(a_ew->getGridAzimuth()),
   mBinaryMode(true),
   //  m_utc_set(false),
   //  m_utc_offset_computed(false),

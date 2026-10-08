@@ -42,6 +42,62 @@ def _station_inputs(ctx: Ctx, run: str) -> dict[str, tuple[float, float]]:
     return {k: tuple(v) for k, v in p.get("stations", {}).items()}
 
 
+# SAC orientation of each rechdf5 component: (CMPAZ, CMPINC) with CMPAZ the
+# azimuth clockwise from north and CMPINC the angle from the upward vertical,
+# as in SW4's SAC writer. Grid X/Y follow the grid azimuth `az`; Z is down.
+def _expected_cmp(comp: str, az: float) -> tuple[float, float] | None:
+    c = comp[1:].upper() if comp.startswith("V") and len(comp) > 1 else comp.upper()
+    return {"NS": (0.0, 90.0), "EW": (90.0, 90.0), "UP": (0.0, 0.0),
+            "X": (az, 90.0), "Y": (az + 90.0, 90.0), "Z": (0.0, 180.0)}.get(c)
+
+
+def component_metadata_problems(path: Path, az: float) -> list[str]:
+    """Problems with the per-component CMPAZ/CMPINC of every group in `path`.
+
+    SW4 writes them per group as `<dataset>CMPAZ`/`<dataset>CMPINC` (USE_DSET_ATTR
+    in src/sachdf5.C); a build without it writes `CMPAZ`/`CMPINC` attributes on
+    each dataset instead. Either is accepted."""
+    bad = []
+    comps = ("NS", "EW", "UP", "Vns", "Vew", "Vup", "X", "Y", "Z", "Vx", "Vy", "Vz")
+    with h5py.File(path, "r") as f:
+        for name, g in f.items():
+            if not isinstance(g, h5py.Group):
+                continue
+            found = [c for c in comps if c in g]
+            if not found:
+                bad.append(f"{name}: no component datasets")
+            for c in found:
+                if f"{c}CMPAZ" in g and f"{c}CMPINC" in g:
+                    got = (float(np.ravel(g[f"{c}CMPAZ"][()])[0]), float(np.ravel(g[f"{c}CMPINC"][()])[0]))
+                elif "CMPAZ" in g[c].attrs and "CMPINC" in g[c].attrs:
+                    got = (float(np.ravel(g[c].attrs["CMPAZ"])[0]), float(np.ravel(g[c].attrs["CMPINC"])[0]))
+                else:
+                    bad.append(f"{name}/{c}: no CMPAZ/CMPINC")
+                    continue
+                want = _expected_cmp(c, az)
+                daz = (got[0] - want[0] + 180.0) % 360.0 - 180.0
+                if abs(daz) > 1e-3 or abs(got[1] - want[1]) > 1e-3 or not 0.0 <= got[0] < 360.0:
+                    bad.append(f"{name}/{c}: CMPAZ,CMPINC = {got[0]:g},{got[1]:g}, "
+                               f"want {want[0] % 360.0:g},{want[1]:g}")
+    return bad
+
+
+@check("rechdf5_components")
+def rechdf5_components(ctx: Ctx) -> bool:
+    """Every component of every group in the rechdf5 file(s) (option `files`,
+    default ["out.h5"]) carries the SAC orientation of what it holds: NS (0, 90),
+    EW (90, 90), UP (0, 0); grid X (az, 90), Y (az+90, 90), Z (0, 180)."""
+    ok = True
+    for r in ctx.run_names:
+        az = float(ctx.params(r).get("az", 0.0))
+        for fname in ctx.opts.get("files", ["out.h5"]):
+            bad = component_metadata_problems(ctx.run_dir(r) / fname, az)
+            print(f"  {'ok ' if not bad else 'BAD'} {r}/{fname} (az {az:g}): "
+                  f"{'; '.join(bad[:6]) or 'CMPAZ/CMPINC as expected'}")
+            ok &= not bad
+    return ok
+
+
 @check("rechdf5_contract")
 def rechdf5_contract(ctx: Ctx) -> bool:
     """The properties of out.h5 that ~/src/workflow relies on (lf_to_xarray, im_calc)."""
@@ -79,6 +135,8 @@ def rechdf5_contract(ctx: Ctx) -> bool:
                 etol = ctx.tol("echo_tol_deg", {"double": 1e-9, "float": 1e-4})
                 need(abs(got[0] - lat) < etol and abs(dlon) < etol and got[2] == 0.0,
                      f"{name}: STLA,STLO,STDP echo the station file ({got[0]:.9f}, {got[1]:.9f}, {got[2]:g})")
+        bad = component_metadata_problems(ctx.run_dir(run) / ctx.opts.get("file", "out.h5"), float(p.get("az", 0.0)))
+        need(not bad, f"CMPAZ/CMPINC: NS (0, 90), EW (90, 90), UP (0, 0) {'; '.join(bad[:3])}")
         if "sponge" in p:
             need("SGWIDTH" in d and abs(d["SGWIDTH"] - float(p["sponge"])) < 1e-6,
                  f"SGWIDTH = {d.get('SGWIDTH')} (sponge {p['sponge']})")

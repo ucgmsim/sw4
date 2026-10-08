@@ -477,17 +477,40 @@ static int createOneTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, const s
     createAttr(grp, "SGDEPTHGP", H5T_NATIVE_DOUBLE, attr_space1);
 
     xyzcomponent = TimeSeries[ts]->getXYZcomponent();
-    if( !xyzcomponent )
-      isnsew = 1;
+    isnsew = xyzcomponent ? 0 : 1;
 
     createWriteAttr(grp, "ISNSEW", H5T_NATIVE_INT, attr_space1, &isnsew);
 
-    cmpazs[0] = TimeSeries[ts]->getXaz();
-    cmpazs[1] = TimeSeries[ts]->getXaz()+90.;
-    cmpazs[2] = 0.;
-    cmpincs[0] = 90.;
-    cmpincs[1] = 90.;
-    cmpincs[2] = 180.;
+    // SAC orientation of each component, as the SAC writer
+    // (TimeSeries::writeFile) uses it: CMPAZ is the azimuth in degrees
+    // clockwise from north, CMPINC the angle from the upward vertical.
+    // Grid components: X along the grid azimuth, Y 90 degrees clockwise from
+    // it, Z positive down. Geographic components (in dataset order EW, NS,
+    // UP): east, north, up.
+    for (int c = 0; c < 9; c++) {
+      cmpazs[c] = 0.;
+      cmpincs[c] = 0.;
+    }
+    if( xyzcomponent )
+    {
+      float xaz = fmod((float)TimeSeries[ts]->getXaz(), 360.f);
+      if (xaz < 0) xaz += 360.f;
+      cmpazs[0] = xaz;
+      cmpazs[1] = fmod(xaz + 90.f, 360.f);
+      cmpazs[2] = 0.;
+      cmpincs[0] = 90.;
+      cmpincs[1] = 90.;
+      cmpincs[2] = 180.;
+    }
+    else
+    {
+      cmpazs[0] = 90.;   // EW
+      cmpazs[1] = 0.;    // NS
+      cmpazs[2] = 0.;    // UP
+      cmpincs[0] = 90.;
+      cmpincs[1] = 90.;
+      cmpincs[2] = 0.;
+    }
     mode         = TimeSeries[ts]->getMode();
     // Datasets
     if( mode == TimeSeries::Displacement )
@@ -504,7 +527,6 @@ static int createOneTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, const s
           dset_names[0] = "EW";
           dset_names[1] = "NS";
           dset_names[2] = "UP";
-          cmpincs[2] = 0.;
        }
     }
     else if( mode == TimeSeries::Velocity )
@@ -521,7 +543,6 @@ static int createOneTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, const s
           dset_names[0] = "Vew";
           dset_names[1] = "Vns";
           dset_names[2] = "Vup";
-          cmpincs[2] = 0.;
        }
     }
     else if( mode == TimeSeries::Div )
@@ -576,8 +597,8 @@ static int createOneTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, const s
       std::string azname  = dset_names[i] + "CMPAZ";
       /* createAttr(grp, incname.c_str(), H5T_NATIVE_FLOAT, attr_space1); */
       /* createAttr(grp, azname.c_str(), H5T_NATIVE_FLOAT, attr_space1); */
-      createWriteAttr(grp, incname.c_str(), H5T_NATIVE_FLOAT, attr_space1, &cmpazs[i]);
-      createWriteAttr(grp, azname.c_str(), H5T_NATIVE_FLOAT, attr_space1, &cmpincs[i]);
+      createWriteAttr(grp, incname.c_str(), H5T_NATIVE_FLOAT, attr_space1, &cmpincs[i]);
+      createWriteAttr(grp, azname.c_str(), H5T_NATIVE_FLOAT, attr_space1, &cmpazs[i]);
 #else
       /* createAttr(dset, "CMPINC", H5T_NATIVE_FLOAT, attr_space1); */
       /* createAttr(dset, "CMPAZ", H5T_NATIVE_FLOAT, attr_space1); */

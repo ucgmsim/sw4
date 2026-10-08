@@ -59,3 +59,10 @@ kind = "rechdf5_only_requested"
 runs = ["clash"]
 files = ["out.h5", "vel.h5"]
 description = "Each rechdf5 outfile holds exactly its infile's stations, with data, however many rechdf5 and rec commands the run has."
+
+[[check]]
+name = "component-metadata"
+kind = "rechdf5_components"
+runs = ["clash"]
+files = ["out.h5", "vel.h5"]
+description = "Per-component CMPAZ/CMPINC for displacement (NS/EW/UP) and velocity (Vns/Vew/Vup) output."
