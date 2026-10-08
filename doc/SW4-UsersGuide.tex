@@ -1739,6 +1739,9 @@ sfile filename=USGSBayAreaVM-08.3.0.sfile directory=/path/to/sfile
 \end{verbatim}
 
 The file contents are similar to the \verb+rfile+ file, but are defined with internal (curvilinear) refinement boundaries, and all 5 material properties. Note that the \verb+rfile+ caveats about the computational domain still apply, and geographical region bounds should all be checked against the \verb+sfile+'s {\em origin}, ({\em nx,ny}), {\em hh}, {\em z\_bot}, etc.
+Grid points outside the \verb+sfile+ (horizontally or below {\em z\_bot}) keep the material of earlier material
+commands, e.g. a \verb+block+ background given before the \verb+sfile+ command; if no earlier command defines them,
+\emph{SW4} stops with an error that gives the uncovered extent.
 
 Figure~\ref{fig:sfile} shows a schematic of the data layout in a 2D slice
 of the \verb+sfile+ domain.

@@ -84,6 +84,10 @@ class MaterialSfile : public MaterialData
     float_sw4 m_xminloc, m_xmaxloc, m_yminloc, m_ymaxloc, m_zminloc, m_zmaxloc;
     bool m_outside;
 
+    // Extent of the sfile itself (SW4 coordinates) and the distance by which a grid
+    // point may lie outside it and still be taken as covered (round-off in the origin).
+    float_sw4 m_xminrf, m_xmaxrf, m_yminrf, m_ymaxrf, m_zminrf, m_zmaxrf, m_covertol;
+
     vector<Sarray> mMaterial_rho;
     vector<Sarray> mMaterial_cp;
     vector<Sarray> mMaterial_cs;

@@ -39,6 +39,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <algorithm>
 #include <math.h>
 #include <fcntl.h>
 #include "EW.h"
@@ -81,8 +82,11 @@ void MaterialSfile::set_material_properties(std::vector<Sarray> & rho,
 {
 // Assume attenuation arrays defined on all grids if they are defined on grid zero.
    bool use_q = m_use_attenuation && xis[0].is_defined() && xip[0].is_defined();
-   size_t outside=0, material=0;
+   size_t outside=0, material=0, undefined=0;
    float_sw4 z_min = m_zminloc;
+   // Bounding box of the grid points that neither this sfile nor an earlier
+   // material command defines.
+   float_sw4 uxmin=1e38, uxmax=-1e38, uymin=1e38, uymax=-1e38, uzmin=1e38, uzmax=-1e38;
 
    // Find the relative dimension size of upper and lower interface for each grid patch
    int* ist = new int[m_npatches];
@@ -95,7 +99,7 @@ void MaterialSfile::set_material_properties(std::vector<Sarray> & rho,
       bool curvilinear = mEW->topographyExists() && g >= mEW->mNumberOfCartesianGrids;
       size_t ni=mEW->m_iEnd[g]-mEW->m_iStart[g]+1;
       size_t nj=mEW->m_jEnd[g]-mEW->m_jStart[g]+1;
-#pragma omp parallel for collapse(2) reduction(+:material,outside)
+#pragma omp parallel for collapse(2) reduction(+:material,outside,undefined) reduction(min:uxmin,uymin,uzmin) reduction(max:uxmax,uymax,uzmax)
       for (int k = mEW->m_kStart[g]; k <= mEW->m_kEnd[g]; ++k) {
 	 for (int j = mEW->m_jStartInt[g]; j <= mEW->m_jEndInt[g]; ++j) {
 	    for (int i = mEW->m_iStartInt[g]; i <= mEW->m_iEndInt[g]; ++i) {
@@ -112,15 +116,20 @@ void MaterialSfile::set_material_properties(std::vector<Sarray> & rho,
                 if (g == mEW->mNumberOfGrids - 1 && z < z_min) 
                   z = z_min;
 
-                // (x, y, z) is the coordinate of current grid point
-		/* if( inside( x, y, z ) ) { */
-		if( m_zminloc <= z && z <= m_zmaxloc ) {
-                   // Extend the material value if simulation grid is larger than material grid
-                   if (x > m_xmaxloc)
-                       x = m_xmaxloc;
-                   if (y > m_ymaxloc)
-                       y = m_ymaxloc;
-                       
+                // (x, y, z) is the coordinate of current grid point.
+                // Only points inside the sfile are set. The others keep the material
+                // of earlier material commands (e.g. a block background below a
+                // shallow sfile); points that nothing defines are an error below.
+                // The sfile used to be extended horizontally from its edge, which
+                // silently invented material outside it.
+		if( m_xminrf - m_covertol <= x && x <= m_xmaxrf + m_covertol &&
+		    m_yminrf - m_covertol <= y && y <= m_ymaxrf + m_covertol &&
+		    m_zminloc - m_covertol <= z && z <= m_zmaxloc + m_covertol ) {
+                   // Within round-off of the edge: take the edge value.
+                   x = std::min(std::max(x, m_xminrf), m_xmaxrf);
+                   y = std::min(std::max(y, m_yminrf), m_ymaxrf);
+                   z = std::min(std::max(z, m_zminloc), m_zmaxloc);
+
 		   material++;
                    int i0, j0, i1, j1, k0, gr = m_npatches-1;
                    float_sw4 tmph, down_z;
@@ -256,8 +265,15 @@ void MaterialSfile::set_material_properties(std::vector<Sarray> & rho,
                    }
 
 		} // End if inside
-		else
+		else {
 		   outside++;
+		   if( rho[g](i,j,k) < 0 ) { // still the -1 that marks undefined material
+		      undefined++;
+		      uxmin = std::min(uxmin, x); uxmax = std::max(uxmax, x);
+		      uymin = std::min(uymin, y); uymax = std::max(uymax, y);
+		      uzmin = std::min(uzmin, z); uzmax = std::max(uzmax, z);
+		   }
+		}
 	    } // End for i
 	  } // End for j
         } // End for k
@@ -317,6 +333,24 @@ void MaterialSfile::set_material_properties(std::vector<Sarray> & rho,
       materialSum=materialsumi;
       outsideSum=outsidesumi;
    }
+   // Every rank takes the same decision, so all of them abort together.
+   long long undefinedSum, undefinedLoc = undefined;
+   MPI_Allreduce(&undefinedLoc, &undefinedSum, 1, MPI_LONG_LONG, MPI_SUM, mEW->m_1d_communicator);
+   float_sw4 umin[3] = {uxmin, uymin, uzmin}, umax[3] = {uxmax, uymax, uzmax}, gmin[3], gmax[3];
+   MPI_Allreduce(umin, gmin, 3, mEW->m_mpifloat, MPI_MIN, mEW->m_1d_communicator);
+   MPI_Allreduce(umax, gmax, 3, mEW->m_mpifloat, MPI_MAX, mEW->m_1d_communicator);
+   if( undefinedSum > 0 ) {
+      if( mEW->getRank() == 0 )
+         cout << "Fatal input error: sfile " << m_model_dir << "/" << m_model_file
+              << " does not cover the computational grid and no earlier material command defines the rest: "
+              << undefinedSum << " grid points in x=[" << gmin[0] << ", " << gmax[0] << "], y=["
+              << gmin[1] << ", " << gmax[1] << "], z=[" << gmin[2] << ", " << gmax[2]
+              << "] are outside the sfile, which covers x=[" << m_xminrf << ", " << m_xmaxrf
+              << "], y=[" << m_yminrf << ", " << m_ymaxrf << "], z=[" << m_zminrf << ", " << m_zmaxrf
+              << "]. Make the sfile larger or give a background material (e.g. a block command) before it." << endl;
+      MPI_Barrier(mEW->m_1d_communicator);
+      MPI_Abort(MPI_COMM_WORLD, 1);
+   }
    if (mEW->getRank() == 0)
       //      cout << endl 
       //           << "--------------------------------------------------------------\n"
@@ -327,8 +361,13 @@ void MaterialSfile::set_material_properties(std::vector<Sarray> & rho,
       //           << endl 
       //           << "--------------------------------------------------------------\n"
       //           << endl;
+   {
       cout << endl
 	   << "sfile command: outside = " << outsideSum << ", material = " << materialSum << endl;
+      if( outsideSum > 0 )
+         cout << "sfile command: " << outsideSum << " grid points are outside the sfile and keep the material"
+              << " of earlier material commands" << endl;
+   }
 
 }
 
@@ -512,6 +551,11 @@ void MaterialSfile::read_sfile()
   float_sw4 xminrf = m_x0,    xmaxrf = m_x0+(m_ni[0]-1)*m_hh[0];
   float_sw4 yminrf = m_y0,    ymaxrf = m_y0+(m_nj[0]-1)*m_hh[0];
   float_sw4 zminrf = (float_sw4)min_max_z[0], zmaxrf = (float_sw4)min_max_z[1];
+
+  m_xminrf = xminrf; m_xmaxrf = xmaxrf;
+  m_yminrf = yminrf; m_ymaxrf = ymaxrf;
+  m_zminrf = zminrf; m_zmaxrf = zmaxrf;
+  m_covertol = 1e-3*(*std::min_element(m_hh.begin(), m_hh.end()));
 
   if( xminrf > m_xminloc )
      m_xminloc = xminrf;
