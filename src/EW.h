@@ -114,6 +114,7 @@ int local_to_global_event( int e ) const;
 
 void setupRun( vector<vector<Source*> > & a_GlobalUniqueSources );
 
+int preroll_steps( vector<Source*> & a_Sources, bool save_sides );
 void solve( vector<Source*> & a_GlobalSources, vector<TimeSeries*> & a_GlobalTimeSeries,
 	    vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda, vector<Sarray>& a_Rho,
 	    vector<Sarray>& U, vector<Sarray>& Um,
