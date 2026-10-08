@@ -378,7 +378,7 @@ void GridGeneratorGaussianHill::generate_grid_and_met_old_gh( EW *a_ew, Sarray& 
                std::cout << "Error, zr = " << zr << " at " << i << " "
                          <<  j << " " <<  k << std::endl;
 	       std::cout << " s= " << s << " zu1, tau, m, zetaBreak" << zu1 << " "
-			 << tau << " " << m << " " << zetaBreak << std::endl;
+			 << tau << " " << m << " " << zetaBreak << "\n";
 	       exit(0);
                return;
             }
