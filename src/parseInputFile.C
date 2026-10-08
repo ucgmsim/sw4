@@ -4171,7 +4171,6 @@ void EW::processCheckPoint(char* buffer)
    string err = "CheckPoint Error: ";
    int cycle=-1, cycleInterval=0;
    float_sw4 time=0.0, timeInterval=0.0;
-   bool timingSet=false;
    string filePrefix = "checkpoint";
 
    string restartFileName, restartPath;
@@ -4191,7 +4190,6 @@ void EW::processCheckPoint(char* buffer)
 	 token += 6; // skip cycle=
 	 CHECK_INPUT( atoi(token) >= 1, err << "cycle must be a positive integer, not: " << token);
 	 cycle = atoi(token);
-	 timingSet = true;
       }
       else if (startswith("time=", token) || startswith("timeInterval=", token) )
       {
@@ -4202,7 +4200,6 @@ void EW::processCheckPoint(char* buffer)
 	 token += 14; // skip cycleInterval=
 	 CHECK_INPUT( atoi(token) >= 0., err << "cycleInterval must be a non-negative integer, not: " << token);
 	 cycleInterval = atoi(token);
-	 timingSet = true;
       }
       else if (startswith("file=", token))
       {

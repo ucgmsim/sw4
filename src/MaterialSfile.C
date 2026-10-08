@@ -347,7 +347,7 @@ void MaterialSfile::set_material_properties(std::vector<Sarray> & rho,
               << gmin[1] << ", " << gmax[1] << "], z=[" << gmin[2] << ", " << gmax[2]
               << "] are outside the sfile, which covers x=[" << m_xminrf << ", " << m_xmaxrf
               << "], y=[" << m_yminrf << ", " << m_ymaxrf << "], z=[" << m_zminrf << ", " << m_zmaxrf
-              << "]. Make the sfile larger or give a background material (e.g. a block command) before it." << endl;
+              << "]. Make the sfile larger or give a background material (e.g. a block command) before it.\n" << std::flush;
       MPI_Barrier(mEW->m_1d_communicator);
       MPI_Abort(MPI_COMM_WORLD, 1);
    }
@@ -366,7 +366,7 @@ void MaterialSfile::set_material_properties(std::vector<Sarray> & rho,
 	   << "sfile command: outside = " << outsideSum << ", material = " << materialSum << endl;
       if( outsideSum > 0 )
          cout << "sfile command: " << outsideSum << " grid points are outside the sfile and keep the material"
-              << " of earlier material commands" << endl;
+              << " of earlier material commands\n";
    }
 
 }
