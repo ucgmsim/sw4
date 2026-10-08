@@ -114,7 +114,8 @@ void GridGeneratorGeneral::generate_grid_and_met_old( EW *a_ew, Sarray& a_x, Sar
    int nz = a_ew->m_global_nz[g];
    float_sw4 h=a_ew->mGridSize[g];
 
-   float_sw4 izb = 1.0/(m_zetaBreak*(nz-1));
+   report_zeta_break( a_ew, nz );
+   float_sw4 izb = 1.0/(zeta_break(nz)*(nz-1));
 #pragma omp parallel for
    for (int k=a_x.m_kb; k<=a_x.m_ke; k++)
    {
@@ -317,9 +318,10 @@ bool GridGeneratorGeneral::grid_mapping_old( float_sw4 q, float_sw4 r, float_sw4
 // 2b. Evaluate z-mapping
 //   int Nz = m_global_nz[gFinest];
    z = m_topo_zmax - (Nz-s)*h;
-   if( s-1 < m_zetaBreak*(Nz-1) )
+   const float_sw4 zetaBreak = zeta_break(Nz);
+   if( s-1 < zetaBreak*(Nz-1) )
    {
-      float_sw4 omra = 1-(s-1)/(m_zetaBreak*(Nz-1));
+      float_sw4 omra = 1-(s-1)/(zetaBreak*(Nz-1));
       float_sw4 omsm = omra;
       for( int l=2 ; l <= m_grid_interpolation_order ; l++ )
          omsm *= omra;
@@ -363,7 +365,8 @@ bool GridGeneratorGeneral::inverse_grid_mapping_old( EW* a_ew,
    {
       s = 0.;   
 // 2. Compute s
-      float_sw4 zlim = m_topo_zmax - (Nz-1)*(1-m_zetaBreak)*h;
+      const float_sw4 zetaBreak = zeta_break(Nz);
+      float_sw4 zlim = m_topo_zmax - (Nz-1)*(1-zetaBreak)*h;
       if( z >= zlim )
       {
 // 2a. If z is in the Cartesian part of grid, this is the s value:
@@ -411,7 +414,7 @@ bool GridGeneratorGeneral::inverse_grid_mapping_old( EW* a_ew,
       // Use Cartesian value as initial guess.
          s = (z-m_topo_zmax)/h + Nz;
          float_sw4 z0  = m_topo_zmax - (Nz-1)*h + tau;
-         float_sw4 izb = 1.0/(m_zetaBreak*(Nz-1));
+         float_sw4 izb = 1.0/(zetaBreak*(Nz-1));
          // 1e-12 sits below FLT_EPSILON (~1.2e-7), unattainable in single
          // precision; loosen like EW.C's m_citol (EW.C:569).
          float_sw4 tol = sizeof(float_sw4) == 4 ? 1e-4 : 1e-12;
@@ -468,8 +471,9 @@ void GridGeneratorGeneral::grid_mapping_diff_old(
 
    zq = zr = zs = 0;
 
-   float_sw4 zpar = (s-1)/(m_zetaBreak*(Nz-1));
-   float_sw4 kBreak = 1 + m_zetaBreak*(Nz-1);
+   const float_sw4 zetaBreak = zeta_break(Nz);
+   float_sw4 zpar = (s-1)/(zetaBreak*(Nz-1));
+   float_sw4 kBreak = 1 + zetaBreak*(Nz-1);
 
    if( zpar >= 1 )
    {
@@ -484,7 +488,7 @@ void GridGeneratorGeneral::grid_mapping_diff_old(
 
       float_sw4 pp    = pow(1-zpar,order-1);
       float_sw4 powo  = (1-zpar)*pp;
-      float_sw4 dpowo = -order*pp/m_zetaBreak;
+      float_sw4 dpowo = -order*pp/zetaBreak;
       float_sw4 tauavg= 0;
       float_sw4 tauq=0, taur=0;
       float_sw4 tauqq=0, tauqr=0, taurr=0;
@@ -513,7 +517,7 @@ void GridGeneratorGeneral::grid_mapping_diff_old(
       if( analytic_derivative )
       {
          zs  = h + c1*(-dpowo)/(Nz-1);
-         zss = -c1*order*(order-1)*pow(1-zpar,order-2)/(m_zetaBreak*m_zetaBreak*(Nz-1)*(Nz-1));
+         zss = -c1*order*(order-1)*pow(1-zpar,order-2)/(zetaBreak*zetaBreak*(Nz-1)*(Nz-1));
       }
       else
       {
@@ -522,7 +526,7 @@ void GridGeneratorGeneral::grid_mapping_diff_old(
          float_sw4 z1d = 0;
          for( int k = kc-3 ; k <= kc+4; k++ ) 
          {
-            zpar = (k-1)/(m_zetaBreak*(Nz-1));
+            zpar = (k-1)/(zetaBreak*(Nz-1));
             if( zpar >= 1 )
                z1d = zMax + (k-kBreak)*h;
             else

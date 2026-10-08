@@ -10,6 +10,7 @@ class GridGenerator
  protected:
    float_sw4 m_topo_zmax, m_zetaBreak;
    bool m_always_new;
+   mutable bool m_zeta_break_reported = false;
    int m_grid_interpolation_order;
    int metric_ci( int ib, int ie, int jb, int je, int kb, int ke, float_sw4* a_x,
 	          float_sw4* a_y, float_sw4* a_z,float_sw4* a_met, float_sw4* a_jac );
@@ -22,7 +23,9 @@ class GridGenerator
       m_grid_interpolation_order(grid_interpolation_order)  {};
    bool curviCartIsSmooth( int ncurv ){return ncurv==1 && !m_always_new;}
    float_sw4 get_topo_zmax(){return m_topo_zmax;};
-   void get_gridgen_info( int& order, float_sw4& zetaBreak ) const;
+   void get_gridgen_info( int nz, int& order, float_sw4& zetaBreak ) const;
+   float_sw4 zeta_break( int nz ) const;
+   void report_zeta_break( EW* a_ew, int nz ) const;
 
    virtual void assignInterfaceSurfaces( EW* a_ew, Sarray& TopoGridExt )=0;
    virtual void generate_z_and_j( EW* a_ew, int g, Sarray& z, Sarray& J )=0;
