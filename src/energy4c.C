@@ -36,7 +36,7 @@ void energy4_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int k
 		 int i1, int i2, int j1, int j2, int k1, int k2, int* onesided,
 		 float_sw4* __restrict__ a_um, float_sw4* __restrict__ a_u, float_sw4* __restrict__ a_up,
 		 float_sw4* __restrict__ a_rho, float_sw4 h, float_sw4* a_strx, float_sw4* a_stry,
-		 float_sw4* a_strz, float_sw4& a_energy )
+		 float_sw4* a_strz, double& a_energy )
 {
    const int ni    = ilast-ifirst+1;
    const int nij   = ni*(jlast-jfirst+1);
@@ -51,8 +51,8 @@ void energy4_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int k
 #define stry(j) a_stry[j-jfirst]
 #define strz(k) a_strz[k-kfirst]
 
-   const float_sw4 normwgh[4]={17.0/48,59.0/48,43.0/48,49.0/48};
-   float_sw4 energy=0;
+   const double normwgh[4]={17.0/48,59.0/48,43.0/48,49.0/48};
+   double energy=0;
 #pragma omp parallel for  reduction(+:energy)
    for( int k = k1; k <= k2 ; k++ )
 	 for( int j = j1; j <= j2 ; j++ )
@@ -60,21 +60,19 @@ void energy4_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int k
 #pragma ivdep	 
 	    for( int i = i1; i <= i2 ; i++ )
 	    {
-               float_sw4 term =(
-                 (up(1,i,j,k)-u(1,i,j,k))*(up(1,i,j,k)-u(1,i,j,k)) + 
-                 (up(2,i,j,k)-u(2,i,j,k))*(up(2,i,j,k)-u(2,i,j,k)) +
-                 (up(3,i,j,k)-u(3,i,j,k))*(up(3,i,j,k)-u(3,i,j,k)) -
-                   up(1,i,j,k)*(up(1,i,j,k)-2*u(1,i,j,k)+um(1,i,j,k)) -
-                   up(2,i,j,k)*(up(2,i,j,k)-2*u(2,i,j,k)+um(2,i,j,k)) -
-                   up(3,i,j,k)*(up(3,i,j,k)-2*u(3,i,j,k)+um(3,i,j,k))
-		 //                   )*rho(i,j,k);
-  	       )*rho(i,j,k)/(strx(i)*stry(j)*strz(k));
-	       float_sw4 normfact = 1;
+               double term = 0;
+               for( int c=1 ; c <= 3 ; c++ )
+               {
+                  const double vp = up(c,i,j,k), v = u(c,i,j,k), vm = um(c,i,j,k);
+                  term += (vp-v)*(vp-v) - vp*(vp-2*v+vm);
+               }
+               term *= rho(i,j,k)/(static_cast<double>(strx(i))*stry(j)*strz(k));
+	       double normfact = 1;
                if( k <= 4 && onesided[4] == 1 )
                   normfact = normwgh[k-1];
                if( k >= k2-3 && onesided[5] == 1 )
                   normfact = normwgh[k2-k];
-               energy += normfact*h*h*h*term;
+               energy += normfact*static_cast<double>(h)*h*h*term;
 	    }
    a_energy = energy;
 }
@@ -89,7 +87,8 @@ void energy4_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int k
 void energy4c_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
 		 int i1, int i2, int j1, int j2, int k1, int k2, int* onesided,
 		 float_sw4* __restrict__ a_um, float_sw4* __restrict__ a_u, float_sw4* __restrict__ a_up,
-		 float_sw4* __restrict__ a_rho, float_sw4* __restrict__ a_jac, float_sw4& a_energy )
+		 float_sw4* __restrict__ a_rho, float_sw4* __restrict__ a_jac,
+		 float_sw4* a_strx, float_sw4* a_stry, double& a_energy )
 {
    const int ni    = ilast-ifirst+1;
    const int nij   = ni*(jlast-jfirst+1);
@@ -101,8 +100,10 @@ void energy4c_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int 
 #define um(c,i,j,k)  a_um[base3+(i)+ni*(j)+nij*(k)+nijk*(c)]   
 #define u(c,i,j,k)    a_u[base3+(i)+ni*(j)+nij*(k)+nijk*(c)]   
 #define up(c,i,j,k)  a_up[base3+(i)+ni*(j)+nij*(k)+nijk*(c)]   
-   const float_sw4 normwgh[4]={17.0/48,59.0/48,43.0/48,49.0/48};
-   float_sw4 energy=0;
+#define strx(i) a_strx[i-ifirst]
+#define stry(j) a_stry[j-jfirst]
+   const double normwgh[4]={17.0/48,59.0/48,43.0/48,49.0/48};
+   double energy=0;
 #pragma omp parallel for reduction(+:energy)
    for( int k = k1; k <= k2 ; k++ )
 	 for( int j = j1; j <= j2 ; j++ )
@@ -110,15 +111,17 @@ void energy4c_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int 
 #pragma ivdep	 
 	    for( int i = i1; i <= i2 ; i++ )
 	    {
-               float_sw4 term =(
-                 (up(1,i,j,k)-u(1,i,j,k))*(up(1,i,j,k)-u(1,i,j,k)) + 
-                 (up(2,i,j,k)-u(2,i,j,k))*(up(2,i,j,k)-u(2,i,j,k)) +
-                 (up(3,i,j,k)-u(3,i,j,k))*(up(3,i,j,k)-u(3,i,j,k)) -
-                   up(1,i,j,k)*(up(1,i,j,k)-2*u(1,i,j,k)+um(1,i,j,k)) -
-                   up(2,i,j,k)*(up(2,i,j,k)-2*u(2,i,j,k)+um(2,i,j,k)) -
-                   up(3,i,j,k)*(up(3,i,j,k)-2*u(3,i,j,k)+um(3,i,j,k))
-				)*rho(i,j,k)*jac(i,j,k);
-	       float_sw4 normfact = 1;
+               double term = 0;
+               for( int c=1 ; c <= 3 ; c++ )
+               {
+                  const double vp = up(c,i,j,k), v = u(c,i,j,k), vm = um(c,i,j,k);
+                  term += (vp-v)*(vp-v) - vp*(vp-2*v+vm);
+               }
+               // Supergrid stretching: the curvilinear operator is
+               // L u = strx*stry/J * (symmetric form), so the energy weight is
+               // rho*J/(strx*stry), as rho/(strx*stry*strz) in energy4_ci.
+               term *= rho(i,j,k)*jac(i,j,k)/(static_cast<double>(strx(i))*stry(j));
+	       double normfact = 1;
                if( k <= 4 && onesided[4] == 1 )
                   normfact = normwgh[k-1];
                if( k >= k2-3 && onesided[5] == 1 )
@@ -127,3 +130,10 @@ void energy4c_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int 
 	    }
    a_energy = energy;
 }
+#undef u
+#undef up
+#undef um
+#undef rho
+#undef jac
+#undef strx
+#undef stry
