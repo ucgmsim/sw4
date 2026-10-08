@@ -32,6 +32,7 @@
 // # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA 
 #include <mpi.h>
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <cstdlib>
@@ -132,6 +133,7 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
   m_fid_ptr(NULL),
   m_isIncAzWritten(false),
   m_nptsWritten(0),
+  m_nptsKeptOnRestart(0),
   m_nsteps(0),
   m_writeTime(0.0),
 #endif
@@ -3815,7 +3817,17 @@ void TimeSeries::doRestart(EW *ew, bool ignore_utc, float_sw4 shift, int beginCy
     fullFilePath += "/" + m_hdf5Name;
 #ifdef USE_HDF5
     if( m_myPoint )
+    {
       readSACHDF5(ew, fullFilePath, ignore_utc);
+      // Keep the file's samples from before the checkpoint cycle as they are.
+      // Rewriting them would send them through the (e,n) -> (x,y) -> (e,n)
+      // rotation round trip, which is not exact in float_sw4/float (the
+      // restarted trace then differed from an uninterrupted run by 1 ulp in
+      // early samples in float builds). readSACHDF5 left m_nptsWritten at the
+      // file's length; samples i*mDownSample < beginCycle are kept.
+      int before = beginCycle > 0 ? (beginCycle-1)/mDownSample + 1 : 0;
+      m_nptsKeptOnRestart = std::min(m_nptsWritten, before);
+    }
 #else
     cout << "readSACHDF5: read from HDF5 file but sw4 is not compiled with HDF5!" << endl;
 #endif
@@ -4094,7 +4106,7 @@ int TimeSeries::closeHDF5File()
 //-----------------------------------------------------------------------
 void TimeSeries::resetHDF5file()
 {
-  m_nptsWritten = 0;
+  m_nptsWritten = mIsRestart ? m_nptsKeptOnRestart : 0;
   m_isIncAzWritten = false;
   closeHDF5File();
   return;
