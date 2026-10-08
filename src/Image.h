@@ -42,6 +42,7 @@
 #include "Parallel_IO.h"
 
 class EW;
+class Source;
 
 class Image
 {

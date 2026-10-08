@@ -633,7 +633,7 @@ static int createOneTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, const s
 // different rechdf5 commands may also name different output files, so the
 // list is split by the file each station will later open and write to
 // (TimeSeries::hdf5FileName), and every file gets only its own stations.
-int createTimeSeriesHDF5File(vector<TimeSeries*> & a_TimeSeries, int totalSteps, float_sw4 delta, string suffix)
+int createTimeSeriesHDF5File(vector<TimeSeries*> & a_TimeSeries, int totalSteps, float_sw4 delta, const string& suffix)
 {
   std::map<string, vector<TimeSeries*> > byfile;
   vector<string> order;
@@ -649,9 +649,8 @@ int createTimeSeriesHDF5File(vector<TimeSeries*> & a_TimeSeries, int totalSteps,
   int ret = 0;
   for (size_t f = 0; f < order.size(); f++) {
     int r = createOneTimeSeriesHDF5File(byfile[order[f]], order[f], totalSteps, delta, f == 0);
-    if (r < 0)
-      ret = r;
-    else if (ret == 0)
+    // an error (the last one) wins, else the first nonzero return value
+    if (r < 0 || ret == 0)
       ret = r;
   }
   return ret;
