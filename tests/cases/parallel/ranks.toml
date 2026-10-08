@@ -1,4 +1,4 @@
-description = "PI-01/02 (in float, results differ across rank counts at ~1e-6 relative, float round-off; double is bitwise): the mini-NZ problem (0.25 Hz shape: sfile, topography, attenuation, SRF) at 1, 2, 3 and 4 MPI ranks and with 2 OpenMP threads: station traces are bitwise identical. HPC runs use whatever decomposition fits the allocation; it must not change the answer. Nightly: the 3-level 1 Hz shape at 3 and 4 ranks."
+description = "PI-01/02: the mini-NZ problem (0.25 Hz shape: sfile, topography, attenuation, SRF) at 1, 2, 3 and 4 MPI ranks and with 2 OpenMP threads: station traces are bitwise identical. HPC runs use whatever decomposition fits the allocation; it must not change the answer. Nightly: the 3-level 1 Hz shape at 3 and 4 ranks."
 labels = ["parallel", "mpi", "workflow", "hdf5"]
 requires = ["hdf5", "proj"]
 input = "../workflow/mininz.in"
@@ -49,33 +49,28 @@ params = { levels = 3 }
 name = "r4-vs-r1"
 kind = "traces_agree"
 runs = ["r4", "r1"]
-bitwise = { double = true, float = false }
-rtol = { double = 1e-12, float = 1e-5 }
+bitwise = true
 
 [[check]]
 name = "r4-vs-r2"
 kind = "traces_agree"
 runs = ["r4", "r2"]
-bitwise = { double = true, float = false }
-rtol = { double = 1e-12, float = 1e-5 }
+bitwise = true
 
 [[check]]
 name = "r4-vs-r3"
 kind = "traces_agree"
 runs = ["r4", "r3"]
-bitwise = { double = true, float = false }
-rtol = { double = 1e-12, float = 1e-5 }
+bitwise = true
 
 [[check]]
 name = "r4-vs-r2-t2"
 kind = "traces_agree"
 runs = ["r4", "r2-t2"]
-bitwise = { double = true, float = false }
-rtol = { double = 1e-12, float = 1e-5 }
+bitwise = true
 
 [[check]]
 name = "1hz-r4-vs-r3"
 kind = "traces_agree"
 runs = ["1hz-r4", "1hz-r3"]
-bitwise = { double = true, float = false }
-rtol = { double = 1e-12, float = 1e-5 }
+bitwise = true

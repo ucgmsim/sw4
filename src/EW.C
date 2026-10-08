@@ -9683,7 +9683,13 @@ void EW::sort_grid_point_sources(vector<GridPointSource *> &point_sources,
   delete[] ni;
   delete[] nij;
 
-  std::sort(point_sources.begin(), point_sources.end(), less_than);
+  // stable_sort: several point sources can share a grid point, and Force()
+  // sums them in this order. std::sort leaves equal keys in an order that
+  // depends on the local array (i.e. on the MPI decomposition), so the forcing
+  // at such points, and hence the whole solution, changed with the rank count
+  // at the round-off level (~1e-6 in float). A stable sort keeps the creation
+  // order (source by source), which is the same on every rank.
+  std::stable_sort(point_sources.begin(), point_sources.end(), less_than);
   // set up array detecting sources belonging to idential points
   identsources.resize(1);
   identsources[0] = 0;
