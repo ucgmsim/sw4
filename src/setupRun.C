@@ -380,6 +380,7 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
      time_measure[5] = MPI_Wtime();
 
   assign_supergrid_damping_arrays();
+  limit_supergrid_damping();
 
 // convert Qp and Qs to muVE, lambdaVE, and compute unrelaxed lambda, mu
   if( m_use_attenuation )
@@ -2473,6 +2474,98 @@ void EW::assign_supergrid_damping_arrays()
 #undef cornerx
 #undef cornery
 #undef cornerz
+}
+
+//-----------------------------------------------------------------------
+// The supergrid damping term is stable at every CFL-stable time step only if
+// dc * lambda_max(D) <= 1/2, where D is the 1-D damping operator of a layer
+// (derivation in SuperGrid::damping_spectral_radius). lambda_max(D) grows as
+// the layer gets narrower in grid points, so the default dc=0.02 (0.005 at
+// 6th order), which is fine for the default 30-point layer, is not fine for a
+// layer of 12 points: such a run grows without bound at CFL >= 1.
+//
+// The bound is evaluated on the global 1-D tapers of every grid and direction
+// that carries damping (the same gating as assign_supergrid_damping_arrays()).
+// The faces bound the edges and corners, where cornerTaper() scales each
+// direction's term by <= 0.67 at the depth that maximises it.
+//
+// A default coefficient that violates the bound is reduced to 90% of it (the
+// margin covers density variation and the curvilinear form of the operator).
+// An explicit dc= is kept, with a warning that names the limit, so that a
+// deliberate choice is not overridden.
+void EW::limit_supergrid_damping()
+{
+   if( !m_use_supergrid || m_twilight_forcing || m_supergrid_damping_coefficient <= 0 )
+      return;
+   const double dlim = 0.5;
+   const int topCartesian = mNumberOfCartesianGrids-1;
+   double rhomax = 0;
+   int gmax = 0, nmax = 0;
+   for( int g=0 ; g < mNumberOfGrids ; g++ )
+   {
+      const float_sw4 h = mGridSize[g];
+      double r[3];
+      r[0] = m_supergrid_taper_x[g].damping_spectral_radius( 0.0, h, m_global_nx[g], m_sg_damping_order );
+      r[1] = m_supergrid_taper_y[g].damping_spectral_radius( 0.0, h, m_global_ny[g], m_sg_damping_order );
+      r[2] = 0;
+      if( !(g > topCartesian || (0 < g && g < mNumberOfGrids-1)) )
+         r[2] = m_supergrid_taper_z[g].damping_spectral_radius( m_zmin[g], h, m_global_nz[g], m_sg_damping_order );
+      for( int d=0 ; d < 3 ; d++ )
+         if( r[d] > rhomax )
+         {
+            rhomax = r[d];
+            gmax = g;
+         }
+   }
+   if( rhomax <= 0 )
+      return;
+   nmax = static_cast<int>(supergrid_width(gmax)/mGridSize[gmax] + 0.5);
+
+   const float_sw4 dc = m_supergrid_damping_coefficient;
+   const double dprod = dc*rhomax;
+   if( mVerbose >= 2 && proc_zero() )
+      printf("Supergrid damping: largest eigenvalue of the damping operator %g (grid %d), "
+             "dc*eigenvalue = %g (stable at any CFL if <= %g)\n", rhomax, gmax, dprod, dlim );
+   if( dprod <= dlim )
+      return;
+
+// Smallest layer, in grid points, on which this dc satisfies the bound
+// (same taper shape and epsL, h=1, two layers around a 40-point interior).
+   int nmin = -1;
+   for( int n=nmax+1 ; n <= 400 && nmin < 0 ; n++ )
+   {
+      SuperGrid sg;
+      sg.define_taper( true, 0.0, true, 2.0*n+40, (float_sw4)n );
+      sg.set_eps( m_supergrid_taper_x[gmax].get_eps() );
+      if( dc*sg.damping_spectral_radius( 0.0, 1.0, 2*n+41, m_sg_damping_order ) <= dlim )
+         nmin = n;
+   }
+   const double dcmax = dlim/rhomax;
+   std::stringstream where;
+   where << "on grid " << gmax << " (h=" << mGridSize[gmax] << " m) the " << nmax
+         << "-point layer gives the damping operator a largest eigenvalue of " << rhomax
+         << ", and dc times it must stay <= " << dlim << " for the time stepping to be stable"
+         << " (dc=" << dc << " gives " << dprod << ")";
+   std::stringstream wide;
+   if( nmin > 0 )
+      wide << "a layer of at least " << nmin << " grid points (width >= "
+           << nmin*mGridSize[gmax] << " m)";
+   else
+      wide << "a wider layer";
+
+   if( !m_sg_damping_user_set )
+   {
+      m_supergrid_damping_coefficient = 0.9*dcmax;
+      if( proc_zero() )
+         cout << "Supergrid damping coefficient reduced from " << dc << " to "
+              << m_supergrid_damping_coefficient << ": " << where.str()
+              << ". The default coefficient is kept on " << wide.str() << "." << endl;
+   }
+   else if( proc_zero() )
+      cout << "WARNING: supergrid dc=" << dc << " is above the stability limit " << dcmax
+           << " of this absorbing layer: " << where.str() << ". The solution can grow without bound"
+           << (dprod >= 2 ? " at any time step" : " at CFL >= ~1")
+           << ". Use dc <= " << dcmax << " or " << wide.str() << "." << endl;
 }
 
 //-----------------------------------------------------------------------
