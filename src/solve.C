@@ -1116,12 +1116,12 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
        {
           if( proc_zero() )
           {
-             cout << endl
+             cout << "\n"
                   << "FATAL: the solution has diverged: max|U| = " << maxabsU
                   << " exceeds the divergence limit " << m_divergence_limit
-                  << " at time step " << currentTimeStep << " (t = " << t << ")." << endl
+                  << " at time step " << currentTimeStep << " (t = " << t << ").\n"
                   << "       Aborting now rather than writing Inf to the output. "
-                  << "(developer divergencelimit=<value> changes the limit, 0 disables it.)" << endl;
+                  << "(developer divergencelimit=<value> changes the limit, 0 disables it.)\n";
              cout.flush();
           }
           MPI_Abort( MPI_COMM_WORLD, 1 );
