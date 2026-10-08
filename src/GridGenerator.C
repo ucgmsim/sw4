@@ -248,13 +248,20 @@ float_sw4 GridGenerator::zeta_break( int nz ) const
 // Cartesian stencils reach. The finite-difference metric (metric_ci, k+-2
 // stencil) of rows k >= nz-2 then needs z uniform for k >= nz-4, i.e.
 // zeta = (k-1)/(nz-1) >= (nz-5)/(nz-1). The user's zetabreak (default 0.95)
-// is an upper bound; with too few points it is lowered to (nz-5)/(nz-1), so
-// that the join is energy-conserving. With nz <= 5 the bottom five rows cannot
-// be made uniform; the user's value is then kept.
-   if( nz <= 5 )
+// is an upper bound, lowered to (nz-5)/(nz-1) when needed so that the join
+// is energy-conserving.
+//
+// It is not lowered below m_min_zeta_break (0.8, reached at nz = 21): the
+// mapping squeezes the whole topography into the rows above the break, and on
+// shallow grids a lower break stretches the grid much more (dz/dk < 0 in the
+// ghost points for nz = 9 with the topography of mms/topo at h = 1/30). It
+// also keeps the grid family fixed in refinement studies with nz <= 21.
+// Shallower curvilinear grids keep a join that is not energy-exact.
+   const float_sw4 zbexact = static_cast<float_sw4>(nz-5)/(nz-1);
+   if( m_zetaBreak <= zbexact )
       return m_zetaBreak;
-   float_sw4 zbmax = static_cast<float_sw4>(nz-5)/(nz-1);
-   return m_zetaBreak < zbmax ? m_zetaBreak : zbmax;
+   const float_sw4 zbmin = m_zetaBreak < m_min_zeta_break ? m_zetaBreak : m_min_zeta_break;
+   return zbexact > zbmin ? zbexact : zbmin;
 }
 
 //-----------------------------------------------------------------------
@@ -263,13 +270,18 @@ void GridGenerator::report_zeta_break( EW* a_ew, int nz ) const
    if( m_zeta_break_reported || !a_ew->proc_zero() )
       return;
    m_zeta_break_reported = true;
-   if( nz <= 5 )
-      std::cout << "WARNING: curvilinear grid has only " << nz << " points in k; the "
-                << "curvilinear/Cartesian join is not energy-conserving (needs nz >= 6)" << std::endl;
-   else if( zeta_break(nz) != m_zetaBreak && a_ew->getVerbosity() >= 1 )
+   if( a_ew->getVerbosity() < 1 )
+      return;
+   const float_sw4 zb = zeta_break(nz);
+   const float_sw4 zbexact = static_cast<float_sw4>(nz-5)/(nz-1);
+   if( zb != m_zetaBreak )
       std::cout << "Curvilinear grid mapping: zetabreak lowered from " << m_zetaBreak << " to "
-                << zeta_break(nz) << " = (nz-5)/(nz-1), nz = " << nz
-                << ", so that the bottom five grid rows are Cartesian" << std::endl;
+                << zb << " (nz = " << nz << ")" << std::endl;
+   if( zb > zbexact )
+      std::cout << "Note: the curvilinear grid has only nz = " << nz << " points in k: the "
+                << "curvilinear/Cartesian join is not energy-exact (it needs zetabreak <= "
+                << "(nz-5)/(nz-1) = " << zbexact << ", and zetabreak is not lowered below "
+                << m_min_zeta_break << ")" << std::endl;
 }
 
 //-----------------------------------------------------------------------

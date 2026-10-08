@@ -11,6 +11,7 @@ class GridGenerator
    float_sw4 m_topo_zmax, m_zetaBreak;
    bool m_always_new;
    mutable bool m_zeta_break_reported = false;
+   static constexpr float_sw4 m_min_zeta_break = 0.8;
    int m_grid_interpolation_order;
    int metric_ci( int ib, int ie, int jb, int je, int kb, int ke, float_sw4* a_x,
 	          float_sw4* a_y, float_sw4* a_z,float_sw4* a_met, float_sw4* a_jac );
