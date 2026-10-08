@@ -81,7 +81,6 @@ runs = ["1hz", "0.25hz", "antimeridian"]
 frame = "sw4"
 tol_m = 0.01
 description = "Station positions to 1 cm in both precisions (the workflow places stations by lat/lon)."
-xfail = { float = "In float builds station x,y are computed/stored in float_sw4: 0.2-0.65 m errors, enough to move a receiver a whole cell under the floor() snapping." }
 
 [[check]]
 name = "station-echo-exact"
@@ -89,7 +88,6 @@ kind = "rechdf5_contract"
 runs = ["1hz", "0.25hz", "notopo", "antimeridian"]
 echo_tol_deg = 1e-9
 description = "STLA/STLO in out.h5 echo the station file exactly (lf_to_xarray takes station coordinates from them)."
-xfail = { float = "In float builds rechdf5 writes STLA/STLO rounded to float32 (~1e-5 deg, ~1 m)." }
 
 [[check]]
 name = "projection-scale"
@@ -125,8 +123,16 @@ runs = ["1hz", "0.25hz", "notopo", "antimeridian"]
 [[check]]
 name = "float-vs-double"
 kind = "peer_traces_agree"
-runs = ["1hz", "0.25hz", "notopo"]
+runs = ["1hz", "0.25hz"]
 peer = true
 rtol = 1e-3
-description = "PX-01: the same mini-NZ runs in the float and double builds agree (production runs in float). Measured: 1hz 7e-5."
-xfail = "Some receivers snap to a different grid node in float than in double (floor() snapping + float station coordinates), e.g. 0.25hz/HILL differs by 30%."
+description = "PX-01: the same mini-NZ runs in the float and double builds agree (production runs in float). Measured: 1hz 7e-5, 0.25hz 7e-5."
+
+[[check]]
+name = "float-vs-double-notopo"
+kind = "peer_traces_agree"
+runs = ["notopo"]
+peer = true
+rtol = 1e-3
+description = "PX-01 for the no-topography shape (Cartesian 2-level refinement, NZCVM decay). Receivers record at the same node in both builds."
+xfail = "The whole notopo solution differs 4-8% between float and double at every station (same grid nodes); unrelated to receiver placement, also present before the nearest-node fix (EAST/UP norm 2.7% apart)."
