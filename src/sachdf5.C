@@ -378,10 +378,12 @@ int createTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, int totalSteps, f
   hid_t fcpl = H5Pcreate(H5P_FILE_CREATE);
   bool paged = true;
   hsize_t page_size = SW4_HDF5_DEFAULT_PAGE_SIZE;
-  if ((env = getenv("SW4_HDF5_PAGED")) != NULL)
-    paged = atoi(env) != 0;
-  if ((env = getenv("SW4_HDF5_PAGE_SIZE")) != NULL && atoll(env) >= 512)
-    page_size = (hsize_t)atoll(env);
+  const char *paged_env = getenv("SW4_HDF5_PAGED");
+  if (paged_env != NULL)
+    paged = atoi(paged_env) != 0;
+  const char *page_size_env = getenv("SW4_HDF5_PAGE_SIZE");
+  if (page_size_env != NULL && atoll(page_size_env) >= 512)
+    page_size = (hsize_t)atoll(page_size_env);
   if (paged) {
     // Paged aggregation needs the 1.10 file format; readers from HDF5 1.10
     // on (h5py, netCDF-4, xarray) open it.
