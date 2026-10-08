@@ -28,7 +28,20 @@ params = { material = "attenuation nmech=3 maxfreq=10 phasefreq=0.5\nsfile filen
 name = "block"
 params = { material = "attenuation nmech=3 maxfreq=10 phasefreq=0.5\nblock vp=4000 vs=2300 rho=2500 qp=230 qs=115\nblock vp=3000 vs=1500 rho=2200 qp=150 qs=75 z2=1000" }
 
+[[run]]
+name = "sfile-longline"
+# Input lines longer than 255 characters (a long comment and a long relative
+# directory) used to hang SW4 at 100% CPU in parseInputFile.
+params = { material = "attenuation nmech=3 maxfreq=10 phasefreq=0.5\n# a long comment that used to hang SW4 a long comment that used to hang SW4 a long comment that used to hang SW4 a long comment that used to hang SW4 a long comment that used to hang SW4 a long comment that used to hang SW4 a long comment that used to hang SW4 a long comment that used to hang SW4 \nsfile filename=layers.sfile directory=././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././.", layers = [{ bottom = 1000.0, vp = 3000.0, vs = 1500.0, rho = 2200.0, qp = 150.0, qs = 75.0 }, { bottom = 6800.0, vp = 4000.0, vs = 2300.0, rho = 2500.0, qp = 230.0, qs = 115.0 }] }
+
 [[check]]
 name = "agree"
 kind = "traces_agree"
+runs = ["sfile", "block"]
 rtol = { double = 1e-8, float = 1e-4 }
+
+[[check]]
+name = "longline-agree"
+kind = "traces_agree"
+runs = ["sfile-longline", "sfile"]
+bitwise = true

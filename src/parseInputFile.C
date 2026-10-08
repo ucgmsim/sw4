@@ -150,6 +150,20 @@ int gcd( int a, int b )
 //}
 
 //-----------------------------------------------------------------------
+bool EW::readInputLine(std::istream& in, std::vector<char>& buf)
+{
+  // std::getline has no length limit. istream::getline(buf, 256) used to set the
+  // failbit on a longer line, after which every read failed without reaching
+  // eof and the reading loops spun forever.
+  std::string line;
+  if (!std::getline(in, line))
+    return false;
+  buf.assign(line.begin(), line.end());
+  buf.push_back('\0');
+  return true;
+}
+
+//-----------------------------------------------------------------------
 bool EW::startswith(const char begin[], char *line)
 {
   int lenb = strlen(begin);
@@ -194,7 +208,7 @@ void EW::deprecatedOption(const string& command,
 bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 			 vector< vector<TimeSeries*> > & a_GlobalTimeSeries )
 {
-  char buffer[256];
+  std::vector<char> lineBuf;
   ifstream inputFile;
   int blockCount=0;
   int ablockCount=0;
@@ -215,9 +229,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 //  cout << "********Reading the input file, proc=" << m_myRank << endl;
 
 // First process Geodyn input for restrictions of allowable grid sizes.
- while (!inputFile.eof())
+ while (readInputLine(inputFile, lineBuf))
  {
-    inputFile.getline(buffer, 256);
+    char* buffer = lineBuf.data();
     if( startswith("geodynbc",buffer ) )
        geodynFindFile(buffer);
  }
@@ -226,9 +240,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 
 // process the testrayleigh command to enable a periodic domain in the (x,y)-directions
 // these commands can enter data directly the object (this->)
-  while (!inputFile.eof())
+  while (readInputLine(inputFile, lineBuf))
   {    
-     inputFile.getline(buffer, 256);
+     char* buffer = lineBuf.data();
      if (startswith("testrayleigh", buffer) )
      {
        m_doubly_periodic = true;
@@ -265,9 +279,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 //---------------------------------------------------------------
 
 // these commands can enter data directly into the object (this->)
-  while (!inputFile.eof())
+  while (readInputLine(inputFile, lineBuf))
   {    
-     inputFile.getline(buffer, 256);
+     char* buffer = lineBuf.data();
      if( startswith("grid", buffer) )
      {
        foundGrid = true;
@@ -449,9 +463,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
   //----------------------------------------------------------
   // Now onto the rest of the input file...
   //----------------------------------------------------------
-  while (!inputFile.eof())
+  while (readInputLine(inputFile, lineBuf))
   {
-     inputFile.getline(buffer, 256);
+     char* buffer = lineBuf.data();
 
      if (strlen(buffer) > 0) // empty lines produce this
      {
@@ -571,10 +585,8 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
        }
        else if( startswith("randomblock", buffer ) )
           processRandomBlock(buffer);
-       else if (!inputFile.eof() && m_myRank == 0)
+       else if (m_myRank == 0)
        {
-	 // Maybe just reached eof, don't want to echo
-	 // the ignoring command line for nothing
 	 cout << "*** Ignoring command: '" << buffer << "'" << endl;
        }
      } // end if strlen(buffer) > 0
@@ -3144,11 +3156,11 @@ void EW::processGeodynbc(char* buf)
    float_sw4 srcx0, srcy0, srcz0, h, toff;
 
    bool timestepset = false, nstepsset=false, toffset=false;
-   char buffer[256];
+   std::vector<char> lineBuf;
    bool done = false;
-   while (!geodynfile.eof() && !done )
+   while (!done && readInputLine(geodynfile, lineBuf))
    {
-      geodynfile.getline(buffer,256);
+      char* buffer = lineBuf.data();
       if (startswith("#", buffer) || startswith("\n", buffer) || buffer == "\0" )
          break;
       if( startswith("begindata",buffer) )
@@ -3413,13 +3425,13 @@ void EW::geodynbcGetSizes( string filename, float_sw4 origin[3], float_sw4 &cube
    double x0, y0, z0, elev, h;
    adjust=1;
 
-   char buffer[256];
+   std::vector<char> lineBuf;
    bool done = false;
    bool nxfound=false, nyfound=false, nzfound=false, x0found=false, y0found=false, z0found=false;
    bool latfound=false, lonfound=false, azfound=false, hfound=false, elevfound=false;
-   while (!geodynfile.eof() && !done )
+   while (!done && readInputLine(geodynfile, lineBuf))
    {
-      geodynfile.getline(buffer,256);
+      char* buffer = lineBuf.data();
       if (startswith("#", buffer) || startswith("\n", buffer) || buffer == "\0" )
          break;
       if( startswith("begindata",buffer) )
@@ -9446,7 +9458,7 @@ void EW::processEvent( char* buffer, int enr )
 //-----------------------------------------------------------------------
 int EW::findNumberOfEvents()
 {
-   char buffer[256];
+   std::vector<char> lineBuf;
    ifstream inputFile;
    MPI_Barrier(MPI_COMM_WORLD);
    inputFile.open(mName.c_str());
@@ -9457,9 +9469,9 @@ int EW::findNumberOfEvents()
       CHECK_INPUT(false,"ERROR opening input file : " << mName << endl << endl);
    }
    int events=0;
-   while (!inputFile.eof())
+   while (readInputLine(inputFile, lineBuf))
    {
-      inputFile.getline(buffer, 256);
+      char* buffer = lineBuf.data();
       if( startswith("event",buffer ) )
       {
 	 processEvent( buffer, events );
