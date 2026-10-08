@@ -346,7 +346,7 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
             cout << "EW::consintp: interface iteration between grids " << gc << " and " << gf
                  << " did not converge with relaxation " << relax << " (err=" << jacerr << " after " << it
                  << " iterations); restarting it with relaxation " << 0.5*relax
-                 << " (supergrid stretching varies fast along the interface: narrow absorbing layer)" << endl;
+                 << " (supergrid stretching varies fast along the interface: narrow absorbing layer)\n";
          relax *= 0.5;
          m_cirelfact_adapted[slot] = relax;
          maxit = static_cast<int>(ceil(m_cimaxiter*m_cirelfact/relax));

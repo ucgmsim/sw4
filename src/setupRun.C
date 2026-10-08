@@ -33,6 +33,7 @@
 #include "CurvilinearInterface2.h"
 #include "GridGenerator.h"
 
+#include <cmath>
 #include <cstring>
 
 // making directories
@@ -2519,7 +2520,7 @@ void EW::limit_supergrid_damping()
    }
    if( rhomax <= 0 )
       return;
-   nmax = static_cast<int>(supergrid_width(gmax)/mGridSize[gmax] + 0.5);
+   nmax = static_cast<int>(std::lround(supergrid_width(gmax)/mGridSize[gmax]));
 
    const float_sw4 dc = m_supergrid_damping_coefficient;
    const double dprod = dc*rhomax;
@@ -2559,13 +2560,13 @@ void EW::limit_supergrid_damping()
       if( proc_zero() )
          cout << "Supergrid damping coefficient reduced from " << dc << " to "
               << m_supergrid_damping_coefficient << ": " << where.str()
-              << ". The default coefficient is kept on " << wide.str() << "." << endl;
+              << ". The default coefficient is kept on " << wide.str() << ".\n";
    }
    else if( proc_zero() )
       cout << "WARNING: supergrid dc=" << dc << " is above the stability limit " << dcmax
            << " of this absorbing layer: " << where.str() << ". The solution can grow without bound"
            << (dprod >= 2 ? " at any time step" : " at CFL >= ~1")
-           << ". Use dc <= " << dcmax << " or " << wide.str() << "." << endl;
+           << ". Use dc <= " << dcmax << " or " << wide.str() << ".\n";
 }
 
 //-----------------------------------------------------------------------
