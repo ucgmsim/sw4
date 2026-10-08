@@ -100,8 +100,8 @@ void energy4c_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int 
 #define um(c,i,j,k)  a_um[base3+(i)+ni*(j)+nij*(k)+nijk*(c)]   
 #define u(c,i,j,k)    a_u[base3+(i)+ni*(j)+nij*(k)+nijk*(c)]   
 #define up(c,i,j,k)  a_up[base3+(i)+ni*(j)+nij*(k)+nijk*(c)]   
-#define strx(i) a_strx[i-ifirst]
-#define stry(j) a_stry[j-jfirst]
+#define strx(i) a_strx[(i)-ifirst]
+#define stry(j) a_stry[(j)-jfirst]
    const double normwgh[4]={17.0/48,59.0/48,43.0/48,49.0/48};
    double energy=0;
 #pragma omp parallel for reduction(+:energy)
