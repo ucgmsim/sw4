@@ -79,7 +79,14 @@ GeographicProjection::GeographicProjection( double lon_origin, double lat_origin
 
    m_P = proj_create_crs_to_crs(PJ_DEFAULT_CTX, crs_from, crs_to, NULL);
    /* printf("projection: [%s]\n", crs_to); */
-   ASSERT(m_P);
+#if PROJ_VERSION_MAJOR >= 8
+   const char* projErr = proj_context_errno_string(PJ_DEFAULT_CTX, proj_context_errno(PJ_DEFAULT_CTX));
+#else
+   const char* projErr = proj_errno_string(proj_context_errno(PJ_DEFAULT_CTX));
+#endif
+   CHECK_INPUT( m_P, "grid: PROJ rejected the projection '" << projection << "': "
+                << (projErr ? projErr : "unknown error")
+                << ". Check the grid command's proj=, ellps=, datum=, lon_p=, lat_p= and scale= options." );
 
    c = proj_coord(lon_origin, lat_origin, 0.0, 0.0);
    c_out = proj_trans(m_P, PJ_FWD, c);

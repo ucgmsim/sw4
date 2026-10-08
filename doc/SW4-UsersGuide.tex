@@ -2912,6 +2912,7 @@ PROJ silently ignores, so those runs used the projection's default scale factor 
 		mlat        & meters per degree of latitude (spheroidal projection)  & real      & meters     & 111,319.5    \\ \hline
 		mlon        & meters per degree of longitude (spheroidal projection) & real      & meters     & None         \\ \hline
 		proj        & name of  projection (see proj4 documentation)          & string    & None       & utm          \\ \hline
+		zone        & UTM zone (only with proj=utm)                          & int       & None       & from lon\_p  \\ \hline
 		ellps       & name of ellipse (see proj4 documentation)              & string    & None       & WGS84        \\ \hline
 		datum       & datum of projection (e.g. NAD83)                       & string    & None       & None         \\ \hline
 		lon\_p      & central meridian of projection                         & string    & degrees    & lon          \\ \hline
@@ -2924,6 +2925,8 @@ of the {\bf proj}, {\bf ellps}, {\bf datum}, {\bf scale}, {\bf lat\_p}, or {\bf 
 are specified. The default value for \verb+lat_p+ and \verb+lon_p+ are taken from the geographic
 coordinates of the grid origin (\verb+\lon+ and \verb+lat+, respectively). The default value for
 \verb+ellps+ is only used in the case that \verb+datum+ is not specified.
+For the UTM projection, the zone defaults to the zone that contains \verb+lon_p+ (or \verb+lon+), and the
+southern-hemisphere variant is used when \verb+lat+ is negative.
 
 \index{grid parameters!location - az, lat, lon, mlat, mlon, proj, ellps, datum, scale, latp, lonp}
 

@@ -663,6 +663,9 @@ void EW::processGrid(char* buffer)
   bool use_geoprojection=false;
   bool scale_set=false;
   double scale_k0=1.0;
+  string projName = "utm"; // the default projection
+  double lon_p = 0;
+  int utmZone = 0;
   
   stringstream proj0;
 
@@ -841,6 +844,14 @@ void EW::processGrid(char* buffer)
         proj0 << " +proj=" << token;
 	use_geoprojection = true;
         proj_set=true;
+        projName = token;
+     }
+     else if( startswith("zone=",token))
+     {
+        token +=5;
+        utmZone = atoi(token);
+        CHECK_INPUT( 1 <= utmZone && utmZone <= 60, "grid: UTM zone must be 1 to 60, not " << token );
+	use_geoprojection = true;
      }
 //                        123456789
      else if( startswith("ellps=",token))
@@ -863,7 +874,8 @@ void EW::processGrid(char* buffer)
      else if( startswith("lon_p=",token))
      {
         token +=6;
-        proj0 << " +lon_0=" << atof(token);
+        lon_p = atof(token);
+        proj0 << " +lon_0=" << lon_p;
 	use_geoprojection = true;
         lon_p_set=true;
      }
@@ -977,8 +989,11 @@ void EW::processGrid(char* buffer)
   {
      if (!proj_set)
      {
-// Default projection: Universal Transverse Mercator (UTM)
-        proj0 << " +proj=utm";
+// Default projection: Universal Transverse Mercator (UTM). +proj must come
+// first: PROJ >= 6 does not take ' +ellps=... +proj=utm' as a CRS.
+        const string rest = proj0.str();
+        proj0.str("");
+        proj0 << "+proj=utm" << rest;
      }
 
      if (!ellps_set && !datum_set)
@@ -998,6 +1013,19 @@ void EW::processGrid(char* buffer)
      {
         proj0 << " +lat_0=" << mLatOrigin;
      }
+
+// PROJ >= 6 needs the UTM zone (it no longer takes it from +lon_0): use the zone
+// of lon_p if given, else of the origin, and the hemisphere of the origin.
+     if (projName == "utm")
+     {
+        if (utmZone == 0)
+           utmZone = std::min(60, std::max(1, static_cast<int>(floor(((lon_p_set ? lon_p : mLonOrigin) + 180.0)/6.0)) + 1));
+        proj0 << " +zone=" << utmZone;
+        if (mLatOrigin < 0)
+           proj0 << " +south";
+     }
+     else
+        CHECK_INPUT( utmZone == 0, "grid: zone= only applies to proj=utm, not proj=" << projName );
   }
 
   float_sw4 cubelen, zcubelen, hcube;

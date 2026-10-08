@@ -119,7 +119,8 @@ def projection(ctx: Ctx) -> bool:
     """SW4's Cartesian position of each lat/lon station matches an independent
     pyproj calculation in the projection named by `frame`:
       frame = "sw4":  the PROJ string SW4 builds (scale= as +k_0),
-      frame = "nztm": what the workflow means (tmerc with +k = scale)."""
+      frame = "nztm": what the workflow means (tmerc with +k = scale),
+    or the PROJ string given as `proj`."""
     from . import mininz
 
     frame = ctx.opts.get("frame", "sw4")
@@ -127,7 +128,8 @@ def projection(ctx: Ctx) -> bool:
     ok = True
     for run in ctx.run_names:
         p = ctx.params(run)
-        proj = (mininz.sw4_proj_string(173.0, 0.0, 0.9996) if frame == "sw4"
+        proj = (ctx.opts["proj"] if "proj" in ctx.opts
+                else mininz.sw4_proj_string(173.0, 0.0, 0.9996) if frame == "sw4"
                 else mininz.nztm_like_string(173.0, 0.0, 0.9996))
         grid = mininz.Grid(float(p["lon0"]), float(p["lat0"]), float(p["az"]), proj)
         d = read_rechdf5(ctx.run_dir(run) / "out.h5")
