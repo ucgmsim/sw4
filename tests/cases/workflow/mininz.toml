@@ -134,5 +134,13 @@ kind = "peer_traces_agree"
 runs = ["notopo"]
 peer = true
 rtol = 1e-3
-description = "PX-01 for the no-topography shape (Cartesian 2-level refinement, NZCVM decay). Receivers record at the same node in both builds."
-xfail = "The whole notopo solution differs 4-8% between float and double at every station (same grid nodes); unrelated to receiver placement, also present before the nearest-node fix (EAST/UP norm 2.7% apart)."
+description = "PX-01 for the no-topography shape (Cartesian 2-level refinement, NZCVM decay). Receivers record at the same node in both builds. Used to differ by 4-8%: SRF moments took mu at a single node, and a source halfway between two nodes in depth rounded to different nodes in float and double; mu is now interpolated at the source."
+
+[[check]]
+name = "float-vs-double-same-node"
+kind = "peer_traces_agree"
+runs = ["1hz", "0.25hz", "notopo", "antimeridian"]
+peer = true
+rtol = 1e-3
+same_node_only = true
+description = "As float-vs-double, over the stations that record at the same grid point in both builds (so receiver snapping, its xfail, is out of the picture). Measured: 7e-5 in every run. notopo used to differ by 4-8%: SRF sources are scaled by mu at the source, sampled at a single node; a source 3 km + 1.2 km deep sits halfway between two nodes and float and double rounded its depth to different sides."
