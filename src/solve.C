@@ -1114,7 +1114,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
           record_first_level( 0 );
           time_start_record = MPI_Wtime(); // progress/ETA count recorded steps only
           if( !mQuiet && proc_zero() )
-             cout << "  Pre-roll finished at t = " << t << ", recording starts" << endl;
+             cout << "  Pre-roll finished at t = " << t << ", recording starts\n";
        }
        else
           cycleSolutionArrays(Um, U, Up, AlphaVEm, AlphaVE, AlphaVEp);
@@ -1369,7 +1369,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 	 printf("\n Final solution errors: Linf = %15.7e, L2 = %15.7e\n", errInf, errL2);
 
 // output time, Linf-err, Linf-sol-err
-         if ( m_error_log )
+         if ( m_error_log && lf != NULL )
          {
             fprintf(lf, "Final time\n");
             fprintf(lf, "%e\n", t);
@@ -1391,7 +1391,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 	 if ( proc_zero() )
          {
 	    printf("\n Final solution errors, attenuation: Linf = %15.7e, L2 = %15.7e\n", errInf, errL2);
-            if ( m_error_log )
+            if ( m_error_log && lf != NULL )
             {
                fprintf(lf, "Attenuation variables (errInf, errL2, solInf)\n");
                fprintf(lf, "%15.7e %15.7e %15.7e\n", errInf, errL2, solInf);
@@ -1405,7 +1405,8 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 // close error log file for testing
   if ((m_lamb_test || m_point_source_test || m_rayleigh_wave_test || m_error_log) && proc_zero() )
   {
-    fclose(lf);
+    if( lf != NULL )
+      fclose(lf);
     printf("**** Closing file with solution errors for testing\n");
   }
 
