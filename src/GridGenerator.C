@@ -276,12 +276,12 @@ void GridGenerator::report_zeta_break( EW* a_ew, int nz ) const
    const float_sw4 zbexact = static_cast<float_sw4>(nz-5)/(nz-1);
    if( zb != m_zetaBreak )
       std::cout << "Curvilinear grid mapping: zetabreak lowered from " << m_zetaBreak << " to "
-                << zb << " (nz = " << nz << ")" << std::endl;
+                << zb << " (nz = " << nz << ")\n";
    if( zb > zbexact )
       std::cout << "Note: the curvilinear grid has only nz = " << nz << " points in k: the "
                 << "curvilinear/Cartesian join is not energy-exact (it needs zetabreak <= "
                 << "(nz-5)/(nz-1) = " << zbexact << ", and zetabreak is not lowered below "
-                << m_min_zeta_break << ")" << std::endl;
+                << m_min_zeta_break << ")\n";
 }
 
 //-----------------------------------------------------------------------
