@@ -157,6 +157,9 @@ void extractRecordData(TimeSeries::receiverMode mode, int i0, int j0, int k0, in
 // some (all?) of these functions are called from parseInputFile() and should be made private
 void badOption(string name, char* option) const;
 bool startswith(const char begin[], char *line);
+// Read one line of any length from an input file into buf (NUL terminated, writable
+// for strtok). Returns false at end of file.
+static bool readInputLine(std::istream& in, std::vector<char>& buf);
 void processGrid(char* buffer);
 void processRefinement(char* buffer);
 void deprecatedOption(const string& command, 

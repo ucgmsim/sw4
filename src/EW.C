@@ -1946,9 +1946,9 @@ void EW::saveGMTFile(vector<vector<Source *>> &a_GlobalUniqueSources,
     if (!sw4InputFile.is_open())
       contents << "# Error re-opening input file, skipping stations" << endl;
     else {
-      char buffer[256];
-      while (!sw4InputFile.eof()) {
-        sw4InputFile.getline(buffer, 256);
+      std::vector<char> lineBuf;
+      while (readInputLine(sw4InputFile, lineBuf)) {
+        char *buffer = lineBuf.data();
         if (startswith("rechdf5", buffer) || startswith("sachdf5", buffer)) {
 #ifdef USE_HDF5
           bool cartCoordSet = false;

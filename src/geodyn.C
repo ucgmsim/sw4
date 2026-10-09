@@ -273,10 +273,10 @@ void EW::set_geodyn_data( string file, int nx, int nz, float_sw4 h, float_sw4 or
       m_geodynfile.open( m_geodyn_filename.c_str() );
       VERIFY2( m_geodynfile.is_open(), "Error opening Geodyn input file " << file );
       bool done = false;
-      char buffer[256];
-      while (!m_geodynfile.eof() && !done )
-      { 
-	 m_geodynfile.getline(buffer, 256);
+      std::vector<char> lineBuf;
+      while (!done && readInputLine(m_geodynfile, lineBuf))
+      {
+	 char* buffer = lineBuf.data();
 	 if( startswith("begindata",buffer) )
 	    done = true;
       }

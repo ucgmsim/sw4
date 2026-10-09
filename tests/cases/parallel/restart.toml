@@ -32,6 +32,17 @@ after = ["straight"]
 copy_from = { run = "straight", files = ["out.h5"] }
 params = { chk = "checkpoint restartpath=../straight restartfile=chk.cycle=60.sw4checkpoint hdf5=yes" }
 
+[[run]]
+name = "straight-cycle"
+# cycle= writes a single checkpoint after that time step.
+params = { chk = "checkpoint cycle=60 file=chk hdf5=yes" }
+
+[[run]]
+name = "restarted-cycle"
+after = ["straight-cycle"]
+copy_from = { run = "straight-cycle", files = ["out.h5"] }
+params = { chk = "checkpoint restartpath=../straight-cycle restartfile=chk.cycle=60.sw4checkpoint hdf5=yes" }
+
 [[check]]
 name = "agree"
 kind = "restart_agree"
@@ -43,3 +54,18 @@ runs = ["straight", "restarted"]
 # samples recorded before the checkpoint verbatim" (#27), which restores bitwise.
 bitwise = false
 rtol = { double = 1e-12, float = 1e-6 }
+
+[[check]]
+name = "agree-cycle"
+kind = "restart_agree"
+runs = ["straight-cycle", "restarted-cycle"]
+# Not bitwise for the same reason as "agree" above (restart round trip of
+# the pre-checkpoint samples; #27 fixes it and can make both bitwise).
+bitwise = false
+rtol = { double = 1e-12, float = 1e-6 }
+
+[[check]]
+name = "cycle-option-used"
+kind = "stdout_absent"
+runs = ["straight-cycle"]
+pattern = "ignoring checkpoint line option"

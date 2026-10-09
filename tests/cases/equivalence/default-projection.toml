@@ -1,0 +1,60 @@
+description = "EQ-PROJ: the grid command's default projection. With lat= lon= and proj=utm without a zone, or projection options but no proj= (default UTM), SW4 used to hand PROJ a string it rejects and died on ASSERT(m_P). SW4 now puts +proj first and takes the UTM zone from lon_p (else the origin) and +south from the origin latitude. Those runs agree bitwise with an explicit zone=, every lat/lon station sits where pyproj puts it in UTM zone 59 south, and a projection PROJ rejects is an input error."
+labels = ["equivalence", "proj", "hdf5"]
+input = "eq-proj.in"
+generate = "eq"
+ranks = 2
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 0.0
+t = 0.5
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "rupturehdf5 file=src.srf.h5"
+recvars = ""
+rec = ""
+
+[[run]]
+name = "utm-zone"
+params = { gridproj = "proj=utm zone=59 ellps=WGS84" }
+
+[[run]]
+name = "utm"
+params = { gridproj = "proj=utm" }
+
+[[run]]
+name = "ellps-only"
+params = { gridproj = "ellps=WGS84" }
+
+[[run]]
+name = "invalid"
+params = { gridproj = "proj=nonsense" }
+expect = "failure"
+stdout_regex = "PROJ rejected the projection"
+
+[[check]]
+name = "utm-agree"
+kind = "traces_agree"
+runs = ["utm", "utm-zone"]
+bitwise = true
+
+[[check]]
+name = "default-agree"
+kind = "traces_agree"
+runs = ["ellps-only", "utm-zone"]
+bitwise = true
+
+[[check]]
+name = "stations"
+kind = "projection"
+runs = ["utm-zone", "utm", "ellps-only"]
+proj = "+proj=utm +zone=59 +south +ellps=WGS84 +units=m"
+# Float builds compute and store station x,y in float_sw4: 0.15-0.65 m off
+# (the known defect behind workflow/mininz:projection-exact's float xfail).
+tol_m = { double = 0.01, float = 1.0 }

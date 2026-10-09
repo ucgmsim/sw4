@@ -1739,6 +1739,9 @@ sfile filename=USGSBayAreaVM-08.3.0.sfile directory=/path/to/sfile
 \end{verbatim}
 
 The file contents are similar to the \verb+rfile+ file, but are defined with internal (curvilinear) refinement boundaries, and all 5 material properties. Note that the \verb+rfile+ caveats about the computational domain still apply, and geographical region bounds should all be checked against the \verb+sfile+'s {\em origin}, ({\em nx,ny}), {\em hh}, {\em z\_bot}, etc.
+Grid points outside the \verb+sfile+ (horizontally or below {\em z\_bot}) keep the material of earlier material
+commands, e.g. a \verb+block+ background given before the \verb+sfile+ command; if no earlier command defines them,
+\emph{SW4} stops with an error that gives the uncovered extent.
 
 Figure~\ref{fig:sfile} shows a schematic of the data layout in a 2D slice
 of the \verb+sfile+ domain.
@@ -2909,6 +2912,7 @@ PROJ silently ignores, so those runs used the projection's default scale factor 
 		mlat        & meters per degree of latitude (spheroidal projection)  & real      & meters     & 111,319.5    \\ \hline
 		mlon        & meters per degree of longitude (spheroidal projection) & real      & meters     & None         \\ \hline
 		proj        & name of  projection (see proj4 documentation)          & string    & None       & utm          \\ \hline
+		zone        & UTM zone (only with proj=utm)                          & int       & None       & from lon\_p  \\ \hline
 		ellps       & name of ellipse (see proj4 documentation)              & string    & None       & WGS84        \\ \hline
 		datum       & datum of projection (e.g. NAD83)                       & string    & None       & None         \\ \hline
 		lon\_p      & central meridian of projection                         & string    & degrees    & lon          \\ \hline
@@ -2921,6 +2925,8 @@ of the {\bf proj}, {\bf ellps}, {\bf datum}, {\bf scale}, {\bf lat\_p}, or {\bf 
 are specified. The default value for \verb+lat_p+ and \verb+lon_p+ are taken from the geographic
 coordinates of the grid origin (\verb+\lon+ and \verb+lat+, respectively). The default value for
 \verb+ellps+ is only used in the case that \verb+datum+ is not specified.
+For the UTM projection, the zone defaults to the zone that contains \verb+lon_p+ (or \verb+lon+), and the
+southern-hemisphere variant is used when \verb+lat+ is negative.
 
 \index{grid parameters!location - az, lat, lon, mlat, mlon, proj, ellps, datum, scale, latp, lonp}
 
@@ -4342,7 +4348,7 @@ The file format is described in Section~\ref{sec:sfile-format}.
 	checkpoint cycleInterval=... file=... restartpath=... restartfile=... \\
 	zfp-{accuracy/precision/rate/reversible}=...\\
 	\bf Required parameter:\\
-	\rm Time for output: (time, timeInterval, cycle, or cycleInterval).\\
+	\rm Time for output: cycle (one checkpoint after that time step), cycleInterval, or both.\\
 	\bf Notes:\\
 	\rm \verb+restartpath+. argument sets the path for the checkpoint
 	(write) and restart files
