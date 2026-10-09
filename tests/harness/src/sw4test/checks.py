@@ -290,12 +290,15 @@ def energy(ctx: Ctx) -> bool:
             continue
         e0 = e[skip]
         if mode == "conserve":
-            tol = ctx.tol("tol", {"double": 1e-7, "float": 1e-3})
+            tol = ctx.tol("tol", {"double": 1e-7, "float": 1e-6})
             drift = float(np.max(np.abs(e[skip:] - e0)) / e0)
             print(f"  max relative drift {drift:.3e} (tol {tol:.1e})")
             ok &= drift <= tol
         elif mode == "decay":
-            tol = ctx.tol("tol", {"double": 1e-8, "float": 2e-3})
+            # float: the energy is summed in double (EW::compute_energy), so without
+            # supergrid the step-to-step noise is ~1e-9. Supergrid cases carry
+            # ~1e-3 float noise from the solution itself and set their own tol.
+            tol = ctx.tol("tol", {"double": 1e-8, "float": 1e-7})
             rel = np.diff(e[skip:]) / e[skip:-1]
             worst = int(np.argmax(rel))
             print(f"  largest step-to-step relative increase {rel[worst]:.3e} at step {worst + skip} (tol {tol:.1e});"

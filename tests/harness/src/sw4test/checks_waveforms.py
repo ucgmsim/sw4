@@ -385,17 +385,41 @@ def traces_agree(ctx: Ctx) -> bool:
     return ok
 
 
+def _recorded_at(path: Path) -> dict[str, tuple[float, ...]]:
+    """Station -> the grid point it records at (ACTUALSTX,STY,STZ)."""
+    with h5py.File(path, "r") as f:
+        return {n: tuple(np.asarray(g["ACTUALSTX,STY,STZ"][()], np.float64).ravel())
+                for n, g in f.items() if isinstance(g, h5py.Group) and "ACTUALSTX,STY,STZ" in g}
+
+
 @check("peer_traces_agree")
 def peer_traces_agree(ctx: Ctx) -> bool:
-    """Float vs double: the same run in the other precision's build (cfg.peer_out_dir)."""
+    """Float vs double: the same run in the other precision's build (cfg.peer_out_dir).
+
+    same_node_only = true compares only the stations that record at the same
+    grid point in both builds (to 1 m), so that receiver snapping (a separate
+    defect) does not hide a numerical disagreement."""
     if not ctx.cfg.peer_out_dir:
         print("FAIL: no peer build configured (SW4TEST_PEER_OUT_DIR)")
         return False
     rtol = float(ctx.opts.get("rtol", 1e-4))
+    same_node_only = bool(ctx.opts.get("same_node_only", False))
     ok = True
     for r in ctx.run_names:
         a = _traces(ctx, r)
         b = _traces(ctx, r, ctx.cfg.peer_out_dir)
+        if same_node_only:
+            fname = ctx.opts.get("file", "out.h5")
+            pa = _recorded_at(ctx.run_dir(r) / fname)
+            pb = _recorded_at(ctx.run_dir(r, ctx.cfg.peer_out_dir) / fname)
+            moved = sorted(n for n in a if n not in pa or n not in pb
+                           or max(abs(x - y) for x, y in zip(pa[n], pb[n])) > 1.0)
+            print(f"  {r}: skipping stations recorded at different grid points: {moved}")
+            a = {n: v for n, v in a.items() if n not in moved}
+            if not a:
+                print(f"FAIL {r}: no station records at the same grid point in both builds")
+                ok = False
+                continue
         worst = (0.0, "")
         for n in a:
             for c in a[n]:

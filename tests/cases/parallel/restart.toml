@@ -36,10 +36,4 @@ params = { chk = "checkpoint restartpath=../straight restartfile=chk.cycle=60.sw
 name = "agree"
 kind = "restart_agree"
 runs = ["straight", "restarted"]
-# Not bitwise yet: on restart the pre-checkpoint samples are read back,
-# rotated NS/EW -> x/y and rewritten, which is not exact (float: 1-2 ulp;
-# double: station B now records at the nearest node, x=8600, where two
-# near-zero EW samples change by 4e-25). Fixed by "rechdf5 restart: keep the
-# samples recorded before the checkpoint verbatim" (#27), which restores bitwise.
-bitwise = false
-rtol = { double = 1e-12, float = 1e-6 }
+bitwise = true

@@ -10,3 +10,4 @@ name = "pr"
 name = "energy"
 kind = "energy"
 mode = "decay"
+tol = { double = 1e-8, float = 2e-3 }

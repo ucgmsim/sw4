@@ -1518,6 +1518,7 @@ vector<float_sw4> m_curviRefLev;
 
 private:
 void preprocessSources( vector<vector<Source*> >& a_GlobalSources );
+float_sw4 mu_at_point( float_sw4 x, float_sw4 y, float_sw4 z, int g );
 void revvector( int npts, float_sw4* v );
 
 int m_nevent; // Number of events, needed for multiple event material optimization.

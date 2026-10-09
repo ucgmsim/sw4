@@ -688,19 +688,12 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
              }
 	
 // fill in the values that are known to this processor
-#pragma omp parallel for
              for (int s=0; s<nSources; s++)
                 if (a_GlobalUniqueSources[e][s]->myPoint())
-                {
-                   int is=a_GlobalUniqueSources[e][s]->m_i0;
-                   int js=a_GlobalUniqueSources[e][s]->m_j0;
-                   int ks=a_GlobalUniqueSources[e][s]->m_k0;
-                   int gs=a_GlobalUniqueSources[e][s]->m_grid;
-	    
-// tmp
-                   mu_source_loc[s] = mMu[gs](is,js,ks); 
-// printf("Proc #%i, source#%i, i=%i, j=%i, k=%i, g=%i, mu=%e\n", getRank(), s, is, js, ks, gs, mu_source_loc[s]);
-                }
+                   mu_source_loc[s] = mu_at_point( a_GlobalUniqueSources[e][s]->getX0(),
+                                                   a_GlobalUniqueSources[e][s]->getY0(),
+                                                   a_GlobalUniqueSources[e][s]->getZ0(),
+                                                   a_GlobalUniqueSources[e][s]->m_grid );
 // take max over all procs: communicate 
              MPI_Allreduce( mu_source_loc, mu_source_global, nSources, m_mpifloat, MPI_MAX, m_cartesian_communicator);
 
@@ -831,6 +824,49 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
    
   mSourcesOK = true;
 } // end preprocessSources
+
+//-----------------------------------------------------------------------
+// Shear modulus at (x,y,z) in grid g, trilinear in the grid's index space
+// (q,r,s). Must be called on a processor that owns (x,y) in grid g.
+//
+// Rupture-file sources are scaled by mu at the source. Sampling mu at a single
+// node (as SW4 did) makes the moment a step function of the source position:
+// a source halfway between two nodes picks one or the other depending on the
+// last bit of its depth, so float and double builds (or two SRF depths 1e-7 km
+// apart) gave moments differing by the mu contrast across one cell, ~20% per
+// source in a gradient model. Interpolation is continuous in the position.
+float_sw4 EW::mu_at_point( float_sw4 x, float_sw4 y, float_sw4 z, int g )
+{
+   float_sw4 q, r, s;
+   if( g < mNumberOfCartesianGrids )
+   {
+      q = x/mGridSize[g]+1;
+      r = y/mGridSize[g]+1;
+      s = (z-m_zmin[g])/mGridSize[g]+1;
+   }
+   else if( !m_gridGenerator->inverse_grid_mapping( this, x, y, z, g, q, r, s ) )
+   {
+      printf("ERROR: EW::mu_at_point could not invert the grid mapping at x=%e y=%e z=%e g=%d\n",
+             x, y, z, g);
+      MPI_Abort(MPI_COMM_WORLD,1);
+   }
+   Sarray& mu = mMu[g];
+   int i = static_cast<int>(floor(q));
+   int j = static_cast<int>(floor(r));
+   int k = static_cast<int>(floor(s));
+   i = min(max(i, mu.m_ib), mu.m_ie-1);
+   j = min(max(j, mu.m_jb), mu.m_je-1);
+   k = min(max(k, 1), m_global_nz[g]-1);
+   float_sw4 a = min(max(q-i, static_cast<float_sw4>(0)), static_cast<float_sw4>(1));
+   float_sw4 b = min(max(r-j, static_cast<float_sw4>(0)), static_cast<float_sw4>(1));
+   float_sw4 c = min(max(s-k, static_cast<float_sw4>(0)), static_cast<float_sw4>(1));
+   float_sw4 val = 0;
+   for( int dk=0 ; dk <= 1 ; dk++ )
+      for( int dj=0 ; dj <= 1 ; dj++ )
+         for( int di=0 ; di <= 1 ; di++ )
+            val += (di ? a : 1-a)*(dj ? b : 1-b)*(dk ? c : 1-c)*mu(i+di,j+dj,k+dk);
+   return val;
+}
 
 //-----------------------------------------------------------------------
 void EW::compute_epicenter( vector<Source*> & a_GlobalUniqueSources, int e ) 
