@@ -530,7 +530,7 @@ EW::EW(const string &fileName, vector<vector<Source *>> &a_GlobalSources,
       m_do_timing(false), m_timing_print(0), m_output_detailed_timing(false),
       m_output_load(false),
 
-      m_projection_cycle(1000), m_checkfornan(false), m_failonnan(false),
+      m_projection_cycle(1000), m_checkfornan(false), m_failonnan(false), m_divergence_limit(1e30),
       m_allow_source_in_supergrid(false),
       m_supergrid_absorption_reported(false), m_min_vs(-1), m_max_vs(-1),
 
@@ -8443,12 +8443,12 @@ bool EW::check_for_nan(vector<Sarray> &a_U, int verbose, string name) {
       int cnan, inan, jnan, knan;
       a_U[g].count_nans(cnan, inan, jnan, knan);
       cout << "proc " << m_myRank << " grid " << g << " array " << name
-           << " found " << nn << "  nans. First nan at " << cnan << " " << inan
+           << " found " << nn << "  NaN/Inf values. First at " << cnan << " " << inan
            << " " << jnan << " " << knan << endl;
     }
   }
   if (m_failonnan && retval) {
-    cout << "proc " << m_myRank << ": failonnan triggered by NaN in array '"
+    cout << "proc " << m_myRank << ": failonnan triggered by NaN or Inf in array '"
          << name << "'. Aborting." << endl;
     cout.flush();
     MPI_Abort(MPI_COMM_WORLD, 1);
@@ -8468,13 +8468,13 @@ bool EW::check_for_nan(vector<Sarray *> &a_U, int nmech, int verbose,
         int cnan, inan, jnan, knan;
         a_U[g][a].count_nans(cnan, inan, jnan, knan);
         cout << "proc " << m_myRank << "mech= " << a << " grid " << g
-             << " array " << name << " found " << nn << "  nans. First nan at "
+             << " array " << name << " found " << nn << "  NaN/Inf values. First at "
              << cnan << " " << inan << " " << jnan << " " << knan << endl;
       }
     }
   }
   if (m_failonnan && retval) {
-    cout << "proc " << m_myRank << ": failonnan triggered by NaN in array '"
+    cout << "proc " << m_myRank << ": failonnan triggered by NaN or Inf in array '"
          << name << "'. Aborting." << endl;
     cout.flush();
     MPI_Abort(MPI_COMM_WORLD, 1);

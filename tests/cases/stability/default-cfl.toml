@@ -35,7 +35,10 @@ expect = "any"
 name = "default-cfl-failonnan"
 params = { cfl = "developer failonnan=1" }
 expect = "failure"
-xfail = { double = "failonnan did not stop this run: it overflowed to Inf around t=22 s and still exited 0 (in float the same run is caught at t=15 s)." }
+# Must be stopped by SW4's own divergence checks, not by some other failure.
+# In double max|U| stays finite (2e73 at t=30 s), so it is the max|U| limit
+# that fires; in float the solution overflows to Inf and the NaN/Inf checks do.
+stdout_regex = "FATAL: the solution (has diverged|contains NaN or Inf)|failonnan triggered"
 
 [[check]]
 name = "bounded-cfl0.9"

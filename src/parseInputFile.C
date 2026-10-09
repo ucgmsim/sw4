@@ -2094,6 +2094,12 @@ void EW::processDeveloper(char* buffer)
 	if( m_failonnan )
 	   m_checkfornan = true;
      }
+     else if( startswith("divergencelimit=",token) )
+     {
+	// Escape hatch for the max|U| divergence abort (solve.C). <= 0 disables.
+	token += 16;
+	m_divergence_limit = atof(token);
+     }
      else if( startswith("allowsourceinsupergrid=",token) )
      {
 	// Downgrade the source-in-the-sponge abort to a warning. Lives under

@@ -717,7 +717,8 @@ float_sw4 Sarray::sum( int c )
 // have that property, which is why neither can be reused here. Inf matters
 // as much as NaN: a diverging single precision run overflows to +-Inf first
 // and only produces NaN once an Inf meets an Inf, so testing isnan alone
-// (as count_nans does) sees the blow-up later than it needs to.
+// sees the blow-up later than it needs to (count_nans tests both for that
+// reason).
 bool Sarray::max_abs( float_sw4& mx ) const
 {
    size_t npts = m_nc*static_cast<size_t>(m_ni)*m_nj*m_nk;
@@ -747,14 +748,16 @@ bool Sarray::max_abs( float_sw4& mx ) const
 }
 
 //-----------------------------------------------------------------------
-//-----------------------------------------------------------------------
+// Number of non-finite values (NaN *or* +-Inf). The name is historical: it
+// used to count NaN only, which let a run that overflowed to Inf slip past
+// failonnan until an Inf happened to meet an Inf.
 size_t Sarray::count_nans()
 {
    size_t retval = 0;
    size_t npts = m_nc*m_ni*static_cast<size_t>(m_nj)*m_nk;
 #pragma omp parallel for reduction(+:retval)
    for( size_t ind = 0; ind < npts ; ind++)
-      if( std::isnan(m_data[ind]) )
+      if( !std::isfinite(m_data[ind]) )
 	 retval++;
    return retval;
 }
@@ -773,7 +776,7 @@ size_t Sarray::count_nans( int& cfirst, int& ifirst, int& jfirst, int& kfirst )
 	    for( int j=m_jb ; j<=m_je ; j++ )
 	       for( int i=m_ib ; i <= m_ie ; i++ )
 	       {
-		  if( std::isnan(m_data[ind]) )
+		  if( !std::isfinite(m_data[ind]) )
 		  {
 		     if( retval == 0 )
 		     {
@@ -794,7 +797,7 @@ size_t Sarray::count_nans( int& cfirst, int& ifirst, int& jfirst, int& kfirst )
 	    for( int i=m_ib ; i <= m_ie ; i++ )
 	       for( int c=1 ; c <= m_nc ; c++ )
 	       {
-		  if( std::isnan(m_data[ind]) )
+		  if( !std::isfinite(m_data[ind]) )
 		  {
 		     if( retval == 0 )
 		     {

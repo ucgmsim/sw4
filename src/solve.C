@@ -1100,6 +1100,32 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
           }
           MPI_Abort( MPI_COMM_WORLD, 1 );
        }
+// Finite is not enough. A double precision run that has gone unstable grows
+// geometrically but needs thousands of steps to climb from ~1 to DBL_MAX:
+// stability/default-cfl reached max|U| = 2e73 at t = 30 s, a three-grid
+// refinement run 1e197, and both exited 0 -- while every float32 output
+// (rechdf5, images, sfile) was already full of Inf. So also abort once max|U|
+// passes m_divergence_limit (default 1e30, developer divergencelimit=). That is
+// below FLT_MAX (3.4e38), so a double run is stopped before its float32 output
+// overflows, and 20+ orders of magnitude above any physical displacement in
+// metres (a Mw 9.5 point source near the epicentre is O(10 m)). In single
+// precision the stencil products (lambda*U, ~1e10*U) overflow to Inf before
+// |U| reaches 1e30, so the float build keeps aborting via the test above.
+// maxabsU is the global maximum, identical on every rank.
+       if( m_divergence_limit > 0 && maxabsU > m_divergence_limit )
+       {
+          if( proc_zero() )
+          {
+             cout << "\n"
+                  << "FATAL: the solution has diverged: max|U| = " << maxabsU
+                  << " exceeds the divergence limit " << m_divergence_limit
+                  << " at time step " << currentTimeStep << " (t = " << t << ").\n"
+                  << "       Aborting now rather than writing Inf to the output. "
+                  << "(developer divergencelimit=<value> changes the limit, 0 disables it.)\n";
+             cout.flush();
+          }
+          MPI_Abort( MPI_COMM_WORLD, 1 );
+       }
     }
 
     if( preroll )
