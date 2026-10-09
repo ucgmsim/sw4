@@ -64,7 +64,6 @@ name = "topo-image-notopo"
 kind = "images_contract"
 runs = ["notopo"]
 description = "Without a topography command the workflow still requests the topo image; it should be all zeros."
-xfail = "imagehdf5 mode=topo with no topography writes uninitialised memory (values ~1e35) instead of zeros."
 
 [[check]]
 name = "projection"

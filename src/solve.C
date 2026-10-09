@@ -394,7 +394,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   
 // Set up timers
   double time_start_init = MPI_Wtime();
-  double time_measure[24];
+  double time_measure[24] = {};
   double time_sum[12]={0,0,0,0,0,0,0,0,0,0,0,0};
   //  double bc_time_measure[5]={0,0,0,0,0};
 
@@ -569,7 +569,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   // Tang: if write HDF5 data and not restart, have rank 0 create the HDF5 file with all necessary groups, attributes, and datasets
   // Disable HDF5 file locking so we can have multiple writer to open and write different datasets of the same file
   setenv("HDF5_USE_FILE_LOCKING", "FALSE", 1);
-  if ( a_TimeSeries.size() > 0 && a_TimeSeries[0]->getUseHDF5()) {
+  if ( anyTimeSeriesHDF5(a_TimeSeries) ) {
     for (int tsi = 0; tsi < a_TimeSeries.size(); tsi++) 
       a_TimeSeries[tsi]->resetHDF5file();
     if(m_myRank == 0 && !m_check_point->do_restart()) 
@@ -1262,7 +1262,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
       else if (m_point_source_test || m_rayleigh_wave_test)
 	normOfDifference( Up, U, errInf, errL2, solInf, a_Sources );
 
-      if ( proc_zero() )
+      if ( proc_zero() && lf != NULL )
 // output time, Linf-err, Linf-sol-err
 	fprintf(lf, "%e %15.7e %15.7e %15.7e\n", t, errInf, errL2, solInf);
     }

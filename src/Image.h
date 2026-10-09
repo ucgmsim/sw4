@@ -42,6 +42,7 @@
 #include "Parallel_IO.h"
 
 class EW;
+class Source;
 
 class Image
 {
@@ -119,6 +120,7 @@ void update_image( int a_cycle, float_sw4 a_time, float_sw4 a_dt,
 //void computeImageError(std::vector<Sarray> &a_mu, int a_nComp);
 
 void copy2DArrayToImage(Sarray &twoDimensionalArray);
+void fillImage(float_sw4 value);
 
 bool is_time_derivative() const;
 

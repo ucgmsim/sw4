@@ -5958,6 +5958,8 @@ void EW::update_images(int currentTimeStep, float_sw4 time,
           img->copy2DArrayToImage(
               mTopo); // save the raw topography; the smoothed is saved by the
                       // mode=grid with z=0
+        else
+          img->fillImage(0.0); // flat surface at z=0: zero elevation
       } else if (img->mMode == Image::UZEXACT || img->mMode == Image::UXEXACT ||
                  img->mMode == Image::UYEXACT || img->mMode == Image::UXERR ||
                  img->mMode == Image::UYERR || img->mMode == Image::UZERR) {
