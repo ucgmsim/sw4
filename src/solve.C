@@ -64,6 +64,55 @@ void add_pseudohessian_terms2( int ifirst, int ilast, int jfirst, int jlast,
 #define SQR(x) ((x)*(x))
 
 //--------------------------------------------------------------------
+// Number of time steps to integrate before t=mTstart (the "pre-roll") so that
+// no prefiltered source time function is cut off at the start of the run.
+//
+// With 'prefilter ... passes=2' (zero-phase forward+backward filtering, the
+// default), Source::prepareTimeFunc extends every discrete (rupture/SRF) time
+// series back by the filter's acausal precursor (Filter::estimatePrecursor,
+// 12/min Re(pole): ~10 s at fc=0.5 Hz, ~18 s at 0.28 Hz). A source with
+// tinit smaller than that (an SRF hypocentre has tinit=0) starts before t=0.
+// Returns 0 when nothing starts before mTstart, and the smallest npre with
+// mTstart - npre*mDt <= earliest source start otherwise. Must be called on
+// all ranks after set_grid_point_sources4 (which prepares the time functions
+// on the ranks that own them).
+//
+// Analytic time functions are filtered on the solver's grid from t=0 and are
+// not affected (prepareTimeFunc warns that t0 should be increased instead).
+int EW::preroll_steps( vector<Source*> & a_Sources, bool save_sides )
+{
+   if( !m_prefilter_sources || m_check_point->do_restart() )
+      return 0; // a restart continues from a state that already includes it
+   float_sw4 tmin_loc = mTstart, tmin;
+   for( unsigned int s=0 ; s < a_Sources.size() ; s++ )
+   {
+      float_sw4 ts;
+      if( a_Sources[s]->filteredDiscreteStart( ts ) && ts < tmin_loc )
+         tmin_loc = ts;
+   }
+   MPI_Allreduce( &tmin_loc, &tmin, 1, m_mpifloat, MPI_MIN, m_1d_communicator );
+   if( tmin >= mTstart )
+      return 0;
+   if( m_twilight_forcing || m_testing || m_do_geodynbc || save_sides )
+   {
+      if( proc_zero() )
+         printf("\n*** WARNING: prefiltered source time functions start at t=%g, before the start"
+                " of the simulation (t=%g).\n*** No pre-roll is possible in this mode: the filter"
+                " precursor before t=%g is cut off.\n\n",
+                (double)tmin, (double)mTstart, (double)mTstart);
+      return 0;
+   }
+// 1e-6: do not add a whole step for round-off in a start time on the grid
+   int npre = static_cast<int>(ceil( (mTstart-tmin)/mDt - 1e-6 ));
+   if( npre > 0 && !mQuiet && proc_zero() )
+      printf("\nPrefiltered source time functions start at t=%g s, before t=%g s (the 2-pass\n"
+             "filter's acausal precursor). Time stepping starts at t=%g s with %d pre-roll steps;\n"
+             "receivers, images and checkpoints still start at t=%g s.\n\n",
+             (double)tmin, (double)mTstart, (double)(mTstart-npre*mDt), npre, (double)mTstart);
+   return npre;
+}
+
+//--------------------------------------------------------------------
 void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 		vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda, vector<Sarray>& a_Rho,
 		vector<Sarray>& U, vector<Sarray>& Um,
@@ -248,6 +297,20 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   for( unsigned int i=0 ; i < a_Sources.size() ; i++ )
       a_Sources[i]->set_grid_point_sources4( this, point_sources );
 
+// Pre-roll. A 2-pass (zero-phase) prefilter makes a source time function
+// acausal: Source::prepareTimeFunc extends each discrete (SRF/rupture) time
+// series back by the filter's precursor, so a source starting at tinit=0 (an
+// SRF hypocentre) has a nonzero rate before t=0. Starting the time stepping
+// at t=mTstart would cut that precursor off, and the waveforms would then
+// depend on tinit (a source at tinit=0 differs from the same source at
+// tinit=12 s shifted back by 12 s). Instead, integrate from the earliest
+// source start time, rounded down to a whole number of time steps before
+// mTstart, without producing any output. Steps 1-npre..0 are the pre-roll;
+// output (receivers, images, checkpoints, energy, progress) is unchanged and
+// starts at t=mTstart exactly as before: time axes, step counts and
+// ORIGINTIME are the same, only the solution at t=mTstart is no longer zero.
+  int npre = preroll_steps( a_Sources, save_sides );
+
   //  std::cout << m_myRank << " no of sources = " << point_sources.size() << std::endl;
   //  std::cout << m_myRank << " no of receivers = " << a_TimeSeries.size() << std::endl;
  // Debug
@@ -390,10 +453,10 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 // NOTE: time stepping loop starts at currentTimeStep = beginCycle; ends at currentTimeStep <= mNumberOfTimeSteps
 // However, the time variable 't' is incremented at the end of the time stepping loop. Thus the time step index is one step
 // ahead of 't' at the start.
-     beginCycle = 1; 
-     t = mTstart;
-     initialData(mTstart, U, AlphaVE);
-     initialData(mTstart-mDt, Um, AlphaVEm );
+     beginCycle = 1 - npre; // npre > 0: pre-roll, see preroll_steps
+     t = mTstart - npre*mDt;
+     initialData(t, U, AlphaVE);
+     initialData(t-mDt, Um, AlphaVEm );
   }
   
   if ( !mQuiet && mVerbose && proc_zero() )
@@ -515,6 +578,10 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   }
 #endif
 
+// Output of the first time level (t=mTstart, or the checkpoint time). With a
+// pre-roll this is called at the end of time step 0 instead of here.
+  auto record_first_level = [&]( int cycle )
+  {
   for (int ts=0; ts<a_TimeSeries.size(); ts++)
   {
 // can't compute a 2nd order accurate time derivative at this point
@@ -532,9 +599,12 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   }
 
 // save any images for cycle = 0 (initial data), or beginCycle-1 (checkpoint restart)
-  update_images( beginCycle-1, t, U, Um, Up, a_Rho, a_Mu, a_Lambda, a_Sources, 1 );
+  update_images( cycle, t, U, Um, Up, a_Rho, a_Mu, a_Lambda, a_Sources, 1 );
   for( int i3 = 0 ; i3 < mImage3DFiles.size() ; i3++ )
-    mImage3DFiles[i3]->update_image( beginCycle-1, t, mDt, U, a_Rho, a_Mu, a_Lambda, a_Rho, a_Mu, a_Lambda, mQp, mQs, mPath[eglobal], mZ );
+    mImage3DFiles[i3]->update_image( cycle, t, mDt, U, a_Rho, a_Mu, a_Lambda, a_Rho, a_Mu, a_Lambda, mQp, mQs, mPath[eglobal], mZ );
+  };
+  if( npre == 0 )
+     record_first_level( beginCycle-1 );
 
   int gg = mNumberOfGrids-1; // top grid
   for( int i3 = 0 ; i3 < mESSI3DFiles.size() ; i3++ ) {
@@ -604,6 +674,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 // end test
 
   double time_start_solve = MPI_Wtime();
+  double time_start_record = time_start_solve;
   print_execution_time( time_start_init, time_start_solve, "initial data phase" );
 
 // BEGIN TIME STEPPING LOOP
@@ -1006,8 +1077,11 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 // the value is always available for the line about to be written.
 //
 // Up holds the solution just computed; the arrays are not cycled until later.
+// Steps <= 0 are the pre-roll (see preroll_steps): no output of any kind.
+    const bool preroll = currentTimeStep <= 0;
+
     float_sw4 maxabsU = -1;
-    if( mPrintInterval > 0 &&
+    if( !preroll && mPrintInterval > 0 &&
         ( mPrintInterval == 1 || (currentTimeStep % mPrintInterval) == 1 ||
           currentTimeStep == 1 || currentTimeStep == mNumberOfTimeSteps[event] ) )
     {
@@ -1028,9 +1102,28 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
        }
     }
 
+    if( preroll )
+    {
+// The pre-roll ends at t=mTstart. Set t exactly (no accumulated round-off),
+// cycle the arrays and record the first time level as the run without a
+// pre-roll would have done before its first step.
+       if( currentTimeStep == 0 )
+       {
+          t = mTstart;
+          cycleSolutionArrays(Um, U, Up, AlphaVEm, AlphaVE, AlphaVEp);
+          record_first_level( 0 );
+          time_start_record = MPI_Wtime(); // progress/ETA count recorded steps only
+          if( !mQuiet && proc_zero() )
+             cout << "  Pre-roll finished at t = " << t << ", recording starts\n";
+       }
+       else
+          cycleSolutionArrays(Um, U, Up, AlphaVEm, AlphaVE, AlphaVEp);
+       continue;
+    }
+
 // periodically, print time stepping info to stdout
-    printTime( currentTimeStep, t, MPI_Wtime()-time_start_solve, currentTimeStep == mNumberOfTimeSteps[event],
-               beginCycle, mNumberOfTimeSteps[event], maxabsU );
+    printTime( currentTimeStep, t, MPI_Wtime()-time_start_record, currentTimeStep == mNumberOfTimeSteps[event],
+               std::max(beginCycle,1), mNumberOfTimeSteps[event], maxabsU );
     //    printTime( currentTimeStep, t, true );
 
 // Images have to be written before the solution arrays are cycled, because both Up and Um are needed
@@ -1276,7 +1369,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 	 printf("\n Final solution errors: Linf = %15.7e, L2 = %15.7e\n", errInf, errL2);
 
 // output time, Linf-err, Linf-sol-err
-         if ( m_error_log )
+         if ( m_error_log && lf != NULL )
          {
             fprintf(lf, "Final time\n");
             fprintf(lf, "%e\n", t);
@@ -1298,7 +1391,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 	 if ( proc_zero() )
          {
 	    printf("\n Final solution errors, attenuation: Linf = %15.7e, L2 = %15.7e\n", errInf, errL2);
-            if ( m_error_log )
+            if ( m_error_log && lf != NULL )
             {
                fprintf(lf, "Attenuation variables (errInf, errL2, solInf)\n");
                fprintf(lf, "%15.7e %15.7e %15.7e\n", errInf, errL2, solInf);
@@ -1312,7 +1405,8 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 // close error log file for testing
   if ((m_lamb_test || m_point_source_test || m_rayleigh_wave_test || m_error_log) && proc_zero() )
   {
-    fclose(lf);
+    if( lf != NULL )
+      fclose(lf);
     printf("**** Closing file with solution errors for testing\n");
   }
 

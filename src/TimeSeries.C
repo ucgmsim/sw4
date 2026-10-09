@@ -59,7 +59,7 @@ void parsedate( char* datestr, int& year, int& month, int& day, int& hour, int& 
 
 TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, receiverMode mode,
                         bool sacFormat, bool usgsFormat, bool hdf5Format, std::string hdf5FileName,
-                        float_sw4 x, float_sw4 y, float_sw4 depth,
+                        double x, double y, double depth,
                         bool topoDepth, int writeEvery, int downSample, bool xyzcomponent, int event,
                         bool deferCollectives, float_sw4 precomputedZTopo ):
   m_ew(a_ew),
@@ -183,7 +183,7 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
 
 
 // 2. Find nearest grid point and its grid.
-   m_myPoint = a_ew->computeNearestGridPoint2( m_i0, m_j0, m_k0, m_grid0, mX, mY, mZ );
+   m_myPoint = a_ew->computeReceiverGridPoint( m_i0, m_j0, m_k0, m_grid0, mX, mY, mZ );
 
    //   if( m_myPoint )
    //   cout << "station at ("<< mX  << " " << mY << " " << mZ <<" placed at grid point " <<
@@ -277,9 +277,9 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
 //   }
 //   
 // actual location of station (nearest grid point)
-   float_sw4 xG, yG, zG;
-   xG = (m_i0-1)*a_ew->mGridSize[m_grid0];
-   yG = (m_j0-1)*a_ew->mGridSize[m_grid0];
+   double xG, yG, zG;
+   xG = (m_i0-1)*double(a_ew->mGridSize[m_grid0]);
+   yG = (m_j0-1)*double(a_ew->mGridSize[m_grid0]);
    if (m_grid0 < a_ew->mNumberOfCartesianGrids)
    {
       zG = a_ew->m_zmin[m_grid0] + (m_k0-1)*a_ew->mGridSize[m_grid0];
@@ -3999,8 +3999,8 @@ bool TimeSeries::getSupergridWidth( double& width_m, double& width_gp ) const
 void TimeSeries::writeFile(FILE *fid )
 {
   if (!m_myPoint) return;
-  fwrite(&mX, sizeof(float_sw4), 1, fid);
-  fwrite(&mY, sizeof(float_sw4), 1, fid);
+  float_sw4 xy[2] = { (float_sw4)mX, (float_sw4)mY };
+  fwrite(xy, sizeof(float_sw4), 2, fid);
   fwrite(mRecordedSol[0], sizeof(float_sw4), mLastTimeStep+1, fid);  // X component
 }
 
