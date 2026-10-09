@@ -1,0 +1,56 @@
+description = "EQ-12: SRF STK is a bearing from TRUE north. One SRF point source at 168E (5 deg west of lon_p=173, where the tmerc meridian convergence is about +3.6 deg) on a grid at az=329.29 as in the workflow, read as rupturehdf5 and as ASCII rupture, and posed as `source strike=` at the same lat/lon, must equal a `source` with the grid-frame moment tensor (mxx..myz) computed in the harness from the true strike and pyproj's grid direction of true north (strike from grid x = STK - az - convergence). The receiver rotation is the same in every run, so only the source orientation is compared. Before the fix SW4 used STK - az, rotating the double couple by the convergence (misfit measured ~6e-2). The residual is the SRF -> moment conversion (EQ-01 measures 9e-4)."
+labels = ["equivalence", "rupture", "azimuth", "hdf5"]
+input = "eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 329.29
+t = 5.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+clon = 168.0
+clat = -45.5
+source = "rupturehdf5 file=src.srf.h5"
+recvars = ""
+rec = ""
+
+[[run]]
+name = "srf-hdf5"
+
+[[run]]
+name = "srf-ascii"
+params = { source = "rupture file=src.srf" }
+
+[[run]]
+name = "source-strike"
+params = { source = "source lat={{src_lat}} lon={{src_lon}} depth={{src_dep}} m0={{m0}} strike={{stk}} dip={{dip}} rake={{rake}} t0={{src_t0}} freq={{src_freq}} type=Gaussian" }
+
+[[run]]
+name = "grid-tensor"
+params = { source = "source lat={{src_lat}} lon={{src_lon}} depth={{src_dep}} m0={{m0}} mxx={{gmxx}} myy={{gmyy}} mzz={{gmzz}} mxy={{gmxy}} mxz={{gmxz}} myz={{gmyz}} t0={{src_t0}} freq={{src_freq}} type=Gaussian" }
+
+[[check]]
+name = "srf-hdf5-vs-grid-tensor"
+kind = "traces_agree"
+runs = ["srf-hdf5", "grid-tensor"]
+rtol = 5e-4
+
+[[check]]
+name = "srf-ascii-vs-grid-tensor"
+kind = "traces_agree"
+runs = ["srf-ascii", "grid-tensor"]
+rtol = 5e-4
+
+[[check]]
+name = "source-strike-vs-grid-tensor"
+kind = "traces_agree"
+runs = ["source-strike", "grid-tensor"]
+rtol = { double = 1e-5, float = 1e-4 }

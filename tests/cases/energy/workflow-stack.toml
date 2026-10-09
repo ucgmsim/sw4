@@ -1,0 +1,44 @@
+description = "EN-02: the workflow grid stack (curvilinear top grid, mapping order 3, over two refinement interfaces) at the workflow CFL 0.9: the energy never increases (it is conserved to about 4e-6 over 600 steps: the curvilinear/Cartesian interface is slightly dissipative)."
+labels = ["energy", "curvi", "mr"]
+input = "energy.in"
+ranks = 4
+
+[params]
+xy = 12.0
+cfl = 0.9
+dev = ""
+z = 26.0
+nx = 13
+t = 30.0
+topo = "topography input=gaussian zmax=6 order=3 gaussianAmp=2 gaussianXc=6 gaussianYc=6.5 gaussianLx=2.5 gaussianLy=3"
+refinements = "refinement zmax=9\nrefinement zmax=15"
+atten = ""
+sg = ""
+cpcs = 1.732
+bch = "dirichlet"
+teextra = ""
+
+[[run]]
+name = "pr"
+
+[[run]]
+name = "long"
+tier = "nightly"
+params = { t = 300.0 }
+
+[[check]]
+name = "energy"
+kind = "energy"
+runs = ["pr"]
+mode = "decay"
+
+[[check]]
+name = "energy-long"
+kind = "energy"
+runs = ["long"]
+mode = "decay"
+
+[[check]]
+name = "interface-converged"
+kind = "stdout_absent"
+pattern = "no convergence"

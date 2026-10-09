@@ -1,0 +1,54 @@
+description = "PF-01/02: `prefilter type=lowpass order=4 passes=2` (the workflow's setting) on an SRF source (as the workflow uses it) applies a zero-phase 4th-order Butterworth: with the source starting late enough (tinit=12 s) for the filter's acausal precursor (~10 s at fc=0.5 Hz), the spectral ratio of filtered to unfiltered seismograms equals |H(f)|^2 with no time shift. PF-03: the same source starting at tinit=0, as the workflow's hypocentre does, loses the part of the precursor before t=0."
+labels = ["prefilter"]
+input = "../equivalence/eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 8000.0
+h = 200.0
+az = 0.0
+t = 28.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "rupturehdf5 file=src.srf.h5"
+recvars = "variables=velocity"
+rec = ""
+station_mode = "xy"
+stations = [["A", 2000, 0], ["B", 0, 2500], ["C", -1500, -1500]]
+
+[[run]]
+name = "unfiltered"
+params = { srf_tinit = 12.0, sigma = 0.08 }
+
+[[run]]
+name = "filtered"
+params = { srf_tinit = 12.0, sigma = 0.08, material = "block vp=4000 vs=2300 rho=2500\nprefilter fc2=0.5 type=lowpass order=4 passes=2" }
+
+[[run]]
+name = "filtered-tinit0"
+params = { srf_tinit = 0.0, sigma = 0.08, material = "block vp=4000 vs=2300 rho=2500\nprefilter fc2=0.5 type=lowpass order=4 passes=2" }
+
+[[check]]
+name = "response"
+kind = "prefilter_response"
+runs = ["unfiltered", "filtered"]
+fc = 0.5
+order = 4
+passes = 2
+rtol = 0.01
+compare_until = 20.0
+
+[[check]]
+name = "precursor-truncation"
+kind = "shifted_agree"
+runs = ["filtered", "filtered-tinit0"]
+shift = 12.0
+rtol = 0.01
+description = "A source starting at t=0 must give the same seismograms as one starting at 12 s, shifted."
+xfail = "Source::prepareTimeFunc extends a filtered SRF time series back by the 2-pass filter's precursor (~10 s at 0.5 Hz, ~4.5 s at the workflow's 1.1 Hz, ~18 s at 0.28 Hz), but the simulation starts at t=0, so for SRF points with small tinit (the hypocentre has tinit=0) the precursor is cut off."

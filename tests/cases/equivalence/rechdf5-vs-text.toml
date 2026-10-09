@@ -1,0 +1,41 @@
+description = "EQ-06: the same receivers written by rechdf5 (the workflow's output) and by `rec usgsformat=1` text agree: isolates the HDF5 writer. Stations are given as grid x,y: with lat/lon, a 1e-5 m round-off difference between the two input paths moves a receiver a whole cell (see workflow/mininz receiver-placement)."
+labels = ["equivalence", "rechdf5", "hdf5"]
+input = "eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 0.0
+t = 5.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "rupturehdf5 file=src.srf.h5"
+recvars = ""
+rec = ""
+
+[[run]]
+name = "both"
+params = { rec = "{{rec_lines}}", station_mode = "xy" }
+
+[[check]]
+name = "agree"
+kind = "traces_agree"
+runs = ["both", "both"]
+b_format = "usgs"
+b_strip = "txt"
+a_ignore = "txt"
+rtol = { double = 1e-6, float = 1e-5 }
+
+[[check]]
+name = "no-extra-groups"
+kind = "rechdf5_only_requested"
+runs = ["both"]
+description = "Text `rec` receivers must not leak into the rechdf5 file: the workflow reader requires NPTS equal across its groups."
+xfail = "Every `rec` receiver is also written to out.h5 as an empty group (NPTS=0); one sharing a rechdf5 station's name silently replaces that station's data with nothing."

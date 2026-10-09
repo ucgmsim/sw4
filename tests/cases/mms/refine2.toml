@@ -1,0 +1,45 @@
+description = "MMS-05: twilight across two Cartesian refinement interfaces (1:2:4 spacing, as in the 1 Hz workflow stack). Asserts 4th order."
+labels = ["mms", "twilight", "mr"]
+input = "refine.in"
+ranks = 4
+
+[params]
+t = 0.3
+cfl = 0.9
+refinements = "refinement zmax=0.2\nrefinement zmax=0.5"
+
+[[run]]
+name = "h1"
+params = { nx = 17, h = 0.05 }
+
+[[run]]
+name = "h2"
+params = { nx = 33, h = 0.025 }
+
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { nx = 65, h = 0.0125 }
+
+[[check]]
+name = "golden"
+kind = "twilight_golden"
+runs = ["h1", "h2"]
+
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+expect = 4.0
+band = 0.4
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+expect = 4.0
+band = 0.4
+
+[[check]]
+name = "interface-converged"
+kind = "stdout_absent"
+pattern = "no convergence"

@@ -408,8 +408,8 @@ def main_test(sw4_exe_dir="optimize_mp", pytest_dir ="none", testing_level=0, mp
 
     # end for all cases in the test_dir
     print('Out of', num_test, 'tests,', num_fail, 'failed,', num_pass, 'passed, and', num_skip, 'skipped')
-    # normal termination
-    return True
+    # Any failed comparison fails the run, so CI that calls this script goes red.
+    return num_fail == 0
     
 #------------------------------------------------
 if __name__ == "__main__":

@@ -207,7 +207,6 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
       for( int k= 1; k <= 6 ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
-#pragma ivdep	 
 	    for( int i=ifirst+2; i <= ilast-2 ; i++ )
 	    {
 // 5 ops                  
@@ -767,7 +766,6 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
-#pragma ivdep	 
 	 for( int i=ifirst+2; i <= ilast-2 ; i++ )
 	 {
 // 5 ops
@@ -1064,7 +1062,6 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
-#pragma ivdep	 
 	 for( int i=ifirst+2; i <= ilast-2 ; i++ )
 	 {
 // 5 ops
@@ -1370,7 +1367,6 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
    for( int k= kstart; k <= kend ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
-#pragma ivdep	 
 	 for( int i=ifirst+2; i <= ilast-2 ; i++ )
 	 {
 // 5 ops
@@ -1611,7 +1607,6 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
       for( int k= nk-5; k <= nk ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
-#pragma ivdep	 
 	    for( int i=ifirst+2; i <= ilast-2 ; i++ )
 	    {
 // 5 ops                  

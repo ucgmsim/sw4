@@ -1,0 +1,43 @@
+description = "MMS-11: 2nd order time stepping across a refinement interface with attenuation (ports meshrefine/refine-att-2nd). Asserts 2nd order. Nightly only: the workflow uses 4th order time stepping, and the time error only dominates at sizes too slow for the PR tier."
+labels = ["mms", "twilight", "mr", "atten"]
+input = "time2.in"
+ranks = 4
+
+[params]
+t = 1.0
+cfl = 0.6
+
+[[run]]
+name = "h1"
+tier = "nightly"
+params = { nx = 41, h = 0.157 }
+
+[[run]]
+name = "h2"
+tier = "nightly"
+params = { nx = 81, h = 0.0785 }
+
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { nx = 161, h = 0.03925 }
+
+[[check]]
+name = "golden"
+kind = "twilight_golden"
+runs = ["h1", "h2"]
+
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+expect = 2.0
+band = 0.3
+band_errInf = 0.7
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+expect = 2.0
+band = 0.3
+band_errInf = 0.7

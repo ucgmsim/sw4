@@ -1,0 +1,7 @@
+# MMS-03: twilight on a curvilinear grid under Gaussian topography, mapping order {{order}}.
+fileio verbose=1
+grid nx={{nx}} x=1.0 y=1.0 z=1.0
+time t={{t}}
+developer cfl={{cfl}}
+topography input=gaussian zmax=0.25 order={{order}} gaussianAmp=0.05
+twilight omega=6.28 phase=0.8 momega=6.28 errorlog=1

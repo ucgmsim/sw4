@@ -465,6 +465,7 @@ void extractSurfaceFromCartesianFile(string a_surfaceFileName);
 void computeCartesianCoord(double &x, double &y, double lon, double lat);
 void computeCartesianCoordGMG(double &x, double &y, double lon, double lat, char *crs_to);
 void computeGeographicCoord(double x, double y, double & longitude, double & latitude);
+double computeMeridianConvergence(double lon, double lat);
 
 void initializeSystemTime();
 void compute_epicenter( vector<Source*> & a_GlobalUniqueSources, int event=0 );

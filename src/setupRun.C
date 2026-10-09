@@ -1352,10 +1352,12 @@ void EW::set_materials()
   {
      float_sw4 cpocs = m_energy_test->m_cpcsratio;
      float_sw4 amp = m_energy_test->m_stochastic_amp;
+     float_sw4 rhobase = m_energy_test->m_rhobase, mubase = m_energy_test->m_mubase;
+     float_sw4 rhoamp = m_energy_test->m_rhoamp, muamp = m_energy_test->m_muamp;
 // tmp
      if (proc_zero())
-        printf("\n ENERGY TEST material amplitude: %e\n", amp);
-        
+        printf("\n ENERGY TEST material amplitude: %e rhobase: %e mubase: %e\n", amp, rhobase, mubase);
+
      for (g=0; g<mNumberOfGrids; g++)
      {
 	float_sw4* rho_ptr    = mRho[g].c_ptr();
@@ -1364,14 +1366,42 @@ void EW::set_materials()
         // setting all points in the grid to constant + random perturb: No need to extrapolate ghost points!
 	for( int i=0 ; i < (m_iEnd[g]-m_iStart[g]+1)*(m_jEnd[g]-m_jStart[g]+1)*(m_kEnd[g]-m_kStart[g]+1); i++ )
 	{
-	   rho_ptr[i]    = amp*drand48()+2;
-	   mu_ptr[i]    = amp*drand48()+2;
-           lambda_ptr[i] = mu_ptr[i]*(cpocs*cpocs-2)+amp*drand48();
+	   rho_ptr[i]    = rhoamp*drand48()+rhobase;
+	   mu_ptr[i]    = muamp*drand48()+mubase;
+           lambda_ptr[i] = mu_ptr[i]*(cpocs*cpocs-2)+muamp*drand48();
 // hard-coded loh1 test (only works for 2 grids)
 	   // rho_ptr[i]    = rho0[g] + amp*drand48();
 	   // mu_ptr[i]    = rho0[g]*vs0[g]*vs0[g] + amp*drand48();
            // lambda_ptr[i] = rho0[g]*(vp0[g]*vp0[g] - 2*vs0[g]*vs0[g]) + amp*drand48();
 	}
+     }
+     if( m_energy_test->m_basement_z < 1e37 )
+     {
+	// Layered "basement" below z=basementz: velocities scaled by
+	// basementvfact, density by basementrhofact, and lambda reset to
+	// lambda=mu (Poisson solid). Models a sharp sediment/basement
+	// contact under a high-Vp/Vs wedge (one-cell coherent impedance
+	// jump), which the pointwise random material above cannot express.
+	// Applied as a deterministic post-pass so the drand48 sequence --
+	// and therefore the wedge material for a given seed -- is unchanged
+	// from runs without a basement.
+	float_sw4 zb = m_energy_test->m_basement_z;
+	float_sw4 rf = m_energy_test->m_basement_rhofact;
+	float_sw4 mf = rf*m_energy_test->m_basement_vfact*m_energy_test->m_basement_vfact;
+	for (g=0; g<mNumberOfGrids; g++)
+	   for( int k=m_kStart[g] ; k <= m_kEnd[g]; k++ )
+	      for( int j=m_jStart[g] ; j <= m_jEnd[g]; j++ )
+		 for( int i=m_iStart[g] ; i <= m_iEnd[g]; i++ )
+		 {
+		    float_sw4 z = (g < mNumberOfCartesianGrids) ?
+		       m_zmin[g]+(k-1)*mGridSize[g] : mZ[g](i,j,k);
+		    if( z >= zb )
+		    {
+		       mRho[g](i,j,k) *= rf;
+		       mMu[g](i,j,k)  *= mf;
+		       mLambda[g](i,j,k) = mMu[g](i,j,k); // Poisson basement
+		    }
+		 }
      }
      material_ic( mRho );
      material_ic( mMu );
@@ -1387,21 +1417,21 @@ void EW::set_materials()
      }
      if( m_use_attenuation )
      {
-	// Randomized Q model for the energy test. Qs, Qp must stay
-	// positive (check_materials aborts otherwise) and comfortably
-	// above the point where setup_viscoelastic's least-squares fit
-	// fails its sum(beta)<1 stability requirement, so use a modest
-	// physical range (Qs in [20,40)) rather than reusing the
-	// rho/mu/lambda amplitude, which is scaled for kg/m^3, Pa. Qp/Qs
-	// ratio fixed at 1.5, as commonly assumed when Qp is unmeasured.
+	// Randomized Q model for the energy test: Qs = qsamp*drand48()+qsbase
+	// (default Qs in [20,40)); Qp = qpamp*drand48()+qpbase, or 1.5*Qs when
+	// qpbase is not given. Qs, Qp must stay positive (check_materials aborts
+	// otherwise) and comfortably above the point where setup_viscoelastic's
+	// least-squares fit fails its sum(beta)<1 stability requirement.
+	float_sw4 qsbase = m_energy_test->m_qsbase, qpbase = m_energy_test->m_qpbase;
+	float_sw4 qsamp = m_energy_test->m_qsamp, qpamp = m_energy_test->m_qpamp;
 	for (g=0; g<mNumberOfGrids; g++)
 	{
 	   float_sw4* qs_ptr = mQs[g].c_ptr();
 	   float_sw4* qp_ptr = mQp[g].c_ptr();
 	   for( int i=0 ; i < (m_iEnd[g]-m_iStart[g]+1)*(m_jEnd[g]-m_jStart[g]+1)*(m_kEnd[g]-m_kStart[g]+1); i++ )
 	   {
-	      qs_ptr[i] = 20.0 + 20.0*drand48();
-	      qp_ptr[i] = 1.5*qs_ptr[i];
+	      qs_ptr[i] = qsamp*drand48()+qsbase;
+	      qp_ptr[i] = qpbase < 0 ? 1.5*qs_ptr[i] : qpamp*drand48()+qpbase;
 	   }
 	}
 	material_ic( mQs );

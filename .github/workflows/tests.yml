@@ -1,0 +1,226 @@
+name: tests
+
+# Runs the SW4 test suite (tests/README.md) through ctest.
+#
+#   pull requests, pushes  the `pr` tier, in double and in float, plus a
+#   to master and          float-vs-double comparison of the workflow problem
+#   single_precision
+#   nightly, on demand     every tier, plus ~/src/workflow's end-to-end test
+#                          driving this SW4 build
+#
+# Each precision job builds SW4 with the release flags CI uses elsewhere
+# (.github/ci/build.sh: gcc, Ninja, HDF5, FFTW, PROJ), runs ctest, publishes
+# the JUnit report, and keeps the run directories of failed tests.
+
+on:
+  pull_request:
+  push:
+    branches: [ master, single_precision ]
+  schedule:
+    - cron: "0 13 * * *" # 01:00-02:00 in New Zealand
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Test tier: pr or all"
+        default: "all"
+        type: choice
+        options: [ pr, all ]
+
+concurrency:
+  # A new push to a PR or branch cancels its in-progress run; nightly and manual
+  # runs are separate groups, so a push never cancels them.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+env:
+  # Pull requests and pushes to master/single_precision run the pr tier; the nightly run and a manual
+  # dispatch without input run everything.
+  TIER: ${{ (github.event_name == 'schedule' && 'all') || inputs.tier || 'pr' }}
+  # Several MPI tests share the runner: do not pin ranks to cores, and let
+  # Open MPI start more ranks than it counts slots (the harness also passes
+  # --oversubscribe --bind-to none).
+  OMPI_MCA_rmaps_base_oversubscribe: "1"
+  PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+  OMP_NUM_THREADS: "1"
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CMAKE_C_COMPILER_LAUNCHER: ccache
+  CMAKE_CXX_COMPILER_LAUNCHER: ccache
+  CMAKE_Fortran_COMPILER_LAUNCHER: ccache
+
+jobs:
+  test:
+    name: test / ${{ matrix.precision }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 75 || 240 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        precision: [ double, float ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compiler and libraries
+        run: |
+          .github/ci/install-compiler.sh gcc
+          sudo apt-get install -y -q --no-install-recommends ccache
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: tests/harness/uv.lock
+
+      - name: Cache compiler output
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-gcc-${{ matrix.precision }}-${{ github.sha }}
+          restore-keys: ccache-gcc-${{ matrix.precision }}-
+
+      - name: Build
+        run: .github/ci/build.sh gcc ${{ matrix.precision }} build
+
+      - name: Run tests (${{ env.TIER }} tier)
+        run: |
+          label=()
+          [ "$TIER" = pr ] && label=(-L '^pr$')
+          ctest --test-dir build "${label[@]}" -j "$(nproc)" \
+            --output-on-failure --timeout 1800 \
+            --output-junit "$GITHUB_WORKSPACE/junit-${{ matrix.precision }}.xml"
+
+      - name: Test timings
+        if: always()
+        run: |
+          if [ -f build/Testing/Temporary/LastTest.log ]; then
+            python3 tools/ctest_timings.py build/Testing/Temporary/LastTest.log | head -40 || true
+          fi
+
+      - name: Publish test report
+        if: always()
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: junit-${{ matrix.precision }}.xml
+          check_name: tests / ${{ matrix.precision }} report
+          detailed_summary: true
+          include_passed: false
+
+      # Inputs, logs and small outputs of every run; large model and image
+      # files are left out.
+      - name: Keep run directories
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-out-${{ matrix.precision }}
+          path: |
+            build/tests/out/**/*.in
+            build/tests/out/**/*.json
+            build/tests/out/**/sw4.out
+            build/tests/out/**/sw4.err
+            build/tests/out/**/out.h5
+            build/tests/out/**/*.txt
+            build/tests/out/**/energy.log
+          retention-days: 14
+
+  # The workflow runs production in float: the same mini-NZ problem in both
+  # precisions must agree (tests/cases/workflow/mininz.toml, check
+  # float-vs-double).
+  float-vs-double:
+    needs: test
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: tests/harness/uv.lock
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: test-out-*
+      - name: Compare float and double
+        run: |
+          uv run --frozen --project tests/harness sw4test crosscheck \
+            --out-dir test-out-float --peer-out-dir test-out-double \
+            --precision float --peer-precision double
+
+  # ~/src/workflow's end-to-end test with this SW4 in place of its stub: the
+  # input generator, SW4 and the output reader of the real pipeline together.
+  # genslip and generic_slip2srf come from the private EMOD3D repository
+  # (EMOD3D_TOKEN secret); the job is skipped without it.
+  workflow-e2e:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'workflow')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      EMOD3D_TOKEN: ${{ secrets.EMOD3D_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sw4
+
+      - name: Check for EMOD3D access
+        id: access
+        run: echo "ok=$([ -n "$EMOD3D_TOKEN" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.access.outputs.ok == 'true'
+        with:
+          repository: ucgmsim/workflow
+          ref: ${{ vars.WORKFLOW_REF || 'pegasus' }}
+          path: workflow
+
+      - uses: actions/checkout@v4
+        if: steps.access.outputs.ok == 'true'
+        with:
+          repository: ucgmsim/EMOD3D
+          token: ${{ secrets.EMOD3D_TOKEN }}
+          path: EMOD3D
+
+      - name: Install compiler and libraries
+        if: steps.access.outputs.ok == 'true'
+        run: |
+          sw4/.github/ci/install-compiler.sh gcc
+          sudo apt-get install -y -q --no-install-recommends pkg-config gmt libgmt-dev ghostscript
+
+      - uses: astral-sh/setup-uv@v6
+        if: steps.access.outputs.ok == 'true'
+
+      - name: Build SW4 (float, as in production)
+        if: steps.access.outputs.ok == 'true'
+        working-directory: sw4
+        run: .github/ci/build.sh gcc float build
+
+      - name: Build genslip and generic_slip2srf
+        if: steps.access.outputs.ok == 'true'
+        working-directory: EMOD3D
+        run: |
+          cmake -B build -DHF_TIME_WINDOW=off -DUSE_FFTW=on \
+            -DCMAKE_C_FLAGS="-march=x86-64 -mtune=generic -std=gnu89" .
+          cmake --build build -j "$(nproc)" --target genslip_v5.6.2 generic_slip2srf
+
+      - name: Run the workflow end-to-end test with this SW4
+        if: steps.access.outputs.ok == 'true'
+        working-directory: workflow
+        env:
+          WORKFLOW_E2E: "1"
+          SW4: ${{ github.workspace }}/sw4/build/bin/sw4
+          SW4_LAUNCHER: mpirun -n 4 --oversubscribe --bind-to none
+          GENSLIP: ${{ github.workspace }}/EMOD3D/tools/genslip_v5.6.2
+          GENERIC_SLIP2SRF: ${{ github.workspace }}/EMOD3D/tools/generic_slip2srf
+        run: |
+          uv sync --frozen --extra test
+          uv run --no-sync pytest tests/e2e -v --basetemp="$RUNNER_TEMP/e2e"
+
+      - name: Keep the run directory
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-e2e
+          path: ${{ runner.temp }}/e2e
+          retention-days: 14

@@ -1,0 +1,39 @@
+description = "EQ-11: NS/EW output points to true north/east. The same run is recorded as NS/EW/UP and as raw grid X/Y/Z; the rotation SW4 applied is fitted and compared with true north from pyproj, at a domain 5 degrees west of the projection's central meridian (lon_p=173), as for Fiordland events. The grid azimuth is 329.29 as in the workflow."
+labels = ["equivalence", "azimuth", "workflow"]
+input = "eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 48000.0
+Z = 12000.0
+h = 400.0
+az = 0.0
+t = 12.0
+sg = "width=4800"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "source x={{src_x}} y={{src_y}} z=2000 m0=1e15 strike=30 dip=70 rake=45 t0=1.5 freq=3.3333333333 type=Gaussian"
+station_mode = "xy"
+stations = [["C", 5000, 4000], ["E20", 20000, 0], ["W20", -20000, 0], ["N20", 0, 20000]]
+clon = 168.0
+clat = -45.5
+recvars = ""
+rec = ""
+
+[[run]]
+name = "nsew"
+params = { az = 329.29 }
+
+[[run]]
+name = "xyz"
+params = { az = 329.29, isnsew = 0 }
+
+[[check]]
+name = "orientation"
+kind = "component_orientation"
+runs = ["nsew", "xyz"]
+tol_deg = 0.05

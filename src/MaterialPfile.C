@@ -411,8 +411,10 @@ void MaterialPfile::read_pfile( )
 
    // Line 2
    CHECK_INPUT( fgets(buf,bufsize,fd) != NULL, "Error line 2 in pfile header not found\n");
-   // TODO: "%le" always fills a double, but m_h is float_sw4 (4 bytes in single precision) -- use a double temporary and assign, or switch to "%e" with a float_sw4-sized target.
-   nread = sscanf(buf,"%le", &m_h);
+   // "%le" fills a double; m_h etc. are float_sw4 (float in single precision builds).
+   double dtmp1, dtmp2;
+   nread = sscanf(buf,"%le", &dtmp1);
+   m_h = dtmp1;
    CHECK_INPUT(nread==1, "Error reading 2nd line of header, nread= " << nread << " but expected 1\n" );
 
    // Line 3
@@ -427,8 +429,9 @@ void MaterialPfile::read_pfile( )
 
    // Line 5
    CHECK_INPUT( fgets(buf,bufsize,fd) != NULL, "Error line 5 in pfile header not found\n");
-   // TODO: "%le" writes 8 bytes into m_depthmin/m_depthmax, which are float_sw4 (4 bytes in single precision) -- read into double temporaries and assign.
-   nread = sscanf(buf,"%i %le %le", &m_nmaxdepth, &m_depthmin, &m_depthmax);
+   nread = sscanf(buf,"%i %le %le", &m_nmaxdepth, &dtmp1, &dtmp2);
+   m_depthmin = dtmp1;
+   m_depthmax = dtmp2;
    CHECK_INPUT(nread==3, "Error reading 5th line of header, nread= " << nread << " but expected 3\n" );
 
    // Line 6
@@ -546,7 +549,7 @@ void MaterialPfile::read_pfile( )
    
    int kk, ndepth, line=7;
 
-   float_sw4 zc, vp, vs, rho, qp, qs;
+   double zc, vp, vs, rho, qp, qs; // double: read with "%le"
 	          
    if( !m_coords_geographic ) // cartesian
    {
@@ -556,8 +559,10 @@ void MaterialPfile::read_pfile( )
        {
             CHECK_INPUT( fgets(buf,bufsize,fd) != NULL, "Error in pfile profile header at coordinate "
 			                              << ix << " " << jy << "\n" );
-	    // TODO: "%le" writes 8 bytes into m_x[ix]/m_y[jy], which are float_sw4 arrays (4 bytes/element in single precision) -- read into double temporaries and assign.
-	    nread = sscanf(buf,"%le %le %i", &m_x[ix], &m_y[jy], &ndepth);
+	    double xtmp, ytmp; // "%le" fills a double; m_x/m_y are float_sw4
+	    nread = sscanf(buf,"%le %le %i", &xtmp, &ytmp, &ndepth);
+	    m_x[ix] = xtmp;
+	    m_y[jy] = ytmp;
 	    CHECK_INPUT(nread==3, "Error reading 1st line of profile at " << ix << " " << jy 
 			<< " nread= " << nread << " but expected 3\n" );
 	    line++;
@@ -608,14 +613,12 @@ void MaterialPfile::read_pfile( )
 
 	       if (m_qf)
 	       {
-		 // TODO: "%le" writes 8 bytes each into zc/vp/vs/rho/qp/qs, which are float_sw4 (4 bytes in single precision) -- read into double temporaries and assign.
 		 nread=sscanf(buf, "%i %le %le %le %le %le %le", &kk, &zc, &vp, &vs, &rho, &qp, &qs);
 		 CHECK_INPUT(nread==7, "Error reading pfile at " << ix << " " << jy << " " << k 
 			     << " nread= " << nread << " but expected 7\n" );
 	       }
 	       else
 	       {
-		 // TODO: "%le" writes 8 bytes each into zc/vp/vs/rho, which are float_sw4 (4 bytes in single precision) -- read into double temporaries and assign.
 		 nread=sscanf(buf, "%i %le %le %le %le", &kk, &zc, &vp, &vs, &rho);
 		 CHECK_INPUT(nread==5, "Error reading pfile at " << ix << " " << jy << " " << k 
 			     << " nread= " << nread << " but expected 5\n" );
@@ -702,14 +705,12 @@ void MaterialPfile::read_pfile( )
 
 	       if (m_qf)
 	       {
-		 // TODO: "%le" writes 8 bytes each into zc/vp/vs/rho/qp/qs, which are float_sw4 (4 bytes in single precision) -- read into double temporaries and assign.
 		 nread=sscanf(buf, "%i %le %le %le %le %le %le", &kk, &zc, &vp, &vs, &rho, &qp, &qs);
 		 CHECK_INPUT(nread==7, "Error reading pfile at " << i << " " << j << " " << k 
 			     << " nread= " << nread << " but expected 7\n" );
 	       }
 	       else
 	       {
-		 // TODO: "%le" writes 8 bytes each into zc/vp/vs/rho, which are float_sw4 (4 bytes in single precision) -- read into double temporaries and assign.
 		 nread=sscanf(buf, "%i %le %le %le %le", &kk, &zc, &vp, &vs, &rho);
 		 CHECK_INPUT(nread==5, "Error reading pfile at " << i << " " << j << " " << k 
 			     << " nread= " << nread << " but expected 5\n" );

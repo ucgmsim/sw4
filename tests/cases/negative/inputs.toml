@@ -1,0 +1,100 @@
+description = "Negative tests: inputs SW4 must reject with a clear error (exit non-zero, no crash), or warn about and carry on. Cases that currently slip through are xfail with the reason."
+labels = ["negative"]
+input = "../equivalence/eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 0.0
+t = 0.5
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "rupturehdf5 file=src.srf.h5"
+recvars = ""
+rec = ""
+
+[[run]]
+name = "cfl-too-large"
+params = { material = "block vp=4000 vs=2300 rho=2500\ndeveloper cfl=1.6" }
+expect = "failure"
+stdout_regex = "cfl"
+
+[[run]]
+name = "source-in-sponge"
+params = { source = "source x=1500 y=6000 z=2000 m0=1e15 strike=0 dip=90 rake=0 t0=1 freq=3 type=Gaussian" }
+expect = "failure"
+stdout_regex = "inside the supergrid absorbing layer"
+
+[[run]]
+name = "srf-outside-domain"
+params = { src_de = 9000.0 }
+expect = "failure"
+stdout_regex = "outside grid|inside the supergrid"
+
+[[run]]
+name = "refinement-too-thin"
+params = { material = "block vp=4000 vs=2300 rho=2500\nrefinement zmax=1000" }
+expect = "failure"
+stdout_regex = "must be >= 12"
+
+[[run]]
+name = "sfile-azimuth-mismatch"
+params = { layers = [{ bottom = 1000.0, vp = 3000.0, vs = 1500.0, rho = 2200.0, qp = 150.0, qs = 75.0 }, { bottom = 6800.0, vp = 4000.0, vs = 2300.0, rho = 2500.0, qp = 230.0, qs = 115.0 }], sfile_az_offset = 1.0, material = "attenuation nmech=3 maxfreq=10 phasefreq=0.5\nsfile filename=layers.sfile directory=." }
+expect = "failure"
+stdout_regex = "azimuth must be equal"
+
+[[run]]
+name = "sfile-missing"
+params = { material = "sfile filename=nope.sfile directory=." }
+expect = "failure"
+stdout_regex = "nope.sfile|Could not open"
+
+[[run]]
+name = "srf-missing-sr1"
+params = { srf_drop = "SR1" }
+expect = "failure"
+stdout_regex = "SR1"
+
+[[run]]
+name = "srf-missing-points"
+params = { srf_drop = "POINTS" }
+expect = "failure"
+stdout_regex = "POINTS"
+
+[[run]]
+name = "srf-missing-file"
+params = { source = "rupturehdf5 file=nope.srf.h5" }
+expect = "failure"
+stdout_regex = "nope.srf.h5.*not found"
+
+[[run]]
+name = "srf-ascii-outside-domain"
+params = { src_de = 9000.0, source = "rupture file=src.srf" }
+expect = "failure"
+stdout_regex = "outside grid"
+
+[[run]]
+name = "srf-outside-domain-skip"
+params = { src_de = 9000.0, source = "rupturehdf5 file=src.srf.h5 outside=skip" }
+expect = "success"
+stdout_regex = "dropped 1 rupture points positioned outside grid"
+
+[[run]]
+name = "sfile-too-small"
+params = { layers = [{ bottom = 1000.0, vp = 3000.0, vs = 1500.0, rho = 2200.0, qp = 150.0, qs = 75.0 }, { bottom = 6800.0, vp = 4000.0, vs = 2300.0, rho = 2500.0, qp = 230.0, qs = 115.0 }], sfile_L = 6000.0, material = "attenuation nmech=3 maxfreq=10 phasefreq=0.5\nsfile filename=layers.sfile directory=." }
+expect = "failure"
+stdout_regex = "sfile|cover|outside"
+xfail = "MaterialSfile clamps to the sfile edge: points outside the sfile silently get the nearest edge material."
+
+[[run]]
+name = "station-outside"
+params = { stations = [["IN", 1000, 0], ["OUT", 30000, 0]] }
+expect = "success"
+stdout_regex = "RECEIVER positioned outside grid"

@@ -1,0 +1,21 @@
+[project]
+name = "sw4test"
+version = "0.1.0"
+description = "Test harness for SW4: runs ctest cases, checks results against exact solutions and goldens"
+authors = [
+    { name = "Jake Faulkner", email = "jake.faulkner@canterbury.ac.nz" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "h5py>=3.16.0",
+    "numpy>=2.5.3",
+    "pyproj>=3.8.0",
+    "scipy>=1.18.1",
+]
+
+[project.scripts]
+sw4test = "sw4test:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"

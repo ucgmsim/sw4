@@ -1,0 +1,132 @@
+description = "WF: mini-NZ, a scaled-down copy of the SW4 problem ~/src/workflow generates (sfile + topography + 3-level grid stack + attenuation nmech=3 + supergrid width + prefilter + rupturehdf5 + rechdf5 + the 10 imagehdf5 outputs). Variants cover the 0.5 Hz (2 grid levels) and 0.25 Hz (1 level) shapes, no topography (NZCVM decay set), and a domain across the 180 degree meridian."
+labels = ["workflow", "hdf5", "proj"]
+requires = ["hdf5", "proj"]
+input = "mininz.in"
+generate = "mininz"
+ranks = 4
+timeout = 600
+
+[params]
+t = 6.0
+fc2 = 0.15
+image_dt = 1.0
+hfine = 400.0
+
+[[run]]
+name = "1hz"
+
+[[run]]
+name = "0.25hz"
+params = { levels = 1 }
+
+[[run]]
+name = "notopo"
+params = { elevation = false, levels = 2 }
+
+[[run]]
+name = "antimeridian"
+params = { lon0 = 179.95, lat0 = -37.6, levels = 1 }
+
+[[run]]
+name = "0.5hz"
+tier = "nightly"
+params = { levels = 2, hfine = 200.0, fc2 = 0.3 }
+
+[[run]]
+name = "1hz-full"
+tier = "nightly"
+timeout = 1200
+params = { hfine = 200.0, t = 12.0, fc2 = 0.3, image_dt = 2.0 }
+
+[[check]]
+name = "rechdf5-contract"
+kind = "rechdf5_contract"
+runs = ["1hz", "0.25hz", "notopo", "antimeridian"]
+
+[[check]]
+name = "rechdf5-contract-nightly"
+kind = "rechdf5_contract"
+runs = ["0.5hz", "1hz-full"]
+
+[[check]]
+name = "images-contract"
+kind = "images_contract"
+runs = ["1hz", "0.25hz", "antimeridian"]
+
+[[check]]
+name = "images-contract-notopo"
+kind = "images_contract"
+runs = ["notopo"]
+check_topo = false
+
+[[check]]
+name = "topo-image-notopo"
+kind = "images_contract"
+runs = ["notopo"]
+description = "Without a topography command the workflow still requests the topo image; it should be all zeros."
+xfail = "imagehdf5 mode=topo with no topography writes uninitialised memory (values ~1e35) instead of zeros."
+
+[[check]]
+name = "projection"
+kind = "projection"
+runs = ["1hz", "0.25hz", "antimeridian"]
+frame = "sw4"
+tol_m = { double = 0.01, float = 1.0 }
+description = "SW4's x,y for each lat/lon station equals pyproj's, in the PROJ frame SW4 builds."
+
+[[check]]
+name = "projection-exact"
+kind = "projection"
+runs = ["1hz", "0.25hz", "antimeridian"]
+frame = "sw4"
+tol_m = 0.01
+description = "Station positions to 1 cm in both precisions (the workflow places stations by lat/lon)."
+xfail = { float = "In float builds station x,y are computed/stored in float_sw4: 0.2-0.65 m errors, enough to move a receiver a whole cell under the floor() snapping." }
+
+[[check]]
+name = "station-echo-exact"
+kind = "rechdf5_contract"
+runs = ["1hz", "0.25hz", "notopo", "antimeridian"]
+echo_tol_deg = 1e-9
+description = "STLA/STLO in out.h5 echo the station file exactly (lf_to_xarray takes station coordinates from them)."
+xfail = { float = "In float builds rechdf5 writes STLA/STLO rounded to float32 (~1e-5 deg, ~1 m)." }
+
+[[check]]
+name = "projection-scale"
+kind = "projection"
+runs = ["1hz", "antimeridian"]
+frame = "nztm"
+tol_m = 0.5
+description = "The workflow passes `grid scale=0.9996` meaning the NZTM scale factor; positions must match tmerc with k=0.9996."
+xfail = "SW4 writes scale= as +scale, which PROJ ignores for tmerc (it needs +k): positions are 0.04% (40 m per 100 km) off NZTM, and the sfile's NZTM-metre spacing is stretched against them."
+
+[[check]]
+name = "receiver-placement"
+kind = "receiver_placement"
+runs = ["1hz", "0.25hz", "notopo"]
+xfail = "EW::computeNearestGridPoint2 uses floor() for i and j (upstream SW4 too): receivers record up to sqrt(2)*h from the requested point, always toward lower x and y, instead of at the nearest node."
+
+[[check]]
+name = "golden"
+kind = "traces_golden"
+runs = ["1hz", "0.25hz", "notopo", "antimeridian"]
+
+[[check]]
+name = "golden-nightly"
+kind = "traces_golden"
+runs = ["0.5hz", "1hz-full"]
+
+[[check]]
+name = "no-interface-warnings"
+kind = "stdout_absent"
+patterns = ["no convergence", "nan", "NaN"]
+runs = ["1hz", "0.25hz", "notopo", "antimeridian"]
+
+[[check]]
+name = "float-vs-double"
+kind = "peer_traces_agree"
+runs = ["1hz", "0.25hz", "notopo"]
+peer = true
+rtol = 1e-3
+description = "PX-01: the same mini-NZ runs in the float and double builds agree (production runs in float). Measured: 1hz 7e-5."
+xfail = "Some receivers snap to a different grid node in float than in double (floor() snapping + float station coordinates), e.g. 0.25hz/HILL differs by 30%."

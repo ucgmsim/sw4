@@ -1,0 +1,26 @@
+description = "AT-03: LOH.3 (attenuating) station 10 against the bundled PROSE frequency-wavenumber reference (tools/LOH.3_prose_corrected, post-processed as tools/loh3exact.m). Gaussian of spread 0.2 s so h=100 m in the layer resolves it; the layer interface uses the harmonic-average block of examples/scec (without it the misfit is 23-34%). Measured 2026-10-08 (double): radial 7.1%, transverse 11%, vertical 6.6%, peaks within 10%. Guard 15%. Nightly."
+labels = ["benchmark", "loh"]
+input = "loh.in"
+ranks = 4
+timeout = 2400
+
+[params]
+h = 200.0
+t = 9.0
+t0 = 1.2
+freq = 5.0
+atten = "attenuation phasefreq=2.5 nmech=3 maxfreq=15"
+q_half = "Qs=69.3 Qp=155.9"
+q_iface = "Qs=54.65 Qp=137.95"
+q_layer = "Qs=40 Qp=120"
+
+[[run]]
+name = "h100"
+tier = "nightly"
+
+[[check]]
+name = "prose"
+kind = "loh_reference"
+reference = "LOH.3_prose_corrected"
+sigma = 0.2
+rtol = 0.15

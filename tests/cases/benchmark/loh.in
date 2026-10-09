@@ -1,0 +1,15 @@
+# LOH.1 / LOH.3 (Day et al. 2001): a 1 km layer over a half-space, mxy point
+# source at 2 km depth, station 10 at (6 km, 8 km) from the epicentre.
+fileio verbose=1 printcycle=100
+grid x=30000 y=30000 z=17000 h={{h}}
+refinement zmax=2000
+time t={{t}}
+developer cfl=0.9
+supergrid gp=30
+{{atten}}
+block vp=6000 vs=3464 rho=2700 {{q_half}}
+block vp=4000 vs=2000 rho=2600 z2=1000 {{q_layer}}
+# interface: harmonic (mu, lambda) and arithmetic (rho, Q) averages, as in examples/scec
+block vs=2437.6 vp=4630.8 rho=2650 z1=999 z2=1001 {{q_iface}}
+source x=15000 y=15000 z=2000 mxy=1e18 t0={{t0}} freq={{freq}} type=Gaussian
+rec x=21000 y=23000 z=0 file=sta10 usgsformat=1 sacformat=0 nsew=0

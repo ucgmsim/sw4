@@ -1,0 +1,11 @@
+# MMS-06..08: twilight on the workflow's grid stack: curvilinear top grid under a
+# Gaussian hill (mapping order 3) and {{nref}} refinement interfaces. As in the workflow,
+# the curvilinear depth zmax is 3x the hill height.
+fileio verbose=1
+developer ctol=1e-10 cmaxit=100 cfl={{cfl}}
+grid nx={{nx}} x={{x}} y={{y}} z={{z}}
+time t={{t}}
+topography input=gaussian zmax={{topozmax}} order=3 gaussianAmp={{amp}} gaussianXc={{xc}} gaussianYc={{yc}} gaussianLx={{lx}} gaussianLy={{ly}}
+{{refinements}}
+twilight omega=1.1 phase=0.2 momega=1.2 errorlog=1 {{twextra}}
+{{extra}}

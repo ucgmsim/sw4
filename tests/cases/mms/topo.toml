@@ -1,0 +1,42 @@
+description = "MMS-03: twilight on a curvilinear grid under Gaussian topography, mapping order 4. Asserts 4th order."
+labels = ["mms", "twilight", "curvi"]
+input = "topo.in"
+ranks = 4
+
+[params]
+t = 0.8
+cfl = 0.9
+order = 4
+
+[[run]]
+name = "h1"
+params = { nx = 31, h = 0.03333333333333333 }
+
+[[run]]
+name = "h2"
+params = { nx = 61, h = 0.016666666666666666 }
+
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { nx = 121, h = 0.008333333333333333 }
+
+[[check]]
+name = "golden"
+kind = "twilight_golden"
+runs = ["h1", "h2"]
+
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+expect = 4.0
+band = 0.4
+band_errInf = 0.9
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+expect = 4.0
+band = 0.4
+band_errInf = 0.9

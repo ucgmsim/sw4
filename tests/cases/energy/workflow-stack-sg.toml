@@ -1,0 +1,39 @@
+description = "EN-03: two Cartesian refinement interfaces with supergrid damping on the horizontal sides: the energy never increases. No topography: SW4's energy diagnostic omits the supergrid stretching on curvilinear grids (energy4c_ci), so there the logged energy is not the quantity the stability proof bounds."
+labels = ["energy", "mr", "supergrid"]
+input = "energy.in"
+ranks = 4
+
+[params]
+xy = 12.0
+cfl = 0.9
+dev = ""
+z = 26.0
+nx = 13
+t = 30.0
+topo = ""
+refinements = "refinement zmax=9\nrefinement zmax=15"
+atten = ""
+sg = "supergrid gp=4 dc=0"
+cpcs = 1.732
+bch = "supergrid"
+teextra = "sg_eps=1e-2"
+
+[[run]]
+name = "pr"
+
+[[run]]
+name = "long"
+tier = "nightly"
+params = { t = 300.0 }
+
+[[check]]
+name = "energy"
+kind = "energy"
+runs = ["pr"]
+mode = "decay"
+
+[[check]]
+name = "energy-long"
+kind = "energy"
+runs = ["long"]
+mode = "decay"

@@ -1,0 +1,10 @@
+# AN-02: moment tensor point source in a homogeneous whole space (supergrid on
+# all six sides) against the analytic solution (SW4 testpointsource).
+fileio verbose=1
+grid x={{L}} y={{L}} z={{L}} h={{h}}
+time t={{t}}
+boundary_conditions lx=2 hx=2 ly=2 hy=2 lz=2 hz=2
+supergrid width={{sgw}}
+{{refinement}}
+testpointsource rho=1 cp=1.6 cs=0.8
+source x={{xs}} y={{xs}} z={{zs}} Mxx=1 Myy=1 Mzz=1 Mxy=0 Mxz=0 Myz=0 t0=0 freq={{freq}} type=C6SmoothBump

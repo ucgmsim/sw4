@@ -51,6 +51,11 @@ class GeographicProjection
      void computeGeographicCoord(double x, double y, double & longitude, double & latitude );
      void computeCartesianCoord( double & x, double & y, double longitude, double latitude );
      void computeCartesianCoordGMG( double & x, double & y, double longitude, double latitude, char* crs_to );
+     // Meridian convergence at (longitude, latitude), in degrees: the true
+     // azimuth (clockwise from true north) of the projection's grid north,
+     // i.e. of the +northing axis. The SW4 grid x-axis then points at true
+     // azimuth az + convergence.
+     double computeMeridianConvergence( double longitude, double latitude );
   private:
 /* #ifdef ENABLE_PROJ4 */
 /*      projPJ m_projection, m_latlong; */

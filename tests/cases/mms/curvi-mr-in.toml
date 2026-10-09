@@ -1,0 +1,57 @@
+description = "MMS-06b: twilight with a refinement interface inside the curvilinear region (curvilinear mesh refinement, the existing gausshill-el geometry at mapping order 3). Asserts 4th order."
+labels = ["mms", "twilight", "curvi", "mr"]
+input = "curvi-mr.in"
+ranks = 4
+
+[params]
+x = 6.0
+y = 4.0
+z = 7.0
+xc = 3.4
+yc = 1.8
+lx = 1.4
+ly = 1.1
+t = 0.8
+cfl = 0.9
+nref = 1
+refinements = "refinement zmax=1.0"
+amp = 2.8
+topozmax = 2.5
+twextra = ""
+extra = ""
+
+[[run]]
+name = "h1"
+params = { nx = 31, h = 0.2 }
+
+[[run]]
+name = "h2"
+params = { nx = 61, h = 0.1 }
+
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { nx = 121, h = 0.05 }
+
+[[check]]
+name = "golden"
+kind = "twilight_golden"
+runs = ["h1", "h2"]
+
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+expect = 4.0
+band = 0.4
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+expect = 4.0
+band = 0.4
+
+[[check]]
+name = "interface-converged"
+kind = "stdout_absent"
+pattern = "no convergence"

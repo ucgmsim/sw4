@@ -1,0 +1,39 @@
+description = "MMS-02: twilight with supergrid stretching on all sides (no attenuation). Asserts 4th order."
+labels = ["mms", "twilight", "supergrid"]
+input = "sg.in"
+ranks = 4
+
+[params]
+t = 1.0
+cfl = 0.9
+
+[[run]]
+name = "h1"
+params = { nx = 41, h = 0.157 }
+
+[[run]]
+name = "h2"
+params = { nx = 81, h = 0.0785 }
+
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { nx = 161, h = 0.03925 }
+
+[[check]]
+name = "golden"
+kind = "twilight_golden"
+runs = ["h1", "h2"]
+
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+expect = 4.0
+band = 0.4
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+expect = 4.0
+band = 0.4

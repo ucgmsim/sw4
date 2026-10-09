@@ -1,0 +1,12 @@
+description = "EN-07: the existing pytest energy case energy/energy-mr-sg-order2-1, ported unchanged. Energy check: decay."
+labels = ["energy", "legacy"]
+input = "legacy-energy-mr-sg-order2.in"
+ranks = 4
+
+[[run]]
+name = "pr"
+
+[[check]]
+name = "energy"
+kind = "energy"
+mode = "decay"

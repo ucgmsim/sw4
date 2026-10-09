@@ -1344,6 +1344,35 @@ void EW::computeGeographicCoord(double x, double y, double &longitude,
   // latitude  = lonlat.v/deg2rad;
 }
 
+//-----------------------------------------------------------------------
+double EW::computeMeridianConvergence(double lon, double lat) {
+  // -----------------------------------------------------------------
+  // Meridian convergence gamma at (lon, lat), in degrees: the true azimuth
+  // (clockwise from true north) of the mapping's grid north. The grid
+  // x-axis points at true azimuth mGeoAz + gamma and the y-axis at
+  // mGeoAz + 90 + gamma. Used to rotate receiver output to true NS/EW and
+  // to convert true-north strikes (SRF STK, source strike=) to the grid.
+  //
+  // With PROJ, gamma comes from the projection itself (relative to its
+  // central meridian, e.g. lon_p for tmerc).
+  //
+  // Without PROJ, SW4's spherical mapping has
+  //   x = mpd*( cos(az)*(lat-lat0) + sin(az)*cos(lat)*(lon-lon0) ),
+  //   y = mpd*(-sin(az)*(lat-lat0) + cos(az)*cos(lat)*(lon-lon0) ),
+  // so the meridian through (lon,lat) has the grid direction
+  // (1, -sin(lat)*(lon-lon0)*pi/180) in the (north, east) frame of the
+  // origin: gamma = atan(sin(lat)*(lon-lon0)*pi/180). This is the angle the
+  // receiver NS component has always used. The mapping is not conformal (it
+  // shears): its parallels stay along grid east, so the orthogonal NS/EW frame
+  // built on the meridian differs from the parallel's direction by gamma. With
+  // mConstMetersPerLongitude meridians are grid-parallel and gamma = 0.
+  // -----------------------------------------------------------------
+  if (m_geoproj != 0) return m_geoproj->computeMeridianConvergence(lon, lat);
+  if (mConstMetersPerLongitude) return 0.0;
+  double deg2rad = M_PI / 180.0;
+  return atan(sin(lat * deg2rad) * (lon - mLonOrigin) * deg2rad) / deg2rad;
+}
+
 //-------------------------------------------------------
 void EW::computeNearestTopoGridPoint(int &iNear, int &jNear, float_sw4 a_x,
                                      float_sw4 a_y) {
@@ -6533,30 +6562,53 @@ void EW::extractTopographyFromGridFile(string a_topoFileName) {
     FILE *gridfile = fopen(a_topoFileName.c_str(), "r");
 
     ret = fscanf(gridfile, "%i %i", &Nlon, &Nlat);
+    // The bi-cubic interpolation below needs at least 4 points each way.
+    CHECK_INPUT(ret == 2 && Nlon >= 4 && Nlat >= 4,
+                "Topography grid file " << a_topoFileName
+                << ": could not read Nlon Nlat >= 4 from the header");
     gridElev.define(1, 1, Nlon, 1, Nlat, 1, 1);
-    latv = new double[Nlat + 1];
-    lonv = new double[Nlon + 1];
+    latv = new double[Nlat + 1]();
+    lonv = new double[Nlon + 1]();
 
-    // TODO: "%le" writes 8 bytes into gridElev(1,i,j,1), which is float_sw4 (4 bytes in single precision, lonv/latv are genuinely double so those two are fine) -- read into a double temporary and assign.
+    // "%le" fills a double; gridElev is float_sw4 (float in single precision).
     for (j = 1; j <= Nlat; j++)
-      for (i = 1; i <= Nlon; i++)
-        ret = fscanf(gridfile, "%le %le %le", &lonv[i], &latv[j],
-                     &gridElev(1, i, j, 1));
+      for (i = 1; i <= Nlon; i++) {
+        double elev = 0;
+        ret = fscanf(gridfile, "%le %le %le", &lonv[i], &latv[j], &elev);
+        CHECK_INPUT(ret == 3, "Topography grid file " << a_topoFileName
+                    << ": could not read lon lat elev for point i=" << i
+                    << " j=" << j);
+        gridElev(1, i, j, 1) = elev;
+      }
     fclose(gridfile);
   } else {
     int fd = open(a_topoFileName.c_str(), O_RDONLY);
-    size_t nr;
-    nr = read(fd, &Nlon, sizeof(int));
-    nr = read(fd, &Nlat, sizeof(int));
+    // Each read must deliver exactly what was asked for.
+    auto read_all = [&](void *buf, size_t nbytes, const char *what) {
+      ssize_t nr = read(fd, buf, nbytes);
+      CHECK_INPUT(nr >= 0 && (size_t)nr == nbytes,
+                  "Topography grid file " << a_topoFileName
+                  << ": short read of " << what);
+    };
+    read_all(&Nlon, sizeof(int), "Nlon");
+    read_all(&Nlat, sizeof(int), "Nlat");
+    CHECK_INPUT(Nlon >= 4 && Nlat >= 4, "Topography grid file "
+                << a_topoFileName << ": Nlon and Nlat must be >= 4");
 
     gridElev.define(1, 1, Nlon, 1, Nlat, 1, 1);
-    latv = new double[Nlat + 1];
-    lonv = new double[Nlon + 1];
+    latv = new double[Nlat + 1]();
+    lonv = new double[Nlon + 1]();
 
-    nr = read(fd, lonv, (Nlon + 1) * sizeof(double));
-    nr = read(fd, latv, (Nlat + 1) * sizeof(double));
-    // TODO: gridElev's storage is float_sw4* (allocated Nlon*Nlat*sizeof(float_sw4) bytes), but this reads Nlon*Nlat*sizeof(double) bytes -- a 2x heap buffer overflow in single precision; read into a temporary double buffer and assign instead.
-    nr = read(fd, gridElev.c_ptr(), Nlon * Nlat * sizeof(double));
+    read_all(lonv, (Nlon + 1) * sizeof(double), "longitudes");
+    read_all(latv, (Nlat + 1) * sizeof(double), "latitudes");
+    // The file stores doubles; gridElev is float_sw4 (float in single
+    // precision), so read into a double buffer and convert.
+    {
+      std::vector<double> elev((size_t)Nlon * Nlat);
+      read_all(elev.data(), elev.size() * sizeof(double), "elevations");
+      float_sw4 *gp = gridElev.c_ptr();
+      for (size_t n = 0; n < elev.size(); n++) gp[n] = elev[n];
+    }
     close(fd);
   }
 
@@ -6769,15 +6821,25 @@ void EW::extractTopographyFromCartesianFile(string a_topoFileName) {
   FILE *gridfile = fopen(a_topoFileName.c_str(), "r");
 
   ret = fscanf(gridfile, "%i %i", &Nx, &Ny);
+  // The bi-cubic interpolation below needs at least 4 points each way.
+  VERIFY2(ret == 2 && Nx >= 4 && Ny >= 4,
+          "Cartesian topography file " << a_topoFileName
+          << ": could not read Nx Ny >= 4 from the header");
   gridElev.define(1, 1, Nx, 1, Ny, 1, 1);
-  yv = new float_sw4[Ny + 1];
-  xv = new float_sw4[Nx + 1];
+  yv = new float_sw4[Ny + 1]();
+  xv = new float_sw4[Nx + 1]();
 
-  // TODO: "%le" writes 8 bytes each into xv[i]/yv[j]/gridElev(1,i,j,1), which are all float_sw4 (4 bytes in single precision) -- read into double temporaries and assign.
+  // "%le" fills a double; xv/yv/gridElev are float_sw4 (float in single precision).
   for (j = 1; j <= Ny; j++)
-    for (i = 1; i <= Nx; i++)
-      ret = fscanf(gridfile, "%le %le %le", &xv[i], &yv[j],
-                   &gridElev(1, i, j, 1));
+    for (i = 1; i <= Nx; i++) {
+      double xd = 0, yd = 0, elev = 0;
+      ret = fscanf(gridfile, "%le %le %le", &xd, &yd, &elev);
+      VERIFY2(ret == 3, "Cartesian topography file " << a_topoFileName
+              << ": could not read x y elev for point i=" << i << " j=" << j);
+      xv[i] = xd;
+      yv[j] = yd;
+      gridElev(1, i, j, 1) = elev;
+    }
   fclose(gridfile);
 
   if (proc_zero())
@@ -7212,13 +7274,9 @@ void EW::extractTopographyFromRfile(std::string a_topoFileName) {
             << " difference = " << alpha - mGeoAz);
 
     // ---------- origin on file
-    float_sw4 lon0, lat0;
-    // TODO: rfile stores lon0/lat0 as 8-byte doubles on disk (see MaterialRfile.C's correct
-    // "double lon0,lat0; read(fd,&lon0,sizeof(double))"), but this reads only sizeof(float_sw4)
-    // (4 bytes in single precision) then checks nr!=sizeof(double), which always fails in single
-    // precision -- rfile topography silently fails to load in that build. Read into a double
-    // local (matching the file format, independent of float_sw4) and assign to lon0/lat0.
-    nr = read(fd, &lon0, sizeof(float_sw4));
+    // rfile stores lon0/lat0 as 8-byte doubles, independent of float_sw4.
+    double lon0, lat0;
+    nr = read(fd, &lon0, sizeof(double));
     if (nr != sizeof(double)) {
       cout << rname << " Error reading lon0, nr= " << nr << "bytes read"
            << endl;
@@ -7228,7 +7286,7 @@ void EW::extractTopographyFromRfile(std::string a_topoFileName) {
     if (swapbytes)
       bswap.byte_rev(&lon0, 1, "double");
 
-    nr = read(fd, &lat0, sizeof(float_sw4));
+    nr = read(fd, &lat0, sizeof(double));
     if (nr != sizeof(double)) {
       cout << rname << " Error reading lat0, nr= " << nr << "bytes read"
            << endl;

@@ -1,0 +1,7 @@
+# MMS-04/05: twilight across Cartesian mesh refinement interfaces.
+fileio verbose=1
+developer ctol=1e-10 cmaxit=100 cfl={{cfl}}
+grid nx={{nx}} x=0.8 y=1.2 z=1.0
+{{refinements}}
+time t={{t}}
+twilight omega=3.14159 errorlog=1

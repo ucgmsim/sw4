@@ -41,6 +41,7 @@
 #include <iostream>
 #include <string>
 #include <cmath>
+#include <cstdlib>
 
 //----------------------------------------------------------------------------
 //                            REQUIRE & ASSERT -- Preconditions
@@ -71,13 +72,14 @@
 if (!(x)) { \
   int myRank; \
   MPI_Comm_rank(MPI_COMM_WORLD, &myRank); \
-  std::cout << "Fatal input error: " << msg << std::endl;	\
+  std::cout << "Fatal input error: " << msg << '\n' << std::flush; /* NOLINT(bugprone-macro-parentheses): msg is a << chain */ \
   MPI_Abort( MPI_COMM_WORLD, 1 );\
+  std::abort(); /* not reached; tells the analyzers this path ends */ \
 }
 
 #define CHECK_INPUT2(x, msg, fp)			\
 if (!(x)) { \
-  fp << "Fatal input error: " << msg << std::endl;	\
+  (fp) << "Fatal input error: " << msg << '\n' << std::flush; /* NOLINT(bugprone-macro-parentheses): msg is a << chain */ \
 }
 
 // these macros are also used both for optimized and non-optimized code
@@ -85,10 +87,11 @@ if (!(x)) { \
 if (!(x)) { \
   int myRank; \
   MPI_Comm_rank(MPI_COMM_WORLD, &myRank); \
-  std::cout << kind << ": " << msg << std::endl;	\
+  std::cout << (kind) << ": " << msg << '\n' << std::flush; /* NOLINT(bugprone-macro-parentheses): msg is a << chain */ \
   std::cout << "...at line " << __LINE__ <<		\
-     " of file " << __FILE__ << "." << std::endl;	\
+     " of file " << __FILE__ << ".\n" << std::flush;	\
   MPI_Abort( MPI_COMM_WORLD, 1 );\
+  std::abort(); /* not reached; tells the analyzers this path ends */ \
 }
 #define REQUIRE2(x, msg) DBC_ASSERTION(x, msg, "Precondition violated")
 #define ASSERT2(x, msg) DBC_ASSERTION(x, msg, "Assertion violated")

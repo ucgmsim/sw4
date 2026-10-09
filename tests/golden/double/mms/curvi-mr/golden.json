@@ -1,0 +1,24 @@
+{
+ "meta": {
+  "blessed_utc": "2026-10-08T09:26:39Z",
+  "git": "bcef56a1-dirty",
+  "precision": "double",
+  "sw4": "/home/jake/src/sw4/build-ci-dbl/bin/sw4"
+ },
+ "runs": {
+  "h1": {
+   "disp": [
+    0.00066616896,
+    0.00077276675,
+    0.99978708
+   ]
+  },
+  "h2": {
+   "disp": [
+    4.5248053e-05,
+    3.9750221e-05,
+    0.99995337
+   ]
+  }
+ }
+}

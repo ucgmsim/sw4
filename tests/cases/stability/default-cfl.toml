@@ -1,0 +1,49 @@
+description = "ST-01: long-time stability of a homogeneous half-space (one grid, sponge 12 points, default supergrid damping). At the workflow's CFL 0.9 the record must stay bounded for 30 s. At SW4's default CFL 1.3 (and at 1.2) the same run grows without bound from about t=20 s; with damping dc=0 or a 20-point sponge it is stable: the fork's tuned default damping plus a 12-point sponge is unstable at CFL >= 1.2."
+labels = ["stability", "supergrid", "cfl"]
+input = "default-cfl.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 8000.0
+h = 200.0
+az = 0.0
+t = 30.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "rupturehdf5 file=src.srf.h5"
+recvars = ""
+rec = ""
+station_mode = "xy"
+stations = [["A", 2000, 0]]
+cfl = ""
+
+[[run]]
+name = "cfl0.9"
+params = { cfl = "developer cfl=0.9" }
+
+[[run]]
+name = "default-cfl"
+expect = "any"
+
+[[run]]
+name = "default-cfl-failonnan"
+params = { cfl = "developer failonnan=1" }
+expect = "failure"
+xfail = { double = "failonnan did not stop this run: it overflowed to Inf around t=22 s and still exited 0 (in float the same run is caught at t=15 s)." }
+
+[[check]]
+name = "bounded-cfl0.9"
+kind = "traces_bounded"
+runs = ["cfl0.9"]
+
+[[check]]
+name = "bounded-default-cfl"
+kind = "traces_bounded"
+runs = ["default-cfl"]
+xfail = "Default CFL 1.3 with a 12-point sponge and the default (tuned) supergrid damping grows without bound from t~20 s."

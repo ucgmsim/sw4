@@ -358,22 +358,20 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
    m_rec_gp_lon=lond;
    m_rec_gp_lat=latd;
 
-   m_calpha = cos(M_PI*m_x_azimuth/180.0);
-   m_salpha = sin(M_PI*m_x_azimuth/180.0);
-
-   float_sw4 cphi   = cos(M_PI*m_rec_lat/180.0);
-   float_sw4 sphi   = sin(M_PI*m_rec_lat/180.0);
-
-   float_sw4 metersperdegree = a_ew->getMetersPerDegree();
-
-//
-// NOTE: this calculation assumes a spheroidal mapping
-//
-   m_thxnrm = m_salpha + (mX*m_salpha+mY*m_calpha)/cphi/metersperdegree * (M_PI/180.0) * sphi * m_calpha;
-   m_thynrm = m_calpha - (mX*m_salpha+mY*m_calpha)/cphi/metersperdegree * (M_PI/180.0) * sphi * m_salpha;
-   float_sw4 nrm = sqrt( m_thxnrm*m_thxnrm + m_thynrm*m_thynrm );
-   m_thxnrm /= nrm;
-   m_thynrm /= nrm;
+// Rotation from grid (x,y) to true (east,north). The grid x-axis points at
+// true azimuth alpha = az + gamma, where gamma is the meridian convergence at
+// the receiver (from the PROJ projection when one is used, otherwise from
+// SW4's spherical mapping; see EW::computeMeridianConvergence). Then
+//    NS = cos(alpha)*ux - sin(alpha)*uy,   EW = sin(alpha)*ux + cos(alpha)*uy,
+// an orthogonal rotation. m_thxnrm/m_thynrm (NS row) and m_salpha/m_calpha
+// (EW row) are kept as separate members because the output and inverse
+// (observation) code use them; they are now the same rotation, so the
+// inverse maps a11..a22 below reduce to its transpose.
+   double alpha = M_PI*(m_x_azimuth + a_ew->computeMeridianConvergence(m_rec_lon, m_rec_lat))/180.0;
+   m_calpha = cos(alpha);
+   m_salpha = sin(alpha);
+   m_thxnrm = m_salpha;
+   m_thynrm = m_calpha;
 
 // Set station ref utc = simulation ref utc
 // m_t0 = 0 is set by default above.
@@ -1596,9 +1594,9 @@ void TimeSeries::readFile( EW *ew, bool ignore_utc )
 		  cout << "geographic ";
 	       cout << "components " << endl;
 	    }
-	    float_sw4 tstart, dt, td, ux, uy, uz;
+	    // double, not float_sw4: they are read with "%le"/"%lf" below.
+	    double tstart, dt, td, ux, uy, uz;
 	    int nlines = 0;
-	    // TODO: "%le"/"%lf" below always fill a double, but tstart/dt/td/ux/uy/uz are float_sw4 (4 bytes in single precision) -- read into double temporaries and assign (affects this counting pass and the read pass further down using the same fscanf pattern).
 	    if( fscanf(fd,"%le %le %le %le",&tstart,&ux,&uy,&uz) != EOF )
 	       nlines++;
 	    if( fscanf(fd,"%le %le %le %le",&dt,&ux,&uy,&uz) != EOF )

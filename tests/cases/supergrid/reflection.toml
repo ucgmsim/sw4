@@ -1,0 +1,51 @@
+description = "SG-01/02: absorbing-layer quality at the workflow's sponge-to-wavelength ratio. A 4.8 km (24-point) sponge around a 16.8 km box versus a 30 km x 17 km reference whose boundaries are not seen within t=5 s; stations 1-1.5 km from a 1.5 Hz Ricker source (S wavelength ~1.5 km, so the sponge is ~3 wavelengths, as the workflow's 12 km is at ~1 Hz). The velocity difference is what the sponge reflects. Nightly: a 2.4 km (12-point) sponge reflects more."
+labels = ["supergrid"]
+input = "../equivalence/eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 16800.0
+Z = 12000.0
+h = 200.0
+az = 0.0
+t = 5.0
+sg = "width=4800"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "source x={{src_x}} y={{src_y}} z=2500 m0=1e15 strike=30 dip=70 rake=45 t0=1.0 freq=1.5 type=Ricker"
+recvars = "variables=velocity"
+rec = ""
+station_mode = "xy"
+stations = [["A", 1200, 0], ["B", 0, 1400], ["C", -1000, -1000]]
+
+[[run]]
+name = "small"
+
+[[run]]
+name = "reference"
+params = { L = 30000.0, Z = 17000.0 }
+
+[[run]]
+name = "small-sg2400"
+tier = "nightly"
+params = { sg = "width=2400", L = 12000.0 }
+
+[[check]]
+name = "reflection"
+kind = "traces_agree"
+runs = ["small", "reference"]
+normalize = "station"
+rtol = 0.02
+description = "Measured 2026-10-08: 0.4% (24-point sponge)."
+
+[[check]]
+name = "reflection-2400-nightly"
+kind = "traces_agree"
+runs = ["small-sg2400", "reference"]
+normalize = "station"
+rtol = 0.1
+description = "Measured 2026-10-08: 2.4% (12-point sponge)."

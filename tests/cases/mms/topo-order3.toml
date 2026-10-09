@@ -1,0 +1,40 @@
+description = "MMS-03b: as MMS-03 with mapping order 3, the workflow's setting. Measured: L2 converges at about 3rd order (2.76, 2.83), max norm about 3.2-3.3, while orders 4 and 5 give 4th order. The check pins that behaviour: if it improves to 4 the test fails and should be updated, and if it degrades further it fails too."
+labels = ["mms", "twilight", "curvi"]
+input = "topo.in"
+ranks = 4
+
+[params]
+t = 0.8
+cfl = 0.9
+order = 3
+
+[[run]]
+name = "h1"
+params = { nx = 31, h = 0.03333333333333333 }
+
+[[run]]
+name = "h2"
+params = { nx = 61, h = 0.016666666666666666 }
+
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { nx = 121, h = 0.008333333333333333 }
+
+[[check]]
+name = "golden"
+kind = "twilight_golden"
+runs = ["h1", "h2"]
+
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+expect = 3.0
+band = 0.4
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+expect = 3.0
+band = 0.4

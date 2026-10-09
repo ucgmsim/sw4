@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # Arguments:
 # check_results.py <err_tol|compare> <base_filename> <filename> <errInf tolerance> <errL2 tolerance> <solInf tolerance>
@@ -62,23 +62,21 @@ def main():
                 #print("base_line=' ", base_line, " ' has less than 2 numbers. Skipping this line")
                 continue
             
-            try:
-                t0 = test_line[0]
-                t1 = test_line[1]
-                b0 = base_line[0]
-                b1 = base_line[1]
-                re0 = re1 = 0
-                if t0 != 0 or b0 != 0: re0 = abs(b0-t0)/max(t0,b0)
-                if t1 != 0 or b1 != 0: re1 = abs(b1-t1)/max(t1,b1)
-                if re0 > errInfTol:
-                    print("ERROR: Line %(line)d Tolerance: %(tol)f Actual: %(actual)f"%{"line":i, "tol": errInfTol, "actual": re0})
-                    fail = True
-                if re1 > errL2Tol:
-                    print("ERROR: Line %(line)d Tolerance: %(tol)f Actual: %(actual)f"%{"line":i, "tol": errL2Tol, "actual": re1})
-                    fail = True
-            except:
-                printf("compare: exception thrown for base_line=' ", base_line)
+            # TwilightErr blocks are "errInf errL2 solInf"; LambErr/PointSourceErr lines
+            # are "t errInf errL2 solInf". Drop the time column so the error norms,
+            # not t, are what gets compared.
+            if len(base_line) == 4:
+                base_line, test_line = base_line[1:], test_line[1:]
+            if len(test_line) != len(base_line):
+                print("ERROR: Line %d has %d values, reference has %d" % (i, len(test_line), len(base_line)))
                 fail = True
+                continue
+            for name, tol, b, t in zip(("errInf", "errL2"), (errInfTol, errL2Tol), base_line, test_line):
+                denom = max(abs(t), abs(b))
+                rel = abs(b - t) / denom if denom > 0 else 0.0
+                if rel > tol:
+                    print("ERROR: Line %d %s tolerance: %g actual: %g (ref %g, got %g)" % (i, name, tol, rel, b, t))
+                    fail = True
     else:
         print("Unknown test type: "+sys.argv[1])
         fail = True

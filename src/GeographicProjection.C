@@ -31,6 +31,7 @@
 // # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA 
 #include <mpi.h>
 
+#include <cmath>
 #include <cstring>
 #include <cstdio>
 #include "GeographicProjection.h"
@@ -178,6 +179,30 @@ void GeographicProjection::computeCartesianCoord(double &x, double &y,
 #endif
 
    /* printf("computeCartesianCoord: %f %f -> %f\t%f\n", lon, lat, x, y); */
+}
+
+//-----------------------------------------------------------------------
+double GeographicProjection::computeMeridianConvergence( double lon, double lat )
+{
+   // Measured directly from the forward projection: map a short stretch of
+   // the meridian through (lon,lat) and take its bearing in the projected
+   // (easting, northing) plane. This works for any projection string, needs
+   // no assumption about the sign convention of proj_factors(), and includes
+   // any datum shift in the crs_to_crs pipeline. A central difference over
+   // +-1e-4 degrees (~11 m) has an O(1e-8) relative error.
+   double gamma = 0.0;
+#ifdef ENABLE_PROJ
+   ASSERT(m_P);
+   const double dlat = 1e-4;
+   PJ_COORD cs = proj_trans(m_P, PJ_FWD, proj_coord(lon, lat-dlat, 0.0, 0.0));
+   PJ_COORD cn = proj_trans(m_P, PJ_FWD, proj_coord(lon, lat+dlat, 0.0, 0.0));
+   double de = cn.xyzt.x - cs.xyzt.x;
+   double dn = cn.xyzt.y - cs.xyzt.y;
+   // atan2(de,dn) = bearing of true north measured from grid north; grid
+   // north is rotated by the opposite angle from true north.
+   gamma = -atan2(de, dn)/m_deg2rad;
+#endif
+   return gamma;
 }
 
 //-----------------------------------------------------------------------

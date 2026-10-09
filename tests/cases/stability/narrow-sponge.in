@@ -1,0 +1,10 @@
+# Three Cartesian grids (two refinement interfaces), homogeneous, point source.
+fileio verbose=1
+grid x={{L}} y={{L}} z=24000 h={{h}}
+refinement zmax=4800
+refinement zmax=9600
+supergrid gp={{gp}}
+time t={{t}}
+developer cfl=0.9 failonnan=1
+source x={{c}} y={{c}} z=6000 m0=1e15 strike=45 dip=60 rake=90 t0=1 freq=2 type=Gaussian
+block vp=5000 vs=2800 rho=2600

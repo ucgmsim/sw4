@@ -1,0 +1,40 @@
+description = "PI-03: checkpoint half way, restart from it, and finish: the restarted run's station samples are bitwise identical to an uninterrupted run (attenuation memory variables and supergrid state included)."
+labels = ["parallel", "restart", "atten", "hdf5"]
+input = "../equivalence/eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 8000.0
+h = 200.0
+az = 0.0
+t = 4.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "attenuation nmech=3 maxfreq=10 phasefreq=0.5\nblock vp=4000 vs=2300 rho=2500 qp=200 qs=100\n{{chk}}"
+source = "source x={{src_x}} y={{src_y}} z=2500 m0=1e15 strike=30 dip=70 rake=45 t0=1.0 freq=5.0 type=Gaussian"
+recvars = ""
+rec = ""
+station_mode = "xy"
+stations = [["A", 2000, 0], ["B", 0, 2500]]
+
+[[run]]
+name = "straight"
+params = { chk = "checkpoint cycleInterval=60 file=chk hdf5=yes" }
+
+[[run]]
+name = "restarted"
+after = ["straight"]
+copy_from = { run = "straight", files = ["out.h5"] }
+params = { chk = "checkpoint restartpath=../straight restartfile=chk.cycle=60.sw4checkpoint hdf5=yes" }
+
+[[check]]
+name = "agree"
+kind = "restart_agree"
+runs = ["straight", "restarted"]
+bitwise = { double = true, float = false }
+rtol = { double = 1e-12, float = 1e-6 }

@@ -1,0 +1,11 @@
+# One point source in a half-space, posed several equivalent ways (see sw4test.eqgen).
+fileio verbose=1
+{{cfl}}
+grid proj=tmerc ellps=GRS80 lon_p=173.0 lat_p=0.0 scale=0.9996 x={{L}} y={{L}} z={{Z}} h={{h}} az={{az}} lon={{lon0}} lat={{lat0}}
+time t={{t}}
+supergrid {{sg}}
+{{topo}}
+{{material}}
+{{source}}
+rechdf5 infile=stations.h5 outfile=out.h5 {{recvars}}
+{{rec}}

@@ -26,3 +26,8 @@ debug*/
 /ab-*/
 /sw4-ab-*.out
 /sw4-comm-*.out
+
+# Test harness virtualenv and per-build test outputs
+tests/harness/.venv/
+__pycache__/
+/build-*/

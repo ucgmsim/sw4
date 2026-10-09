@@ -1,0 +1,34 @@
+description = "EQ-04: a two-layer attenuating model given as an sfile (two patches) and as `block` commands gives the same seismograms: isolates the sfile reader (origin, azimuth, patches, Q)."
+labels = ["equivalence", "sfile", "atten", "hdf5"]
+input = "eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 0.0
+t = 5.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "rupturehdf5 file=src.srf.h5"
+recvars = ""
+rec = ""
+
+[[run]]
+name = "sfile"
+params = { material = "attenuation nmech=3 maxfreq=10 phasefreq=0.5\nsfile filename=layers.sfile directory=.", layers = [{ bottom = 1000.0, vp = 3000.0, vs = 1500.0, rho = 2200.0, qp = 150.0, qs = 75.0 }, { bottom = 6800.0, vp = 4000.0, vs = 2300.0, rho = 2500.0, qp = 230.0, qs = 115.0 }] }
+
+[[run]]
+name = "block"
+params = { material = "attenuation nmech=3 maxfreq=10 phasefreq=0.5\nblock vp=4000 vs=2300 rho=2500 qp=230 qs=115\nblock vp=3000 vs=1500 rho=2200 qp=150 qs=75 z2=1000" }
+
+[[check]]
+name = "agree"
+kind = "traces_agree"
+rtol = { double = 1e-8, float = 1e-4 }

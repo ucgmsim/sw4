@@ -1,0 +1,55 @@
+description = "MMS-08: curvilinear + refinement + attenuation (nmech=1, the only value twilight forcing supports) + supergrid stretching. Asserts 4th order."
+labels = ["mms", "twilight", "curvi", "mr", "atten", "supergrid"]
+input = "curvi-mr-sg.in"
+ranks = 4
+
+[params]
+t = 0.3
+cfl = 0.9
+extra = "attenuation nmech=1"
+
+[[run]]
+name = "h1"
+params = { nx = 31, h = 0.20943951023931953 }
+
+[[run]]
+name = "h2"
+params = { nx = 61, h = 0.10471975511965977 }
+
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { nx = 121, h = 0.05235987755982988 }
+
+[[check]]
+name = "golden"
+kind = "twilight_golden"
+runs = ["h1", "h2"]
+
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+expect = 4.0
+band = 0.4
+band_errInf = 0.7
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+expect = 4.0
+band = 0.4
+
+[[check]]
+name = "interface-converged"
+kind = "stdout_absent"
+pattern = "no convergence"
+
+[[check]]
+name = "rate-atten"
+kind = "rate"
+runs = ["h1", "h2"]
+field = "atten"
+expect = 4.0
+band = 0.4
+band_errInf = 0.7

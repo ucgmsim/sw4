@@ -1,0 +1,9 @@
+# AN-01: Lamb's problem, a vertical point force on the free surface of a
+# homogeneous half-space; the error is measured on the surface against the exact
+# solution (SW4 testlamb). Supergrid layers absorb on the other five sides.
+fileio verbose=1
+grid x={{L}} y={{L}} z={{D}} h={{h}}
+time t={{t}}
+supergrid width={{sgw}}
+testlamb rho=1 cp=1.732050807568877
+source x={{xs}} y={{xs}} z=0 fx=0 fy=0 fz=1 t0=0 freq=1 type=C6SmoothBump

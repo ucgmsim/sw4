@@ -2362,7 +2362,10 @@ void EW::processTestEnergy(char* buffer)
   string filename("energy.log");
 
   float_sw4 cpcsratio = sqrt(3.0);
-  
+  float_sw4 basementz = 1e38, basementvfact = 2.7, basementrhofact = 1.28;
+  float_sw4 rhobase = 2.0, mubase = 2.0, rhoamp = -1, muamp = -1;
+  float_sw4 qsbase = 20.0, qpbase = -1.0, qsamp = 20.0, qpamp = 0.0;
+
   while (token != NULL)
   {
     if (startswith("#", token) || startswith(" ", buffer))
@@ -2370,8 +2373,63 @@ void EW::processTestEnergy(char* buffer)
 
     if (startswith("cpcsratio=", token))
     {
-      token += 10; 
+      token += 10;
       cpcsratio = atof(token);
+    }
+    else if (startswith("rhobase=", token))
+    {
+      token += 8;
+      rhobase = atof(token);
+    }
+    else if (startswith("mubase=", token))
+    {
+      token += 7;
+      mubase = atof(token);
+    }
+    else if (startswith("rhoamp=", token))
+    {
+      token += 7;
+      rhoamp = atof(token);
+    }
+    else if (startswith("muamp=", token))
+    {
+      token += 6;
+      muamp = atof(token);
+    }
+    else if (startswith("qsbase=", token))
+    {
+      token += 7;
+      qsbase = atof(token);
+    }
+    else if (startswith("qpbase=", token))
+    {
+      token += 7;
+      qpbase = atof(token);
+    }
+    else if (startswith("qsamp=", token))
+    {
+      token += 6;
+      qsamp = atof(token);
+    }
+    else if (startswith("qpamp=", token))
+    {
+      token += 6;
+      qpamp = atof(token);
+    }
+    else if (startswith("basementz=", token))
+    {
+      token += 10;
+      basementz = atof(token);
+    }
+    else if (startswith("basementvfact=", token))
+    {
+      token += 14;
+      basementvfact = atof(token);
+    }
+    else if (startswith("basementrhofact=", token))
+    {
+      token += 16;
+      basementrhofact = atof(token);
     }
     else if (startswith("seed=", token))
     {
@@ -2415,6 +2473,17 @@ void EW::processTestEnergy(char* buffer)
     token = strtok(NULL, " \t");
   }
   m_energy_test = new TestEnergy( seed, cpcsratio, write_every, filename, stochastic_amp, sg_eps );
+  m_energy_test->m_basement_z = basementz;
+  m_energy_test->m_basement_vfact = basementvfact;
+  m_energy_test->m_basement_rhofact = basementrhofact;
+  m_energy_test->m_rhobase = rhobase;
+  m_energy_test->m_mubase = mubase;
+  m_energy_test->m_rhoamp = rhoamp >= 0 ? rhoamp : stochastic_amp;
+  m_energy_test->m_muamp = muamp >= 0 ? muamp : stochastic_amp;
+  m_energy_test->m_qsbase = qsbase;
+  m_energy_test->m_qpbase = qpbase;
+  m_energy_test->m_qsamp = qsamp;
+  m_energy_test->m_qpamp = qpamp;
   // default bc is periodic in the horizontal directions
   boundaryConditionType bct[6]={bPeriodic, bPeriodic, bPeriodic, bPeriodic, bStressFree, bDirichlet};
 
@@ -4177,7 +4246,7 @@ void EW::processCheckPoint(char* buffer)
       m_check_point->set_checkpoint_file( filePrefix, cycle, cycleInterval, bufsize, useHDF5, compressionMode, compressionPar );
    if( restartFileGiven )
    {
-      m_check_point->set_restart_file( restartFileName, bufsize );
+      m_check_point->set_restart_file( restartFileName, bufsize, useHDF5 );
    }
    if( restartPathGiven )
    {
@@ -5767,17 +5836,25 @@ void EW::processSource(char* buffer, vector<vector<Source*> > & a_GlobalUniqueSo
      //         ....
      FILE* fd=fopen(dfile, "r" );
      CHECK_INPUT( fd !=NULL , err << "Source time function file " << dfile << " not found" );
-     float_sw4 t0, dt;
+     // "%lg" fills a double: read into double temporaries, float_sw4 may be float.
+     double t0d, dt;
      int npts;
-     // TODO: "%lg" always fills a double, but t0/dt and par[] are float_sw4 (4 bytes in single precision) -- read into double temporaries/array and assign.
-     ret = fscanf(fd," %lg %lg %i", &t0, &dt, &npts );
+     ret = fscanf(fd," %lg %lg %i", &t0d, &dt, &npts );
+     CHECK_INPUT( ret == 3 && npts > 0 && dt > 0,
+                  err << "Source time function file " << dfile << ": could not read 't0 dt npts' header" );
      par = new float_sw4[npts+1];
-     par[0]  = t0;
+     par[0]  = t0d;
      freq    = 1/dt;
      ipar    = new int[1];
      ipar[0] = npts;
      for( int i=0 ; i < npts ; i++ )
-	ret = fscanf(fd,"%lg", &par[i+1] );
+     {
+        double val;
+	ret = fscanf(fd,"%lg", &val );
+        CHECK_INPUT( ret == 1, err << "Source time function file " << dfile << ": expected "
+                     << npts << " values, could only read " << i );
+        par[i+1] = val;
+     }
      npar = npts+1;
      nipar = 1;
      //     cout << "Read disc source: t0=" << t0 << " dt="  << dt << " npts= " << npts << endl;
@@ -5974,7 +6051,14 @@ void EW::processSource(char* buffer, vector<vector<Source*> > & a_GlobalUniqueSo
     {
       float_sw4 radconv = M_PI / 180.;
       float_sw4 S, D, R;
-      strike -= mGeoAz; // subtract off the grid azimuth
+      // strike= is a bearing from TRUE north (as SRF STK). The grid x-axis
+      // points at true azimuth mGeoAz + gamma, gamma = meridian convergence
+      // at the source (EW::computeMeridianConvergence), whether the source is
+      // positioned by lat/lon or by x/y.
+      double slon = lon, slat = lat;
+      if (!geoCoordSet)
+        computeGeographicCoord(x, y, slon, slat);
+      strike -= mGeoAz + computeMeridianConvergence(slon, slat);
       S = strike*radconv; D = dip*radconv; R = rake*radconv;
       
       mxx = -1.0 * ( sin(D) * cos(R) * sin (2*S) + sin(2*D) * sin(R) * sin(S)*sin(S) );
@@ -6069,6 +6153,7 @@ void EW::processRuptureHDF5(char* buffer, vector<vector<Source*> > & a_GlobalUni
 #ifdef USE_HDF5
   int event = 0;
   bool rfileset=false;
+  bool skip_outside=false;
   char rfile[1000];
   double stime, etime;
   stime = MPI_Wtime();
@@ -6116,6 +6201,13 @@ void EW::processRuptureHDF5(char* buffer, vector<vector<Source*> > & a_GlobalUni
 	    event = it->second;
 	 }
       }
+      else if (startswith("outside=",token))
+      {
+         token += 8;
+         CHECK_INPUT( strcmp(token,"error") == 0 || strcmp(token,"skip") == 0,
+                      err << "rupturehdf5 command: outside must be 'error' or 'skip', not '" << token << "'" );
+         skip_outside = strcmp(token,"skip") == 0;
+      }
       else
       {
          badOption("rupturehdf5", token);
@@ -6124,11 +6216,11 @@ void EW::processRuptureHDF5(char* buffer, vector<vector<Source*> > & a_GlobalUni
     }
 
 
+  CHECK_INPUT( rfileset, err << "rupturehdf5 command: file=... must be given" );
   if( event_is_in_proc(event) )
   {
      event = global_to_local_event(event);
-  if( rfileset)
-    readRuptureHDF5(rfile, a_GlobalUniqueSources, this, event, m_global_xmax, m_global_ymax, m_global_zmax, mGeoAz, xmin, ymin, zmin, mVerbose, m_nwriters);
+     readRuptureHDF5(rfile, a_GlobalUniqueSources, this, event, m_global_xmax, m_global_ymax, m_global_zmax, mGeoAz, xmin, ymin, zmin, mVerbose, m_nwriters, skip_outside);
   }
 
   etime = MPI_Wtime();
@@ -6136,8 +6228,7 @@ void EW::processRuptureHDF5(char* buffer, vector<vector<Source*> > & a_GlobalUni
   if (proc_zero())
       cout << "Process rupture data, took " << etime-stime << "seconds." << endl;
 #else
-  if (proc_zero())
-    cout << "Using HDF5 rupture input but sw4 is not compiled with HDF5!"<< endl;
+  CHECK_INPUT( false, "rupturehdf5 command: sw4 is not compiled with HDF5 (USE_HDF5)" );
 #endif
 
 } // end processRupture()
@@ -6172,9 +6263,10 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
   char formstring[1000];
   strcpy(formstring, "Discrete");
   char rfile[1000];
+  bool skip_outside=false;
 
 // bounding box
-// only check the z>zmin when we have topography. For a flat free surface, we will remove sources too 
+// only check the z>zmin when we have topography. For a flat free surface, we will remove sources too
 // close or above the surface in the call to mGlobalUniqueSources[i]->correct_Z_level()
   float_sw4 xmin = 0.;
   float_sw4 ymin = 0.;
@@ -6220,6 +6312,13 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
                 std::cout << "Rupture warning: event with name " << token << " not found" << std::endl;
 	 }
       }
+      else if (startswith("outside=",token))
+      {
+         token += 8;
+         CHECK_INPUT( strcmp(token,"error") == 0 || strcmp(token,"skip") == 0,
+                      err << "rupture command: outside must be 'error' or 'skip', not '" << token << "'" );
+         skip_outside = strcmp(token,"skip") == 0;
+      }
       else
       {
          badOption("rupture", token);
@@ -6227,7 +6326,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
       token = strtok(NULL, " \t");
     }
 
-  float_sw4 rVersion;
+  double rVersion;
 
   const int bufsize=1024;
   char buf[bufsize];
@@ -6237,6 +6336,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
   float_sw4* par=NULL;
   int* ipar=NULL;
   int npar=0, nipar=0, ncyc=0;
+  CHECK_INPUT( rfileset, err << "rupture command: file=... must be given" );
   if( rfileset )
   {
      //  g(t) defined by spline points on a uniform grid, read from file.
@@ -6296,6 +6396,9 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 
 // read all point sources
     int nSources=0, nu1=0, nu2=0, nu3=0, nskip_zero_slip=0;
+    // Every rank reads the whole file, so all ranks agree on noutside.
+    int noutside=0;
+    const int max_outside_report = 10;
     for (int pts=0; pts<npts; pts++) 
     {
       double lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, slip2, slip3;
@@ -6330,7 +6433,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	ipar    = new int[1];
 	ipar[0] = nt1dim+1; // add an extra point 
 	ret = fgets(buf,bufsize,fd);
-	token = strtok(buf, " \t");
+	token = ret ? strtok(buf, " \t\r\n") : NULL;
 //	printf("buf='%s'\n", buf);
 	for( int i=0 ; i < nt1 ; i++ )
 	{
@@ -6338,13 +6441,17 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	  if (token == NULL)
 	  {
 	    ret = fgets(buf,bufsize,fd);
-	    token = strtok(buf, " \t");
+	    token = ret ? strtok(buf, " \t\r\n") : NULL;
 	  }
 //	  printf("token='%s'\n", token);
-	  // TODO: "%lg" always fills a double, but par[] is float_sw4 (4 bytes in single precision) -- read into a double temporary and assign.
-	  sscanf(token,"%lg", &par[i+1] );
+	  // "%lg" fills a double: read into a double temporary, float_sw4 may be float.
+	  double sr;
+	  CHECK_INPUT( token != NULL && sscanf(token,"%lg", &sr ) == 1,
+		       err << "file " << rfile << ": point #" << pts+1 << " has NT1=" << nt1
+		       << " but only " << i << " slip-rate values could be read" );
+	  par[i+1] = sr;
 // read next token
-	  token = strtok(NULL, " \t");
+	  token = strtok(NULL, " \t\r\n");
 	}
 // pad with 0
 	if (nt1 < 6)
@@ -6422,7 +6529,9 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 // convert strike, dip, rake to Mij
 	float_sw4 radconv = M_PI / 180.;
 	float_sw4 S, D, R;
-	stk -= mGeoAz; // subtract off the grid azimuth
+	// SRF STK is a bearing from TRUE north; the grid x-axis points at true
+	// azimuth mGeoAz + gamma (gamma = meridian convergence at the subfault).
+	stk -= mGeoAz + computeMeridianConvergence(lon, lat);
 	S = stk*radconv; D = dip*radconv; R = rake*radconv;
       
 	mxx = -1.0 * ( sin(D) * cos(R) * sin (2*S) + sin(2*D) * sin(R) * sin(S)*sin(S) );
@@ -6449,10 +6558,13 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 
 	if (x < xmin || x > m_global_xmax || y < ymin || y > m_global_ymax || z < zmin || z > m_global_zmax)
 	{
+	 // Points with zero slip would be skipped anyway and are not counted.
+	 if (!skip_zero_slip_point && ++noutside <= max_outside_report)
+	 {
 	  stringstream sourceposerr;
 	  sourceposerr << endl
 		       << "***************************************************" << endl
-		       << " ERROR:  Source positioned outside grid!  " << endl
+		       << (skip_outside ? " WARNING:" : " ERROR:") << "  Source positioned outside grid!  \n"
 		       << endl
 		       << " Source from rupture file @" << endl
 		       << "  x=" << x << " y=" << y << " z=" << z << endl 
@@ -6480,6 +6592,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	  sourceposerr << "***************************************************" << endl;
 	  if (m_myRank == 0)
 	    cout << sourceposerr.str();
+	 }
 	}
 	else if( !skip_zero_slip_point && event_is_in_proc(event) )
 	{
@@ -6513,7 +6626,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	if (proc_zero())
 	  printf("WARNING nt2=%i > 0 will be ignored\n", nt2);
 	ret = fgets(buf,bufsize,fd);
-	token = strtok(buf, " \t");
+	token = strtok(buf, " \t\r\n");
 //	printf("buf='%s'\n", buf);
 	for( int i=0 ; i < nt2 ; i++ )
 	{
@@ -6521,12 +6634,13 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	  if (token == NULL)
 	  {
 	    ret = fgets(buf,bufsize,fd);
-	    token = strtok(buf, " \t");
+	    token = strtok(buf, " \t\r\n");
 	  }
 //	  printf("token='%s'\n", token);
-	  sscanf(token,"%lg", &dum );
+	  CHECK_INPUT( token != NULL, err << "file " << rfile << ": point #" << pts+1
+		       << " has fewer slip-rate values than NT2/NT3 say" );
 // read next token
-	  token = strtok(NULL, " \t");
+	  token = strtok(NULL, " \t\r\n");
 	}
       } // end if nt2 > 0
 
@@ -6538,7 +6652,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	if (proc_zero())
 	  printf("WARNING nt3=%i > 0 will be ignored\n", nt3);
 	ret = fgets(buf,bufsize,fd);
-	token = strtok(buf, " \t");
+	token = strtok(buf, " \t\r\n");
 //	printf("buf='%s'\n", buf);
 	for( int i=0 ; i < nt3 ; i++ )
 	{
@@ -6546,12 +6660,13 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	  if (token == NULL)
 	  {
 	    ret = fgets(buf,bufsize,fd);
-	    token = strtok(buf, " \t");
+	    token = strtok(buf, " \t\r\n");
 	  }
 //	  printf("token='%s'\n", token);
-	  sscanf(token,"%lg", &dum );
+	  CHECK_INPUT( token != NULL, err << "file " << rfile << ": point #" << pts+1
+		       << " has fewer slip-rate values than NT2/NT3 say" );
 // read next token
-	  token = strtok(NULL, " \t");
+	  token = strtok(NULL, " \t\r\n");
 	}
       } // end if nt3 > 0
       
@@ -6562,6 +6677,26 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
     if (proc_zero() && nskip_zero_slip > 0)
       printf("Skipped %i rupture points with zero slip-velocity integral in u1.\n", nskip_zero_slip);
     
+    if (noutside > 0)
+    {
+      if (skip_outside)
+      {
+        if (proc_zero())
+          printf("WARNING: dropped %i rupture points positioned outside grid (outside=skip)\n", noutside);
+      }
+      else
+      {
+        if (proc_zero())
+          cout << "Fatal input error: rupture: " << noutside << " of " << npts
+               << " rupture points in '" << rfile << "' are positioned outside grid"
+               << (noutside > max_outside_report ? " (first ones listed above)." : ".")
+               << " Enlarge the domain, or add outside=skip to the rupture command"
+               << " to drop these points." << '\n' << std::flush;
+        // Make sure rank 0 has printed before anyone aborts.
+        MPI_Barrier(MPI_COMM_WORLD);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+      }
+    }
     fclose(fd);
   }
 

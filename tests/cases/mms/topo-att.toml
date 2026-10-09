@@ -1,0 +1,49 @@
+description = "Twilight with attenuation and supergrid stretching under steep Gaussian topography (ports attenuation/tw-topo-att). Asserts 4th order."
+labels = ["mms", "twilight", "curvi", "atten", "supergrid"]
+input = "topo-att.in"
+ranks = 4
+
+[params]
+t = 0.5
+cfl = 0.9
+
+[[run]]
+name = "h1"
+params = { nx = 41, h = 0.157 }
+
+[[run]]
+name = "h2"
+params = { nx = 81, h = 0.0785 }
+
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { nx = 161, h = 0.03925 }
+
+[[check]]
+name = "golden"
+kind = "twilight_golden"
+runs = ["h1", "h2"]
+
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+expect = 4.0
+band = 0.4
+band_errInf = 0.7
+
+[[check]]
+name = "rate-atten"
+kind = "rate"
+runs = ["h1", "h2"]
+field = "atten"
+expect = 4.0
+band = 0.4
+band_errInf = 0.7
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+expect = 4.0
+band = 0.4

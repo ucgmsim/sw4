@@ -1,0 +1,55 @@
+description = "EQ-01/02/03 (measured 2026-10-08, double: SRF vs moment tensor 9e-4, SRF output vs true velocity see check; HDF5 vs ASCII 6e-7 once the ASCII file carries the float32-rounded LON/LAT the HDF5 format stores): one SRF point source (Gaussian slip rate) read three ways. EQ-01: rupturehdf5 == `source` moment tensor (m0 = mu*area*slip, type=Gaussian), which checks SW4's SRF -> moment conversion. EQ-02: rupturehdf5 'displacement' output == velocity output of the same source with the integrated (step-like) time function: the workflow treats SW4's SRF output as ground velocity in m/s. EQ-03: rupturehdf5 == ASCII rupture."
+labels = ["equivalence", "rupture", "hdf5"]
+input = "eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 0.0
+t = 5.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "rupturehdf5 file=src.srf.h5"
+recvars = ""
+rec = ""
+
+[[run]]
+name = "srf-hdf5"
+
+[[run]]
+name = "srf-ascii"
+params = { source = "rupture file=src.srf" }
+
+[[run]]
+name = "moment-tensor"
+params = { source = "source lat={{src_lat}} lon={{src_lon}} depth={{src_dep}} m0={{m0}} strike={{stk}} dip={{dip}} rake={{rake}} t0={{src_t0}} freq={{src_freq}} type=Gaussian" }
+
+[[run]]
+name = "moment-step-velocity"
+params = { source = "source lat={{src_lat}} lon={{src_lon}} depth={{src_dep}} m0={{m0}} strike={{stk}} dip={{dip}} rake={{rake}} t0={{src_t0}} freq={{src_freq}} type=GaussianInt", recvars = "variables=velocity" }
+
+[[check]]
+name = "srf-hdf5-vs-ascii"
+kind = "traces_agree"
+runs = ["srf-hdf5", "srf-ascii"]
+rtol = { double = 1e-6, float = 1e-4 }
+
+[[check]]
+name = "srf-vs-moment-tensor"
+kind = "traces_agree"
+runs = ["srf-hdf5", "moment-tensor"]
+rtol = 2e-3
+
+[[check]]
+name = "srf-output-is-velocity"
+kind = "traces_agree"
+runs = ["srf-hdf5", "moment-step-velocity"]
+rtol = 3e-2
+description = "Measured 1.4%: the residual is SW4's finite-difference velocity output, not the SRF path; a units error (cm/s, or displacement) would be off by orders of magnitude."

@@ -1,0 +1,33 @@
+description = "EQ-07: `supergrid width=2400` (the workflow's form, metres) and `supergrid gp=12` on h=200 are the same sponge."
+labels = ["equivalence", "supergrid"]
+input = "eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 0.0
+t = 5.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "rupturehdf5 file=src.srf.h5"
+recvars = ""
+rec = ""
+
+[[run]]
+name = "width"
+
+[[run]]
+name = "gp"
+params = { sg = "gp=12" }
+
+[[check]]
+name = "agree"
+kind = "traces_agree"
+bitwise = true
