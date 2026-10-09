@@ -65,6 +65,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <algorithm>
@@ -648,6 +649,8 @@ void EW::processGrid(char* buffer)
   bool latSet = false, lonSet = false, lon_p_set=false, lat_p_set=false, datum_set=false;
   bool ellps_set=false, proj_set=false;
   bool use_geoprojection=false;
+  bool scale_set=false;
+  double scale_k0=1.0;
   
   stringstream proj0;
 
@@ -823,7 +826,7 @@ void EW::processGrid(char* buffer)
      {
         token +=5;
 // accumulate new style string
-        proj0 << "+proj=" << token;
+        proj0 << " +proj=" << token;
 	use_geoprojection = true;
         proj_set=true;
      }
@@ -863,8 +866,13 @@ void EW::processGrid(char* buffer)
 //                        123456789
      else if( startswith("scale=",token))
      {
+// Scale factor on the central meridian (tmerc etc). PROJ calls it k_0; an
+// unknown +scale parameter would be silently ignored. Appended after the
+// other parameters, see below.
         token +=6;
-        proj0 << " +scale=" << atof(token);
+        scale_k0 = atof(token);
+        CHECK_INPUT( scale_k0 > 0.0, err << "scale must be a positive float, not: " << token );
+        scale_set = true;
 	use_geoprojection = true;
      }
      else
@@ -1285,10 +1293,26 @@ void EW::processGrid(char* buffer)
 #endif
   if( use_geoprojection )
   {
+// PROJ rejects a definition that starts with white space; the tokens above
+// all start with " +" since the keywords may come in any order.
+     string pstr = proj0.str();
+     pstr.erase(0, pstr.find_first_not_of(" \t"));
+     if( scale_set )
+     {
+#if defined(ENABLE_PROJ)
+        CHECK_INPUT( GeographicProjection::scaleFactorHasEffect( pstr, mLonOrigin, mLatOrigin ),
+                     "ERROR: grid scale=" << scale_k0 << " has no effect with the projection '" << pstr
+                     << "' (PROJ ignores +k_0 for it, e.g. utm fixes k_0=0.9996). Remove scale= or use "
+                     "a projection with a scale factor such as proj=tmerc." );
+#endif
+        stringstream k0;
+        k0 << " +k_0=" << setprecision(15) << scale_k0;
+        pstr += k0.str();
+     }
 // tmp
-//     cout << "New proj4 string: '" << proj0.str() << "'" << endl;
+//     cout << "New proj4 string: '" << pstr << "'" << endl;
 
-     m_geoproj = new GeographicProjection( mLonOrigin, mLatOrigin, proj0.str(), mGeoAz );
+     m_geoproj = new GeographicProjection( mLonOrigin, mLatOrigin, pstr, mGeoAz );
   }
   else
      m_geoproj = static_cast<GeographicProjection*>(0);

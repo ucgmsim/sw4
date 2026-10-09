@@ -118,7 +118,7 @@ def receiver_placement(ctx: Ctx) -> bool:
 def projection(ctx: Ctx) -> bool:
     """SW4's Cartesian position of each lat/lon station matches an independent
     pyproj calculation in the projection named by `frame`:
-      frame = "sw4":  the PROJ string SW4 builds (+scale=...),
+      frame = "sw4":  the PROJ string SW4 builds (scale= as +k_0),
       frame = "nztm": what the workflow means (tmerc with +k = scale)."""
     from . import mininz
 

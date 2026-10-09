@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
 #include "GeographicProjection.h"
 #include "Require.h"
 
@@ -92,6 +93,31 @@ GeographicProjection::GeographicProjection( double lon_origin, double lat_origin
    m_Pgmg = NULL;
 #endif
    /* printf("GeographicProjection origin: %f %f -> %f %f\n", lon_origin, lat_origin, m_xoffset, m_yoffset); */
+}
+
+//-----------------------------------------------------------------------
+bool GeographicProjection::scaleFactorHasEffect( const string& projection, double lon, double lat )
+{
+#ifdef ENABLE_PROJ
+// Project a point near (lon,lat) with two very different scale factors. PROJ
+// silently ignores +k_0 for projections without a scale factor, so the only
+// reliable test is whether the result changes.
+   double xy[2][2];
+   const char* k0[2] = {" +k_0=0.5", " +k_0=0.25"};
+   for( int i=0 ; i < 2 ; i++ )
+   {
+      string crs_to = projection + k0[i];
+      PJ* P = proj_create_crs_to_crs(PJ_DEFAULT_CTX, sw4_geographic_crs(), crs_to.c_str(), NULL);
+      CHECK_INPUT( P != NULL, "ERROR: Init of cartographic projection failed for '" << crs_to << "'" );
+      PJ_COORD c = proj_trans(P, PJ_FWD, proj_coord(lon+0.1, lat > 0 ? lat-0.1 : lat+0.1, 0.0, 0.0));
+      xy[i][0] = c.xyzt.x;
+      xy[i][1] = c.xyzt.y;
+      proj_destroy(P);
+   }
+   return fabs(xy[0][0]-xy[1][0]) + fabs(xy[0][1]-xy[1][1]) > 1.0;
+#else
+   return false;
+#endif
 }
 
 //-----------------------------------------------------------------------

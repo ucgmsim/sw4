@@ -96,9 +96,10 @@ name = "projection-scale"
 kind = "projection"
 runs = ["1hz", "antimeridian"]
 frame = "nztm"
-tol_m = 0.5
+# Float builds keep station x,y in float_sw4 (0.2-0.65 m off, see
+# projection-exact), so float gets the same 1 m as the `projection` check.
+tol_m = { double = 0.5, float = 1.0 }
 description = "The workflow passes `grid scale=0.9996` meaning the NZTM scale factor; positions must match tmerc with k=0.9996."
-xfail = "SW4 writes scale= as +scale, which PROJ ignores for tmerc (it needs +k): positions are 0.04% (40 m per 100 km) off NZTM, and the sfile's NZTM-metre spacing is stretched against them."
 
 [[check]]
 name = "receiver-placement"

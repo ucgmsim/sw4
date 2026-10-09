@@ -56,6 +56,12 @@ class GeographicProjection
      // i.e. of the +northing axis. The SW4 grid x-axis then points at true
      // azimuth az + convergence.
      double computeMeridianConvergence( double longitude, double latitude );
+
+     // True if appending " +k_0=..." to the PROJ string `projection` changes the
+     // projected coordinates near (lon, lat), i.e. the projection honours a
+     // scale factor (tmerc, etmerc, stere, sterea, merc, omerc, ...). False for
+     // projections that ignore it or fix it internally (utm, lcc, aea, ...).
+     static bool scaleFactorHasEffect( const std::string& projection, double lon, double lat );
   private:
 /* #ifdef ENABLE_PROJ4 */
 /*      projPJ m_projection, m_latlong; */

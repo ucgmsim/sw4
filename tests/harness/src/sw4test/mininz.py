@@ -25,11 +25,12 @@ SW4_GEOGRAPHIC_CRS = "+proj=latlong +datum=NAD83"
 
 
 def sw4_proj_string(lon_p: float, lat_p: float, scale: float | None, ellps: str = "GRS80") -> str:
-    """The PROJ string SW4 builds from `grid proj=tmerc ellps= lon_p= lat_p= scale=`."""
-    s = f"+proj=tmerc +ellps={ellps} +lon_0={lon_p:g} +lat_0={lat_p:g}"
+    """The PROJ string SW4 builds from `grid proj=tmerc ellps= lon_p= lat_p= scale=`
+    (scale= becomes +k_0; SW4 before the fix wrote +scale, which PROJ ignores)."""
+    s = f"+proj=tmerc +ellps={ellps} +lon_0={lon_p:g} +lat_0={lat_p:g} +units=m"
     if scale is not None:
-        s += f" +scale={scale:g}"
-    return s + " +units=m"
+        s += f" +k_0={scale:.15g}"
+    return s
 
 
 def nztm_like_string(lon_p: float, lat_p: float, scale: float, ellps: str = "GRS80") -> str:

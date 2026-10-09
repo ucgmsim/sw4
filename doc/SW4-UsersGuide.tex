@@ -2891,10 +2891,14 @@ grid x=12e3 y=12e3 z=5e3 nx=601 lat=37.93 lon=-122.25 az=143.6380 proj=tmerc \
 \end{verbatim}
 results in the string
 \begin{verbatim}
-pstr = "+units=m +proj=tmerc +datum=NAD83 +lon_0=-123.0 +lat_0=35.0 +scale=0.9996"
+pstr = "+proj=tmerc +datum=NAD83 +lon_0=-123.0 +lat_0=35.0 +units=m +k_0=0.9996"
 \end{verbatim}
-Note that the values of {\bf lat\_p} and {\bf lon\_p} are passed as arguments to {\bf lat\_0} and
-	{\bf lon\_0}, respectively. See the Proj4 documentation for further guidance.
+Note that the values of {\bf lat\_p}, {\bf lon\_p} and {\bf scale} are passed as arguments to {\bf lat\_0},
+	{\bf lon\_0} and {\bf k\_0}, respectively. See the Proj4 documentation for further guidance.
+{\bf scale} is only accepted for projections that have a scale factor (e.g., tmerc, etmerc, stere,
+sterea, merc, omerc); \emph{SW4} stops with an error if PROJ would ignore it (e.g., utm, whose scale
+factor is fixed at 0.9996). Earlier versions of \emph{SW4} passed {\bf scale} as {\tt +scale}, which
+PROJ silently ignores, so those runs used the projection's default scale factor (1 for tmerc).
 \begin{center}
 	\begin{tabular}{|l|p{8cm}|l|l|l|} \hline
 		\multicolumn{5}{|c|}{\bf grid command parameters (geographical coordinates and projection)}                  \\ \hline
@@ -2909,7 +2913,7 @@ Note that the values of {\bf lat\_p} and {\bf lon\_p} are passed as arguments to
 		datum       & datum of projection (e.g. NAD83)                       & string    & None       & None         \\ \hline
 		lon\_p      & central meridian of projection                         & string    & degrees    & lon          \\ \hline
 		lat\_p      & latitude of projection origin                          & string    & degrees    & lat          \\ \hline
-		scale       & scale factor for central meridian                      & string    & None       & None         \\ \hline
+		scale       & scale factor $k_0$ on the central meridian             & real      & None       & None      \\ \hline
 	\end{tabular}
 \end{center}
 Note: The default projection, given by equations \eqref{eq:lat}-\eqref{eq:lon}, is used if neither
