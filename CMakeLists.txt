@@ -90,6 +90,50 @@ option(USE_HDF5 "Use HDF5." OFF)
 if(USE_HDF5)
   find_package(ZLIB REQUIRED)
   find_package(HDF5 REQUIRED)
+
+  # SW4 calls the MPI-IO driver (H5Pset_fapl_mpio, H5Pset_dxpl_mpio, ...)
+  # unconditionally, so a serial HDF5 configures fine but fails to compile
+  # much later. Fail early instead, by checking that the hdf5.h actually
+  # found defines H5_HAVE_PARALLEL. This works whether HDF5 was found through
+  # its own CMake config (HDF5 >= 1.14/2.x, which sets HDF5_PROVIDES_PARALLEL)
+  # or through CMake's FindHDF5 module (which sets HDF5_IS_PARALLEL).
+  include(CheckCXXSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state(RESET)
+  if(TARGET HDF5::HDF5)
+    set(CMAKE_REQUIRED_LIBRARIES HDF5::HDF5 MPI::MPI_CXX)
+  else()
+    set(CMAKE_REQUIRED_INCLUDES ${HDF5_INCLUDE_DIRS})
+    set(CMAKE_REQUIRED_LIBRARIES ${HDF5_LIBRARIES} MPI::MPI_CXX)
+  endif()
+  # Re-run on every configure so switching HDF5_DIR is never masked by a
+  # stale cached result.
+  unset(SW4_HDF5_IS_PARALLEL CACHE)
+  check_cxx_source_compiles("
+    #include <mpi.h>
+    #include <hdf5.h>
+    #ifndef H5_HAVE_PARALLEL
+    #error HDF5 was built without MPI support
+    #endif
+    int main() {
+      hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+      H5Pset_fapl_mpio(fapl, MPI_COMM_SELF, MPI_INFO_NULL);
+      return 0;
+    }" SW4_HDF5_IS_PARALLEL)
+  cmake_pop_check_state()
+  if(NOT SW4_HDF5_IS_PARALLEL)
+    if(HDF5_DIR)
+      set(_sw4_hdf5_where "HDF5_DIR=${HDF5_DIR}")
+    else()
+      set(_sw4_hdf5_where "include dirs: ${HDF5_INCLUDE_DIRS}")
+    endif()
+    message(FATAL_ERROR
+      "USE_HDF5=ON requires a parallel (MPI-enabled) HDF5, but the HDF5 found "
+      "(version ${HDF5_VERSION}, ${_sw4_hdf5_where}) was built "
+      "without MPI (H5_HAVE_PARALLEL is not defined in its H5pubconf.h). "
+      "Point CMake at a parallel build, e.g. -DHDF5_DIR=<prefix>/lib/cmake/hdf5 "
+      "or -DHDF5_PREFER_PARALLEL=ON, or configure with -DUSE_HDF5=OFF.")
+  endif()
 endif()
 
 option(USE_ZFP "Use ZFP compression." OFF)
@@ -231,6 +275,13 @@ target_compile_options(sw4_config INTERFACE
     "$<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:RelWithDebInfo>>:SHELL:${SW4_RELEASE_FORT_FLAGS}>"
 )
 
+# HDF5 goes first: link order also sets include-directory order, and other
+# dependencies' prefixes (e.g. PROJ in /opt/homebrew/include) may hold a
+# serial hdf5.h that would otherwise shadow the parallel one checked above.
+if(USE_HDF5 AND HDF5_FOUND)
+  target_link_libraries(sw4_config INTERFACE HDF5::HDF5)
+endif()
+
 target_link_libraries(sw4_config INTERFACE
     MPI::MPI_C
     MPI::MPI_CXX
@@ -241,10 +292,6 @@ target_link_libraries(sw4_config INTERFACE
 
 if(USE_PROJ AND PROJ_FOUND)
   target_link_libraries(sw4_config INTERFACE PROJ::proj)
-endif()
-
-if(USE_HDF5 AND HDF5_FOUND)
-  target_link_libraries(sw4_config INTERFACE HDF5::HDF5)
 endif()
 
 if(USE_ZFP)
