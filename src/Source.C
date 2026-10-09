@@ -2980,7 +2980,7 @@ void Source::compute_metric_at_source( EW* a_EW, float_sw4 q, float_sw4 r, float
       zq = zr = zs = 0;
       int order;
       float_sw4 zetaBreak;
-      a_EW->m_gridGenerator->get_gridgen_info( order, zetaBreak );
+      a_EW->m_gridGenerator->get_gridgen_info( Nz, order, zetaBreak );
       float_sw4 zpar = (s-1)/(zetaBreak*(Nz-1));
       float_sw4 kBreak = 1 + zetaBreak*(Nz-1);
 
