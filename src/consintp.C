@@ -206,8 +206,32 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
          for( int c=1 ; c<=3 ; c++ )
             ucd[(ic-m_iStart[gc]) + (size_t)niC*(jc-m_jStart[gc]) + (size_t)niC*njC*(c-1)] = Uc(c,ic,jc,0);
 
+// Relaxation factor, adapted per interface (and per predictor/corrector,
+// whose systems differ through cof). The block-Jacobi iteration converges with
+// the default factor when the material and the supergrid stretching vary
+// slowly along the interface. In a narrow absorbing layer the stretching
+// phi falls by large factors between neighbouring grid points (phi ~
+// (distance to the boundary)^6), the 7-point restriction of the
+// phi-scaled fine-grid tractions then outweighs the diagonal, and with the
+// default factor the iteration diverges (6 coarse points: err 1e9 after 20
+// iterations, NaN within a few steps). A smaller factor converges (damped
+// Jacobi on a system whose iteration operator has a larger spectral radius),
+// so when the iteration diverges it is restarted from the same initial
+// ghost values with half the factor and proportionally more iterations, and
+// the reduced factor is kept for the later calls on this interface.
+// jacerr is reduced over all ranks, so every rank takes the same decision.
+   const int slot = 2*gc + (cof > 1 ? 1 : 0);
+   if( (int)m_cirelfact_adapted.size() < 2*mNumberOfGrids )
+      m_cirelfact_adapted.assign( 2*mNumberOfGrids, m_cirelfact );
+   relax = m_cirelfact_adapted[slot];
+   const float_sw4 relax_min = m_cirelfact/64;
+   int maxit = relax < m_cirelfact ?
+      static_cast<int>(ceil(m_cimaxiter*m_cirelfact/relax)) : m_cimaxiter;
+   const std::vector<double> ufd0(ufd), ucd0(ucd), ufnewd0(ufnewd), ucnewd0(ucnewd);
+   double jacmin = 1e38;
+
 // Start iteration
-   while( jacerr > m_citol && it < m_cimaxiter )
+   while( jacerr > m_citol && it < maxit )
    {
       double rmax[6]={0,0,0,0,0,0};
 //
@@ -313,6 +337,24 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
 	 jacerr = jacerr/jacerr0;
       it++;
 
+// Diverging: the change has grown to 4x its smallest value so far, or the
+// iteration ran out of iterations without converging.
+      jacmin = jacerr < jacmin ? jacerr : jacmin;
+      if( (jacerr > 4*jacmin || (it >= maxit && jacerr > m_citol)) && relax > relax_min )
+      {
+         if( proc_zero() )
+            cout << "EW::consintp: interface iteration between grids " << gc << " and " << gf
+                 << " did not converge with relaxation " << relax << " (err=" << jacerr << " after " << it
+                 << " iterations); restarting it with relaxation " << 0.5*relax
+                 << " (supergrid stretching varies fast along the interface: narrow absorbing layer)\n";
+         relax *= 0.5;
+         m_cirelfact_adapted[slot] = relax;
+         maxit = static_cast<int>(ceil(m_cimaxiter*m_cirelfact/relax));
+         ufd = ufd0; ucd = ucd0; ufnewd = ufnewd0; ucnewd = ucnewd0;
+         it = 0;
+         jacerr = m_citol+1;
+         jacmin = 1e38;
+      }
    } // end while jacerr > eps (Outer iteration)
 
 // round the converged ghost planes back into the float_sw4 arrays

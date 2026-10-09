@@ -2978,7 +2978,10 @@ void EW::processSupergrid(char *buffer)
      set_sg_width( sg_width );
 
   if (dampingCoeffSet)
+  {
     set_sg_damping(sg_coeff);
+    m_sg_damping_user_set = true;
+  }
   else if( m_sg_damping_order == 4 )
      set_sg_damping(0.02);
   else if( m_sg_damping_order == 6 )
