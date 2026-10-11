@@ -89,6 +89,13 @@ public:
 // make public for simplicity
   float_sw4 mFreq, mT0;
 
+  // True if getFxyz/getFxyztt return mForces times a single scalar time function value
+  bool hasScalarTimeFunc() const;
+  // True if this source evaluates exactly the same time function as 'o'
+  bool sameTimeFunc( const GridPointSource& o ) const;
+  const float_sw4* getForces() const { return mForces; }
+  const float_sw4* getTimeFuncPar() const { return mPar; }
+
  private:
 
   GridPointSource();

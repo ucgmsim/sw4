@@ -403,6 +403,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 // Sort sources wrt spatial location, needed for thread parallel computing
   vector<int> identsources;
   sort_grid_point_sources( point_sources, identsources );
+  buildSourceTimeFuncCache( point_sources );
 
 // Assign initial data
   int beginCycle; 
@@ -1531,6 +1532,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 	    delete[] BCForcing[g][side];
       delete[] BCForcing[g];
    }
+   clearSourceTimeFuncCache();
    for( int s = 0 ; s < point_sources.size(); s++ )
       delete point_sources[s];
 

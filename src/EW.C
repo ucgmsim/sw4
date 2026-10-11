@@ -34,6 +34,7 @@
 
 #include "EW.h"
 #include "sw4timer.h"
+#include <unordered_map>
 #include "GridGenerator.h"
 
 #include <cstdarg>
@@ -5056,6 +5057,12 @@ void EW::Force(float_sw4 a_t, vector<Sarray> &a_F,
     for (int g = 0; g < mNumberOfGrids; g++)
       a_F[g].set_to_zero();
 
+    const bool cached = useSourceTimeFuncCache(point_sources);
+    if (cached)
+      evalSourceTimeFuncs(a_t, false);
+    const int *tf = m_srcTFcache.tf.data();
+    const float_sw4 *val = m_srcTFcache.val.data();
+    const float_sw4 *frc = m_srcTFcache.forces.data();
 #pragma omp parallel for
     for (int r = 0; r < identsources.size() - 1; r++) {
       int s0 = identsources[r];
@@ -5064,6 +5071,18 @@ void EW::Force(float_sw4 a_t, vector<Sarray> &a_F,
       int j = point_sources[s0]->m_j0;
       int k = point_sources[s0]->m_k0;
       float_sw4 f1 = 0, f2 = 0, f3 = 0;
+      if (cached) {
+        // Same arithmetic as getFxyz: force component times time function value
+        for (int s = identsources[r]; s < identsources[r + 1]; s++) {
+          float_sw4 afun = val[tf[s]];
+          float_sw4 fx = frc[3 * s] * afun;
+          float_sw4 fy = frc[3 * s + 1] * afun;
+          float_sw4 fz = frc[3 * s + 2] * afun;
+          f1 += fx;
+          f2 += fy;
+          f3 += fz;
+        }
+      } else
       for (int s = identsources[r]; s < identsources[r + 1]; s++) {
         float_sw4 fxyz[3];
         point_sources[s]->getFxyz(a_t, fxyz);
@@ -5307,6 +5326,12 @@ void EW::Force_tt(float_sw4 a_t, vector<Sarray> &a_F,
     for (int g = 0; g < mNumberOfGrids; g++)
       a_F[g].set_to_zero();
 
+    const bool cached = useSourceTimeFuncCache(point_sources);
+    if (cached)
+      evalSourceTimeFuncs(a_t, true);
+    const int *tf = m_srcTFcache.tf.data();
+    const float_sw4 *val = m_srcTFcache.val.data();
+    const float_sw4 *frc = m_srcTFcache.forces.data();
 #pragma omp parallel for
     for (int r = 0; r < identsources.size() - 1; r++) {
       int s0 = identsources[r];
@@ -5315,6 +5340,18 @@ void EW::Force_tt(float_sw4 a_t, vector<Sarray> &a_F,
       int j = point_sources[s0]->m_j0;
       int k = point_sources[s0]->m_k0;
       float_sw4 f1 = 0, f2 = 0, f3 = 0;
+      if (cached) {
+        // Same arithmetic as getFxyztt: force component times time function value
+        for (int s = identsources[r]; s < identsources[r + 1]; s++) {
+          float_sw4 afun = val[tf[s]];
+          float_sw4 fx = frc[3 * s] * afun;
+          float_sw4 fy = frc[3 * s + 1] * afun;
+          float_sw4 fz = frc[3 * s + 2] * afun;
+          f1 += fx;
+          f2 += fy;
+          f3 += fz;
+        }
+      } else
       for (int s = identsources[r]; s < identsources[r + 1]; s++) {
         float_sw4 fxyz[3];
         point_sources[s]->getFxyztt(a_t, fxyz);
@@ -9688,6 +9725,68 @@ bool less_than(GridPointSource *ptsrc1, GridPointSource *ptsrc2) {
 }
 
 //-----------------------------------------------------------------------
+void EW::buildSourceTimeFuncCache(
+    const vector<GridPointSource *> &point_sources) {
+  clearSourceTimeFuncCache();
+  for (const GridPointSource *ps : point_sources)
+    if (!ps->hasScalarTimeFunc())
+      return; // keep using GridPointSource::getFxyz
+  const size_t n = point_sources.size();
+  SourceTimeFuncCache &c = m_srcTFcache;
+  c.tf.resize(n);
+  c.forces.resize(3 * n);
+  // Sources sharing a time function share its mPar array, so hash on that pointer
+  std::unordered_map<const float_sw4 *, std::vector<int>> byPar;
+  for (size_t s = 0; s < n; s++) {
+    const GridPointSource *ps = point_sources[s];
+    std::vector<int> &cand = byPar[ps->getTimeFuncPar()];
+    int u = -1;
+    for (int c0 : cand)
+      if (ps->sameTimeFunc(*c.rep[c0])) {
+        u = c0;
+        break;
+      }
+    if (u < 0) {
+      u = c.rep.size();
+      c.rep.push_back(ps);
+      cand.push_back(u);
+    }
+    c.tf[s] = u;
+    for (int m = 0; m < 3; m++)
+      c.forces[3 * s + m] = ps->getForces()[m];
+  }
+  c.val.resize(c.rep.size());
+  c.key = point_sources.data();
+  c.n = n;
+  if (!mQuiet && m_myRank == 0 && mVerbose >= 2)
+    cout << "rank 0: " << n << " grid point sources share " << c.rep.size()
+         << " distinct time functions" << endl;
+}
+
+void EW::clearSourceTimeFuncCache() { m_srcTFcache = SourceTimeFuncCache(); }
+
+bool EW::useSourceTimeFuncCache(
+    const vector<GridPointSource *> &point_sources) const {
+  return m_srcTFcache.key != nullptr &&
+         m_srcTFcache.key == point_sources.data() &&
+         m_srcTFcache.n == point_sources.size();
+}
+
+void EW::evalSourceTimeFuncs(float_sw4 a_t, bool tt) {
+  const int nu = m_srcTFcache.rep.size();
+  const GridPointSource *const *rep = m_srcTFcache.rep.data();
+  float_sw4 *val = m_srcTFcache.val.data();
+  if (tt) {
+#pragma omp parallel for
+    for (int u = 0; u < nu; u++)
+      val[u] = rep[u]->evalTimeFunc_tt(a_t);
+  } else {
+#pragma omp parallel for
+    for (int u = 0; u < nu; u++)
+      val[u] = rep[u]->getTimeFunc(a_t);
+  }
+}
+
 void EW::sort_grid_point_sources(vector<GridPointSource *> &point_sources,
                                  vector<int> &identsources) {
   size_t *gptr = new size_t[mNumberOfGrids];

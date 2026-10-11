@@ -244,6 +244,12 @@ void exactRhsTwilight(float_sw4 a_t, vector<Sarray> & a_F);
 void exactAccTwilight(float_sw4 a_t, vector<Sarray> & a_Uacc);
 void Force(float_sw4 a_t, vector<Sarray> & a_F, const vector<GridPointSource*>& point_sources, const vector<int>& identsources );
 void Force_tt(float_sw4 a_t, vector<Sarray> & a_F, const vector<GridPointSource*>& point_sources, const vector<int>& identsources );
+// Cache of the distinct time functions used by the grid point sources (many grid point
+// sources, e.g. all those spread from one rupture subfault, share a time function).
+// Force/Force_tt then evaluate each time function once per call instead of once per
+// grid point source. Only used for the point_sources vector it was built for.
+void buildSourceTimeFuncCache( const vector<GridPointSource*>& point_sources );
+void clearSourceTimeFuncCache();
 void sort_grid_point_sources( vector<GridPointSource*>& point_sources, vector<int>& identsources );
 
 void normOfDifference( vector<Sarray> & a_Uex,  vector<Sarray> & a_U, float_sw4 &diffInf, float_sw4 &diffL2, float_sw4 &xInf,
@@ -1507,6 +1513,17 @@ vector<Sarray> mRho;
 vector<Sarray*> mMuVE, mLambdaVE;// Attenuation material
 vector<Sarray> mC; // Anisotropic material parameters
 Sarray mCcurv; // Anisotropic material with metric (on curvilinear grid).
+
+struct SourceTimeFuncCache {
+   const GridPointSource* const* key = nullptr; // point_sources.data() it was built for
+   size_t n = 0;                                 // point_sources.size() it was built for
+   std::vector<int> tf;                          // time function index of each source
+   std::vector<const GridPointSource*> rep;      // one representative source per time function
+   std::vector<float_sw4> forces;                // 3 force components per source
+   std::vector<float_sw4> val;                   // time function values at the current time
+} m_srcTFcache;
+bool useSourceTimeFuncCache( const vector<GridPointSource*>& point_sources ) const;
+void evalSourceTimeFuncs( float_sw4 a_t, bool tt );
 
 // Store coefficeints needed for Mesh refinement
 vector<Sarray> m_Morf, m_Mlrf, m_Mufs, m_Mlfs, m_Morc, m_Mlrc, m_Mucs, m_Mlcs;

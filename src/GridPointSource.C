@@ -530,6 +530,21 @@ void GridPointSource::limitFrequency(float_sw4 max_freq)
 }
 
 //-----------------------------------------------------------------------
+bool GridPointSource::hasScalarTimeFunc() const
+{
+  return m_derivative == -1 && mTimeDependence != iDiscrete6moments &&
+         mTimeDependence != iDiscrete3forces;
+}
+
+//-----------------------------------------------------------------------
+bool GridPointSource::sameTimeFunc( const GridPointSource& o ) const
+{
+  return mTimeFunc == o.mTimeFunc && mTimeFunc_tt == o.mTimeFunc_tt &&
+         mFreq == o.mFreq && mT0 == o.mT0 && mPar == o.mPar && mNpar == o.mNpar &&
+         mIpar == o.mIpar && mNipar == o.mNipar;
+}
+
+//-----------------------------------------------------------------------
 float_sw4 GridPointSource::getTimeFunc(float_sw4 t) const
 {
   return mTimeFunc(mFreq, t - mT0, mPar, mNpar, mIpar, mNipar);
