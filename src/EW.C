@@ -9760,7 +9760,7 @@ void EW::buildSourceTimeFuncCache(
   c.n = n;
   if (!mQuiet && m_myRank == 0 && mVerbose >= 2)
     cout << "rank 0: " << n << " grid point sources share " << c.rep.size()
-         << " distinct time functions" << endl;
+         << " distinct time functions\n";
 }
 
 void EW::clearSourceTimeFuncCache() { m_srcTFcache = SourceTimeFuncCache(); }
@@ -9776,15 +9776,12 @@ void EW::evalSourceTimeFuncs(float_sw4 a_t, bool tt) {
   const int nu = m_srcTFcache.rep.size();
   const GridPointSource *const *rep = m_srcTFcache.rep.data();
   float_sw4 *val = m_srcTFcache.val.data();
-  if (tt) {
+  // Force uses the time function, Force_tt its second derivative
+  float_sw4 (GridPointSource::*timefunc)(float_sw4) const =
+      tt ? &GridPointSource::evalTimeFunc_tt : &GridPointSource::getTimeFunc;
 #pragma omp parallel for
-    for (int u = 0; u < nu; u++)
-      val[u] = rep[u]->evalTimeFunc_tt(a_t);
-  } else {
-#pragma omp parallel for
-    for (int u = 0; u < nu; u++)
-      val[u] = rep[u]->getTimeFunc(a_t);
-  }
+  for (int u = 0; u < nu; u++)
+    val[u] = (rep[u]->*timefunc)(a_t);
 }
 
 void EW::sort_grid_point_sources(vector<GridPointSource *> &point_sources,
