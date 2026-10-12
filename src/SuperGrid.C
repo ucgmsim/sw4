@@ -32,6 +32,8 @@
 #include "SuperGrid.h"
 #include "Require.h"
 #include <cstdio>
+#include <cmath>
+#include <vector>
 using namespace std;
 
 SuperGrid::SuperGrid()
@@ -220,4 +222,113 @@ void SuperGrid::set_twilight( float_sw4 omega )
 void SuperGrid::set_eps( float_sw4 new_eps )
 {
    m_epsL = new_eps;
+}
+
+//-----------------------------------------------------------------------
+// Spectral radius of the 1-D supergrid damping operator, per unit damping
+// coefficient (the 'dc' of the supergrid command).
+//
+// Why it matters. After each predictor-corrector step SW4 subtracts
+//    dc * D (u^n - u^{n-1}),   D = diag(str) * B^T diag(a) B
+// (addsgd4_ci: B = second difference, a = dcx; addsgd6_ci: B = third
+// difference, a = dcx averaged to half points). Freezing coefficients, a mode
+// with -dt^2 L -> mu >= 0 and dc*D -> d >= 0 obeys
+//    z^2 - (2 - g - d) z + (1 - d) = 0,   g = mu - mu^2/12,
+// whose roots stay in the unit disk iff 0 <= d < 2 and 0 <= g <= 4 - 2d.
+// The CFL limit (mu <= 12) only guarantees 0 <= g <= 3, so the damping is
+// harmless at every stable time step iff d <= 1/2. For d > 1/2 the modes with
+// mu in 6 -/+ sqrt(24d-12) grow: the run turns unstable once the time step is
+// large enough for mu to reach that band, and for d >= 2 at any time step.
+//
+// d is not bounded by the constant-coefficient symbol (16 at 4th order, 64 at
+// 6th): the product str(i)*a(i+1) ~ phi(i)/phi(i+1) and the stretching phi
+// falls like (distance to the boundary)^6 towards epsL, so the neighbour
+// ratios, and with them the largest eigenvalue, grow as the layer gets
+// narrower in grid points (4th order: ~16.4 at 60 points, 17.7 at 30, 20 at
+// 20, 33 at 12, 59 at 6). With the default dc=0.02 a 12-point layer has
+// d ~ 0.67 and grows without bound at CFL >= 1.
+//
+// D is self-adjoint in the 1/str-weighted inner product, so its eigenvalues
+// are those of the symmetric banded matrix G = S^(1/2) B^T A B S^(1/2),
+// S = diag(str). The largest one is found by bisection: sigma > lambda_max(G)
+// iff sigma*I - G has a Cholesky factorisation. Density is taken constant
+// (the kernel's rho(i+-1)/rho(i) factors are ~1 for smooth material).
+double SuperGrid::damping_spectral_radius( float_sw4 xmin, float_sw4 h, int n, int order ) const
+{
+   if( !is_active() || n < 1 )
+      return 0;
+   const int p = order == 6 ? 3 : 2;          // half band width of G
+   // difference stencil rows m (B_m u = sum_q w[q] u_{m+q-off})
+   const double w4[3] = {1, -2, 1}, w6[4] = {-1, 3, -3, 1};
+   const double* w = order == 6 ? w6 : w4;
+   const int nw = order == 6 ? 4 : 3, off = 1;  // stencil covers m-1 .. m-1+nw-1
+   // grid index i = 1..n; rows m whose stencil touches 1..n: m = 2-nw+off .. n+off
+   const int mlo = 2-nw+off, mhi = n+off;
+   std::vector<double> a(mhi-mlo+1), sq(n+1);
+   for( int m=mlo ; m <= mhi ; m++ )
+   {
+      if( order == 6 ) // half point m+1/2
+         a[m-mlo] = 0.5*( dampingCoeff(xmin+(m-1)*h) + dampingCoeff(xmin+m*h) );
+      else
+         a[m-mlo] = dampingCoeff(xmin+(m-1)*h);
+   }
+   for( int i=1 ; i <= n ; i++ )
+      sq[i] = sqrt( (double)stretching(xmin+(i-1)*h) );
+
+   // lower band of G: g[(i-1)*(p+1)+(i-j)] = G(i,j), 0 <= i-j <= p
+   std::vector<double> g((size_t)n*(p+1), 0.0);
+   for( int m=mlo ; m <= mhi ; m++ )
+      for( int q1=0 ; q1 < nw ; q1++ )
+      {
+         int i = m - off + q1;
+         if( i < 1 || i > n ) continue;
+         for( int q2=0 ; q2 <= q1 ; q2++ )
+         {
+            int j = m - off + q2;
+            if( j < 1 ) continue;
+            g[(size_t)(i-1)*(p+1)+(i-j)] += w[q1]*a[m-mlo]*w[q2]*sq[i]*sq[j];
+         }
+      }
+   // Gershgorin bound as the upper end of the bisection interval
+   double hi = 0;
+   {
+      std::vector<double> rs(n+1, 0.0);
+      for( int i=1 ; i <= n ; i++ )
+         for( int k=0 ; k <= p && i-k >= 1 ; k++ )
+         {
+            double v = fabs(g[(size_t)(i-1)*(p+1)+k]);
+            rs[i] += v;
+            if( k > 0 ) rs[i-k] += v;
+         }
+      for( int i=1 ; i <= n ; i++ )
+         hi = rs[i] > hi ? rs[i] : hi;
+   }
+   if( hi == 0 )
+      return 0;
+   double lo = 0;
+   std::vector<double> L((size_t)n*(p+1));
+   for( int it=0 ; it < 60 && hi-lo > 1e-6*hi ; it++ )
+   {
+      double sigma = 0.5*(lo+hi);
+      bool pd = true;
+      for( int i=1 ; i <= n && pd ; i++ )
+         for( int j=(i-p > 1 ? i-p : 1) ; j <= i ; j++ )
+         {
+            double s = (i == j ? sigma : 0) - g[(size_t)(i-1)*(p+1)+(i-j)];
+            for( int k=(i-p > 1 ? i-p : 1) ; k < j ; k++ )
+               s -= L[(size_t)(i-1)*(p+1)+(i-k)]*L[(size_t)(j-1)*(p+1)+(j-k)];
+            if( i == j )
+            {
+               if( s <= 0 ) { pd = false; break; }
+               L[(size_t)(i-1)*(p+1)] = sqrt(s);
+            }
+            else
+               L[(size_t)(i-1)*(p+1)+(i-j)] = s/L[(size_t)(j-1)*(p+1)];
+         }
+      if( pd )
+         hi = sigma;
+      else
+         lo = sigma;
+   }
+   return hi;
 }
