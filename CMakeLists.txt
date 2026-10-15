@@ -134,6 +134,19 @@ if(USE_HDF5)
       "Point CMake at a parallel build, e.g. -DHDF5_DIR=<prefix>/lib/cmake/hdf5 "
       "or -DHDF5_PREFER_PARALLEL=ON, or configure with -DUSE_HDF5=OFF.")
   endif()
+
+  # The station time-series file is built through a page buffer (sachdf5.C).
+  # Parallel HDF5 before 1.14.5 refuses a page buffer on any file, even one
+  # opened with the serial driver ("page buffering is disabled for parallel"),
+  # which leaves the file empty. Use the unpaged layout there.
+  set(SW4_HDF5_PAGED_MIN_VERSION 1.14.5)
+  if(NOT HDF5_VERSION OR HDF5_VERSION VERSION_LESS SW4_HDF5_PAGED_MIN_VERSION)
+    set(SW4_HDF5_NO_PAGED ON)
+    message(STATUS "HDF5 ${HDF5_VERSION} < ${SW4_HDF5_PAGED_MIN_VERSION}: "
+      "station HDF5 files are written unpaged (SW4_HDF5_PAGED is ignored)")
+  else()
+    set(SW4_HDF5_NO_PAGED OFF)
+  endif()
 endif()
 
 option(USE_ZFP "Use ZFP compression." OFF)
@@ -259,6 +272,9 @@ endif()
 
 if(USE_HDF5 AND HDF5_FOUND)
   target_compile_definitions(sw4_config INTERFACE USE_HDF5)
+  if(SW4_HDF5_NO_PAGED)
+    target_compile_definitions(sw4_config INTERFACE SW4_HDF5_NO_PAGED)
+  endif()
 endif()
 
 if(USE_ZFP)
