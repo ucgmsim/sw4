@@ -47,6 +47,7 @@ def execute(cfg: Config, case: Case, run: Run) -> int:
     cmd = [*cfg.mpi_command(run.ranks), cfg.sw4, inp.name]
     env = dict(os.environ)
     env["OMP_NUM_THREADS"] = str(run.threads)
+    env.update(run.env)
     print("cwd:", run_dir)
     print("cmd:", " ".join(cmd), flush=True)
     t0 = time.monotonic()

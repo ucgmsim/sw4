@@ -786,16 +786,20 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   r3 = r3 + ghcof(nk-k+1)*c(15,i,j,nk)*u(1,i,j,nk+1) + 
      ghcof(nk-k+1)*c(17,i,j,nk)*u(2,i,j,nk+1) + 
      ghcof(nk-k+1)*c(18,i,j,nk)*u(3,i,j,nk+1);
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+// Constant trip-count loops (qq,mm = 1..8) rather than q,m = nk-7..nk: with
+// the runtime bounds the compiler does not fully unroll and fold these
+// loops, which made the isotropic curvilinear upper closure 4.5x slower per
+// point than the lower one. Same arithmetic in the same order: bit-identical.
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
   ac1=0;
   ac2=0;
   ac3=0;
   ac4=0;
   ac5=0;
   ac6=0;
-  for(int m=nk-7; m <= nk; m++ ) 
- {
+  for(int mm=1; mm <= 8; mm++ ) 
+ { const int m = nk-8+mm;
   ac1=  ac1+ acof(nk-k+1,nk-q+1,nk-m+1)*c(13,i,j,m); 
   ac2=  ac2+ acof(nk-k+1,nk-q+1,nk-m+1)*c(14,i,j,m); 
   ac3=  ac3+ acof(nk-k+1,nk-q+1,nk-m+1)*c(15,i,j,m); 
@@ -910,8 +914,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   dum1=0;
   dup1=0;
   dup2=0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
   dup2 = dup2 -bop(nk-k+1,nk-q+1)*u(1,i+2,j,q);
   dup1 = dup1 -bop(nk-k+1,nk-q+1)*u(1,i+1,j,q);
   dum1 = dum1 -bop(nk-k+1,nk-q+1)*u(1,i-1,j,q);
@@ -929,8 +933,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   dum1=0;
   dup1=0;
   dup2=0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
   dup2 = dup2 -bop(nk-k+1,nk-q+1)*u(2,i+2,j,q);
   dup1 = dup1 -bop(nk-k+1,nk-q+1)*u(2,i+1,j,q);
   dum1 = dum1 -bop(nk-k+1,nk-q+1)*u(2,i-1,j,q);
@@ -948,8 +952,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   dum1=0;
   dup1=0;
   dup2=0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
   dup2 = dup2 -bop(nk-k+1,nk-q+1)*u(3,i+2,j,q);
   dup1 = dup1 -bop(nk-k+1,nk-q+1)*u(3,i+1,j,q);
   dum1 = dum1 -bop(nk-k+1,nk-q+1)*u(3,i-1,j,q);
@@ -966,8 +970,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   ac1 = 0;
   ac2 = 0;
   ac3 = 0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
      du = a2*(u(1,i+2,j,q)-u(1,i-2,j,q))+
      a1*( u(1,i+1,j,q)-u(1,i-1,j,q));;
      ac1 = ac1-bop(nk-k+1,nk-q+1)*c(28,i,j,q)*du;
@@ -983,8 +987,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   ac1 = 0;
   ac2 = 0;
   ac3 = 0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
      du = a2*(u(2,i+2,j,q)-u(2,i-2,j,q))+
      a1*( u(2,i+1,j,q)-u(2,i-1,j,q));;
      ac1 = ac1-bop(nk-k+1,nk-q+1)*c(31,i,j,q)*du;
@@ -1000,8 +1004,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   ac1 = 0;
   ac2 = 0;
   ac3 = 0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
      du = a2*(u(3,i+2,j,q)-u(3,i-2,j,q))+
      a1*( u(3,i+1,j,q)-u(3,i-1,j,q));;
      ac1 = ac1-bop(nk-k+1,nk-q+1)*c(34,i,j,q)*du;
@@ -1018,8 +1022,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   dum1=0;
   dup1=0;
   dup2=0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
   dup2 = dup2 -bop(nk-k+1,nk-q+1)*u(1,i,j+2,q);
   dup1 = dup1 -bop(nk-k+1,nk-q+1)*u(1,i,j+1,q);
   dum1 = dum1 -bop(nk-k+1,nk-q+1)*u(1,i,j-1,q);
@@ -1037,8 +1041,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   dum1=0;
   dup1=0;
   dup2=0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
   dup2 = dup2 -bop(nk-k+1,nk-q+1)*u(2,i,j+2,q);
   dup1 = dup1 -bop(nk-k+1,nk-q+1)*u(2,i,j+1,q);
   dum1 = dum1 -bop(nk-k+1,nk-q+1)*u(2,i,j-1,q);
@@ -1056,8 +1060,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   dum1=0;
   dup1=0;
   dup2=0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
   dup2 = dup2 -bop(nk-k+1,nk-q+1)*u(3,i,j+2,q);
   dup1 = dup1 -bop(nk-k+1,nk-q+1)*u(3,i,j+1,q);
   dum1 = dum1 -bop(nk-k+1,nk-q+1)*u(3,i,j-1,q);
@@ -1074,8 +1078,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   ac1 = 0;
   ac2 = 0;
   ac3 = 0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
      du = a2*(u(1,i,j+2,q)-u(1,i,j-2,q))+
      a1*( u(1,i,j+1,q)-u(1,i,j-1,q));;
      ac1 = ac1-bop(nk-k+1,nk-q+1)*c(37,i,j,q)*du;
@@ -1091,8 +1095,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   ac1 = 0;
   ac2 = 0;
   ac3 = 0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
      du = a2*(u(2,i,j+2,q)-u(2,i,j-2,q))+
      a1*( u(2,i,j+1,q)-u(2,i,j-1,q));;
      ac1 = ac1-bop(nk-k+1,nk-q+1)*c(40,i,j,q)*du;
@@ -1108,8 +1112,8 @@ void ilanisocurv_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
   ac1 = 0;
   ac2 = 0;
   ac3 = 0;
-  for(int q=nk-7; q <= nk; q++ ) 
- {
+  for(int qq=1; qq <= 8; qq++ ) 
+ { const int q = nk-8+qq;
      du = a2*(u(3,i,j+2,q)-u(3,i,j-2,q))+
      a1*( u(3,i,j+1,q)-u(3,i,j-1,q));;
      ac1 = ac1-bop(nk-k+1,nk-q+1)*c(43,i,j,q)*du;

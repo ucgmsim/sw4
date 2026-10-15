@@ -56,7 +56,7 @@ public:
   enum receiverMode{Displacement, Div, Curl, Strains, Velocity, DisplacementGradient /*, DivVelo, CurlVelo, StrainsVelo */ };
 
 TimeSeries( EW* a_ew, std::string fileName, std::string staName, receiverMode mode, bool sacFormat, bool usgsFormat, bool hdf5Format, std::string hdf5FileName,
-	    float_sw4 x, float_sw4 y, float_sw4 z, bool topoDepth, int writeEvery, int downSample, bool xyzcomponent=true, int event=0,
+	    double x, double y, double z, bool topoDepth, int writeEvery, int downSample, bool xyzcomponent=true, int event=0,
 	    bool deferCollectives=false, float_sw4 precomputedZTopo=0.0 );
 ~TimeSeries();
 
@@ -83,15 +83,15 @@ receiverMode getMode(){ return m_mode; }
 
 int getUseHDF5(){ return m_hdf5Format; }
 
-float_sw4 getX() const {return mX;}
-float_sw4 getY() const {return mY;}
-float_sw4 getZ() const {return mZ;}
+double getX() const {return mX;}
+double getY() const {return mY;}
+double getZ() const {return mZ;}
 
 // The grid point the station is actually recorded at, which is what the
 // supergrid predicate must be evaluated on - not the requested location.
-float_sw4 getGPX() const {return mGPX;}
-float_sw4 getGPY() const {return mGPY;}
-float_sw4 getGPZ() const {return mGPZ;}
+double getGPX() const {return mGPX;}
+double getGPY() const {return mGPY;}
+double getGPZ() const {return mGPZ;}
 
 // Cached result of is_in_supergrid_layer(), so the SAC/USGS/HDF5 writers need
 // no round trip to EW. Three states, matching the downstream convention:
@@ -108,8 +108,8 @@ bool getZtype() const {return m_zRelativeToTopography;}
 float_sw4 getStartTime() const { return m_t0;}
 float_sw4 getTimeShift() const { return m_shift;}
 
-float_sw4 getLat() const {return m_rec_lat;}
-float_sw4 getLon() const {return m_rec_lon;}
+double getLat() const {return m_rec_lat;}
+double getLon() const {return m_rec_lon;}
 float_sw4 getXaz() const {return m_x_azimuth;}
 
 int getMUTC(int i) const {return m_utc[i];}
@@ -237,7 +237,9 @@ bool m_myPoint; // set to true if this processor writes to the arrays
 
 std::string m_fileName, m_staName, m_hdf5Name;
 
-float_sw4 mX, mY, mZ, mGPX, mGPY, mGPZ; // original and actual location
+// Receiver coordinates are double in every build: in float builds x,y of a
+// station 100s of km from the origin lose ~1 cm, and its lat/lon ~1 m.
+double mX, mY, mZ, mGPX, mGPY, mGPZ; // original and actual location
 
 // How far the recording point is inside the supergrid absorbing layer:
 // 0 = interior, > 0 = inside. Filled by is_in_supergrid_layer().
@@ -271,7 +273,8 @@ float**  mRecordedFloats;
 
 // sac header data
 int mEventYear, mEventMonth, mEventDay, mEventHour, mEventMinute;
-float_sw4 mEventSecond, m_rec_lat, m_rec_lon, m_rec_gp_lat, m_rec_gp_lon;
+float_sw4 mEventSecond;
+double m_rec_lat, m_rec_lon, m_rec_gp_lat, m_rec_gp_lon;
 float_sw4 m_epi_lat, m_epi_lon, m_epi_depth, m_epi_time_offset, m_x_azimuth;
 
 // sac ascii or binary?

@@ -65,6 +65,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <algorithm>
@@ -149,6 +150,20 @@ int gcd( int a, int b )
 //}
 
 //-----------------------------------------------------------------------
+bool EW::readInputLine(std::istream& in, std::vector<char>& buf)
+{
+  // std::getline has no length limit. istream::getline(buf, 256) used to set the
+  // failbit on a longer line, after which every read failed without reaching
+  // eof and the reading loops spun forever.
+  std::string line;
+  if (!std::getline(in, line))
+    return false;
+  buf.assign(line.begin(), line.end());
+  buf.push_back('\0');
+  return true;
+}
+
+//-----------------------------------------------------------------------
 bool EW::startswith(const char begin[], char *line)
 {
   int lenb = strlen(begin);
@@ -193,7 +208,7 @@ void EW::deprecatedOption(const string& command,
 bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 			 vector< vector<TimeSeries*> > & a_GlobalTimeSeries )
 {
-  char buffer[256];
+  std::vector<char> lineBuf;
   ifstream inputFile;
   int blockCount=0;
   int ablockCount=0;
@@ -214,9 +229,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 //  cout << "********Reading the input file, proc=" << m_myRank << endl;
 
 // First process Geodyn input for restrictions of allowable grid sizes.
- while (!inputFile.eof())
+ while (readInputLine(inputFile, lineBuf))
  {
-    inputFile.getline(buffer, 256);
+    char* buffer = lineBuf.data();
     if( startswith("geodynbc",buffer ) )
        geodynFindFile(buffer);
  }
@@ -225,9 +240,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 
 // process the testrayleigh command to enable a periodic domain in the (x,y)-directions
 // these commands can enter data directly the object (this->)
-  while (!inputFile.eof())
+  while (readInputLine(inputFile, lineBuf))
   {    
-     inputFile.getline(buffer, 256);
+     char* buffer = lineBuf.data();
      if (startswith("testrayleigh", buffer) )
      {
        m_doubly_periodic = true;
@@ -264,9 +279,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 //---------------------------------------------------------------
 
 // these commands can enter data directly into the object (this->)
-  while (!inputFile.eof())
+  while (readInputLine(inputFile, lineBuf))
   {    
-     inputFile.getline(buffer, 256);
+     char* buffer = lineBuf.data();
      if( startswith("grid", buffer) )
      {
        foundGrid = true;
@@ -448,9 +463,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
   //----------------------------------------------------------
   // Now onto the rest of the input file...
   //----------------------------------------------------------
-  while (!inputFile.eof())
+  while (readInputLine(inputFile, lineBuf))
   {
-     inputFile.getline(buffer, 256);
+     char* buffer = lineBuf.data();
 
      if (strlen(buffer) > 0) // empty lines produce this
      {
@@ -570,10 +585,8 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
        }
        else if( startswith("randomblock", buffer ) )
           processRandomBlock(buffer);
-       else if (!inputFile.eof() && m_myRank == 0)
+       else if (m_myRank == 0)
        {
-	 // Maybe just reached eof, don't want to echo
-	 // the ignoring command line for nothing
 	 cout << "*** Ignoring command: '" << buffer << "'" << endl;
        }
      } // end if strlen(buffer) > 0
@@ -648,6 +661,11 @@ void EW::processGrid(char* buffer)
   bool latSet = false, lonSet = false, lon_p_set=false, lat_p_set=false, datum_set=false;
   bool ellps_set=false, proj_set=false;
   bool use_geoprojection=false;
+  bool scale_set=false;
+  double scale_k0=1.0;
+  string projName = "utm"; // the default projection
+  double lon_p = 0;
+  int utmZone = 0;
   
   stringstream proj0;
 
@@ -823,9 +841,17 @@ void EW::processGrid(char* buffer)
      {
         token +=5;
 // accumulate new style string
-        proj0 << "+proj=" << token;
+        proj0 << " +proj=" << token;
 	use_geoprojection = true;
         proj_set=true;
+        projName = token;
+     }
+     else if( startswith("zone=",token))
+     {
+        token +=5;
+        utmZone = atoi(token);
+        CHECK_INPUT( 1 <= utmZone && utmZone <= 60, "grid: UTM zone must be 1 to 60, not " << token );
+	use_geoprojection = true;
      }
 //                        123456789
      else if( startswith("ellps=",token))
@@ -848,7 +874,8 @@ void EW::processGrid(char* buffer)
      else if( startswith("lon_p=",token))
      {
         token +=6;
-        proj0 << " +lon_0=" << atof(token);
+        lon_p = atof(token);
+        proj0 << " +lon_0=" << lon_p;
 	use_geoprojection = true;
         lon_p_set=true;
      }
@@ -863,8 +890,13 @@ void EW::processGrid(char* buffer)
 //                        123456789
      else if( startswith("scale=",token))
      {
+// Scale factor on the central meridian (tmerc etc). PROJ calls it k_0; an
+// unknown +scale parameter would be silently ignored. Appended after the
+// other parameters, see below.
         token +=6;
-        proj0 << " +scale=" << atof(token);
+        scale_k0 = atof(token);
+        CHECK_INPUT( scale_k0 > 0.0, err << "scale must be a positive float, not: " << token );
+        scale_set = true;
 	use_geoprojection = true;
      }
      else
@@ -957,8 +989,11 @@ void EW::processGrid(char* buffer)
   {
      if (!proj_set)
      {
-// Default projection: Universal Transverse Mercator (UTM)
-        proj0 << " +proj=utm";
+// Default projection: Universal Transverse Mercator (UTM). +proj must come
+// first: PROJ >= 6 does not take ' +ellps=... +proj=utm' as a CRS.
+        const string rest = proj0.str();
+        proj0.str("");
+        proj0 << "+proj=utm" << rest;
      }
 
      if (!ellps_set && !datum_set)
@@ -978,6 +1013,19 @@ void EW::processGrid(char* buffer)
      {
         proj0 << " +lat_0=" << mLatOrigin;
      }
+
+// PROJ >= 6 needs the UTM zone (it no longer takes it from +lon_0): use the zone
+// of lon_p if given, else of the origin, and the hemisphere of the origin.
+     if (projName == "utm")
+     {
+        if (utmZone == 0)
+           utmZone = std::min(60, std::max(1, static_cast<int>(floor(((lon_p_set ? lon_p : mLonOrigin) + 180.0)/6.0)) + 1));
+        proj0 << " +zone=" << utmZone;
+        if (mLatOrigin < 0)
+           proj0 << " +south";
+     }
+     else
+        CHECK_INPUT( utmZone == 0, "grid: zone= only applies to proj=utm, not proj=" << projName );
   }
 
   float_sw4 cubelen, zcubelen, hcube;
@@ -1285,10 +1333,26 @@ void EW::processGrid(char* buffer)
 #endif
   if( use_geoprojection )
   {
+// PROJ rejects a definition that starts with white space; the tokens above
+// all start with " +" since the keywords may come in any order.
+     string pstr = proj0.str();
+     pstr.erase(0, pstr.find_first_not_of(" \t"));
+     if( scale_set )
+     {
+#if defined(ENABLE_PROJ)
+        CHECK_INPUT( GeographicProjection::scaleFactorHasEffect( pstr, mLonOrigin, mLatOrigin ),
+                     "ERROR: grid scale=" << scale_k0 << " has no effect with the projection '" << pstr
+                     << "' (PROJ ignores +k_0 for it, e.g. utm fixes k_0=0.9996). Remove scale= or use "
+                     "a projection with a scale factor such as proj=tmerc." );
+#endif
+        stringstream k0;
+        k0 << " +k_0=" << setprecision(15) << scale_k0;
+        pstr += k0.str();
+     }
 // tmp
-//     cout << "New proj4 string: '" << proj0.str() << "'" << endl;
+//     cout << "New proj4 string: '" << pstr << "'" << endl;
 
-     m_geoproj = new GeographicProjection( mLonOrigin, mLatOrigin, proj0.str(), mGeoAz );
+     m_geoproj = new GeographicProjection( mLonOrigin, mLatOrigin, pstr, mGeoAz );
   }
   else
      m_geoproj = static_cast<GeographicProjection*>(0);
@@ -2069,6 +2133,12 @@ void EW::processDeveloper(char* buffer)
 	// failonnan requires the NaN checks to actually run
 	if( m_failonnan )
 	   m_checkfornan = true;
+     }
+     else if( startswith("divergencelimit=",token) )
+     {
+	// Escape hatch for the max|U| divergence abort (solve.C). <= 0 disables.
+	token += 16;
+	m_divergence_limit = atof(token);
      }
      else if( startswith("allowsourceinsupergrid=",token) )
      {
@@ -3120,11 +3190,11 @@ void EW::processGeodynbc(char* buf)
    float_sw4 srcx0, srcy0, srcz0, h, toff;
 
    bool timestepset = false, nstepsset=false, toffset=false;
-   char buffer[256];
+   std::vector<char> lineBuf;
    bool done = false;
-   while (!geodynfile.eof() && !done )
+   while (!done && readInputLine(geodynfile, lineBuf))
    {
-      geodynfile.getline(buffer,256);
+      char* buffer = lineBuf.data();
       if (startswith("#", buffer) || startswith("\n", buffer) || buffer == "\0" )
          break;
       if( startswith("begindata",buffer) )
@@ -3389,13 +3459,13 @@ void EW::geodynbcGetSizes( string filename, float_sw4 origin[3], float_sw4 &cube
    double x0, y0, z0, elev, h;
    adjust=1;
 
-   char buffer[256];
+   std::vector<char> lineBuf;
    bool done = false;
    bool nxfound=false, nyfound=false, nzfound=false, x0found=false, y0found=false, z0found=false;
    bool latfound=false, lonfound=false, azfound=false, hfound=false, elevfound=false;
-   while (!geodynfile.eof() && !done )
+   while (!done && readInputLine(geodynfile, lineBuf))
    {
-      geodynfile.getline(buffer,256);
+      char* buffer = lineBuf.data();
       if (startswith("#", buffer) || startswith("\n", buffer) || buffer == "\0" )
          break;
       if( startswith("begindata",buffer) )
@@ -4107,7 +4177,6 @@ void EW::processCheckPoint(char* buffer)
    string err = "CheckPoint Error: ";
    int cycle=-1, cycleInterval=0;
    float_sw4 time=0.0, timeInterval=0.0;
-   bool timingSet=false;
    string filePrefix = "checkpoint";
 
    string restartFileName, restartPath;
@@ -4121,19 +4190,22 @@ void EW::processCheckPoint(char* buffer)
     {
        if (startswith("#", token) || startswith(" ", buffer))
           break;
-       //      if (startswith("cycle=", token) )
-       //      {
-       //	 token += 6; // skip cycle=
-       //	 CHECK_INPUT( atoi(token) >= 0., err << "cycle must be a non-negative integer, not: " << token);
-       //	 cycle = atoi(token);
-       //	 timingSet = true;
-       //      }
-      if (startswith("cycleInterval=", token) )
+      // A single checkpoint after time step `cycle` (CheckPoint::timeToWrite).
+      if (startswith("cycle=", token) )
+      {
+	 token += 6; // skip cycle=
+	 CHECK_INPUT( atoi(token) >= 1, err << "cycle must be a positive integer, not: " << token);
+	 cycle = atoi(token);
+      }
+      else if (startswith("time=", token) || startswith("timeInterval=", token) )
+      {
+	 CHECK_INPUT( false, err << "checkpoint is written by time step only; use cycle= or cycleInterval=, not " << token);
+      }
+      else if (startswith("cycleInterval=", token) )
       {
 	 token += 14; // skip cycleInterval=
 	 CHECK_INPUT( atoi(token) >= 0., err << "cycleInterval must be a non-negative integer, not: " << token);
 	 cycleInterval = atoi(token);
-	 timingSet = true;
       }
       else if (startswith("file=", token))
       {
@@ -4242,7 +4314,7 @@ void EW::processCheckPoint(char* buffer)
 
    if( m_check_point == CheckPoint::nil )
       m_check_point = new CheckPoint(this);
-   if( cycleInterval > 0 )
+   if( cycleInterval > 0 || cycle > 0 )
       m_check_point->set_checkpoint_file( filePrefix, cycle, cycleInterval, bufsize, useHDF5, compressionMode, compressionPar );
    if( restartFileGiven )
    {
@@ -9422,7 +9494,7 @@ void EW::processEvent( char* buffer, int enr )
 //-----------------------------------------------------------------------
 int EW::findNumberOfEvents()
 {
-   char buffer[256];
+   std::vector<char> lineBuf;
    ifstream inputFile;
    MPI_Barrier(MPI_COMM_WORLD);
    inputFile.open(mName.c_str());
@@ -9433,9 +9505,9 @@ int EW::findNumberOfEvents()
       CHECK_INPUT(false,"ERROR opening input file : " << mName << endl << endl);
    }
    int events=0;
-   while (!inputFile.eof())
+   while (readInputLine(inputFile, lineBuf))
    {
-      inputFile.getline(buffer, 256);
+      char* buffer = lineBuf.data();
       if( startswith("event",buffer ) )
       {
 	 processEvent( buffer, events );

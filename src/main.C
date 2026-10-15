@@ -32,6 +32,7 @@
 //#include "mpi.h"
 
 #include "EW.h"
+#include "sw4timer.h"
 
 #include <cstring>
 #include <string>
@@ -165,7 +166,9 @@ main(int argc, char **argv)
 #endif
 
 // make a new simulation object by reading the input file 'fileName'
+  SW4_TIMER_START("parse_input");
   EW simulation(fileName, GlobalSources, GlobalTimeSeries );
+  SW4_TIMER_STOP("parse_input");
 
   if (!simulation.wasParsingSuccessful())
   {
@@ -178,7 +181,9 @@ main(int argc, char **argv)
   else
   {
 // get the simulation object ready for time-stepping
+    SW4_TIMER_START("setupRun");
     simulation.setupRun( GlobalSources );
+    SW4_TIMER_STOP("setupRun");
 
     if (!simulation.isInitialized())
     { 
@@ -236,12 +241,15 @@ main(int argc, char **argv)
       int ng=simulation.mNumberOfGrids;
       vector<DataPatches*> upred_saved(ng), ucorr_saved(ng);
       vector<Sarray> U(ng), Um(ng), ph(ng);
+      SW4_TIMER_START("solve");
       simulation.solve( GlobalSources[0], GlobalTimeSeries[0], simulation.mMu, 
 			simulation.mLambda, simulation.mRho, U, Um, upred_saved, 
 			ucorr_saved, false, 0, 0, 0, ph );
+      SW4_TIMER_STOP("solve");
 
 // save all time series
       
+      SW4_TIMER_START("write_timeseries");
       double myWriteTime = 0.0, allWriteTime;
       for (int ts=0; ts<GlobalTimeSeries[0].size(); ts++)
       {
@@ -264,6 +272,10 @@ main(int argc, char **argv)
           cout << "  ==> Max wallclock time to write time-series data is " << allWriteTime << " seconds." << endl;
       }
 #endif
+      SW4_TIMER_STOP("write_timeseries");
+
+// Collective: every rank reaches this point.
+      SW4_TIMER_REPORT( MPI_COMM_WORLD, cout );
 
       if( myRank == 0 )
       {

@@ -1,4 +1,4 @@
-description = "PF-01/02: `prefilter type=lowpass order=4 passes=2` (the workflow's setting) on an SRF source (as the workflow uses it) applies a zero-phase 4th-order Butterworth: with the source starting late enough (tinit=12 s) for the filter's acausal precursor (~10 s at fc=0.5 Hz), the spectral ratio of filtered to unfiltered seismograms equals |H(f)|^2 with no time shift. PF-03: the same source starting at tinit=0, as the workflow's hypocentre does, loses the part of the precursor before t=0."
+description = "PF-01/02: `prefilter type=lowpass order=4 passes=2` (the workflow's setting) on an SRF source (as the workflow uses it) applies a zero-phase 4th-order Butterworth: with the source starting late enough (tinit=12 s) for the filter's acausal precursor (~10 s at fc=0.5 Hz), the spectral ratio of filtered to unfiltered seismograms equals |H(f)|^2 with no time shift. PF-03: the same source starting at tinit=0, as the workflow's hypocentre does, keeps the part of the precursor before t=0 (SW4 integrates from the earliest filtered source start, a pre-roll without output) and so gives the tinit=12 s seismograms shifted by 12 s."
 labels = ["prefilter"]
 input = "../equivalence/eq.in"
 generate = "eq"
@@ -51,4 +51,3 @@ runs = ["filtered", "filtered-tinit0"]
 shift = 12.0
 rtol = 0.01
 description = "A source starting at t=0 must give the same seismograms as one starting at 12 s, shifted."
-xfail = "Source::prepareTimeFunc extends a filtered SRF time series back by the 2-pass filter's precursor (~10 s at 0.5 Hz, ~4.5 s at the workflow's 1.1 Hz, ~18 s at 0.28 Hz), but the simulation starts at t=0, so for SRF points with small tinit (the hypocentre has tinit=0) the precursor is cut off."

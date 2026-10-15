@@ -35,6 +35,7 @@
 #include "EW.h"
 #include "Require.h"
 #include "Image.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -615,11 +616,11 @@ void Image::allocatePlane()
           
           if( m_double )
 	  {
-	    m_doubleField[g] = new double[npts];
+	    m_doubleField[g] = new double[npts]();  // zeroed: never write uninitialised memory
 	  }
           else // float
 	  {
-	    m_floatField[g] = new float[npts];
+	    m_floatField[g] = new float[npts]();  // zeroed: never write uninitialised memory
 	  }
           
           if (breakLoop) break;
@@ -1029,6 +1030,35 @@ void Image::copy2DArrayToImage(Sarray &u2)
 	    m_floatField[g][iField] = (float) u2(ii,jj,1);
  //	  iField++;      
 	}
+   }
+}
+
+//-----------------------------------------------------------------------
+// Set every point of this process's part of the image to value.
+void Image::fillImage(float_sw4 value)
+{
+   ASSERT(m_isDefinedMPIWriters);
+   if (!plane_in_proc(m_gridPtIndex[0]))
+      return;
+   int gmin, gmax;
+   if( mLocationType == Image::Z )
+      gmin = gmax = m_gridPtIndex[1];
+   else
+   {
+      gmin = 0;
+      gmax = mEW->mNumberOfGrids-1;
+   }
+   for (int g = gmin; g <= gmax; g++)
+   {
+      size_t npts = (size_t)(mWindow[g][1]-mWindow[g][0]+1)*(mWindow[g][3]-mWindow[g][2]+1)*
+	 (mWindow[g][5]-mWindow[g][4]+1);
+      if( m_double )
+      {
+	 if( m_doubleField[g] != NULL )
+	    std::fill(m_doubleField[g], m_doubleField[g]+npts, (double)value);
+      }
+      else if( m_floatField[g] != NULL )
+	 std::fill(m_floatField[g], m_floatField[g]+npts, (float)value);
    }
 }
 
@@ -2813,6 +2843,8 @@ void Image::output_image( int a_cycle, float_sw4 a_time, float_sw4 a_dt,
    {
       if (mEW->topographyExists())
 	 copy2DArrayToImage(mEW->mTopo); // save the raw topography; the smoothed is saved by the mode=grid with z=0
+      else
+	 fillImage(0.0); // flat surface at z=0, i.e. zero elevation
    }
    if( mMode == UXEXACT || mMode == UYEXACT || mMode == UZEXACT ||
        mMode == UXERR || mMode == UYERR || mMode == UZERR )

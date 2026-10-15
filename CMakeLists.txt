@@ -90,6 +90,50 @@ option(USE_HDF5 "Use HDF5." OFF)
 if(USE_HDF5)
   find_package(ZLIB REQUIRED)
   find_package(HDF5 REQUIRED)
+
+  # SW4 calls the MPI-IO driver (H5Pset_fapl_mpio, H5Pset_dxpl_mpio, ...)
+  # unconditionally, so a serial HDF5 configures fine but fails to compile
+  # much later. Fail early instead, by checking that the hdf5.h actually
+  # found defines H5_HAVE_PARALLEL. This works whether HDF5 was found through
+  # its own CMake config (HDF5 >= 1.14/2.x, which sets HDF5_PROVIDES_PARALLEL)
+  # or through CMake's FindHDF5 module (which sets HDF5_IS_PARALLEL).
+  include(CheckCXXSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state(RESET)
+  if(TARGET HDF5::HDF5)
+    set(CMAKE_REQUIRED_LIBRARIES HDF5::HDF5 MPI::MPI_CXX)
+  else()
+    set(CMAKE_REQUIRED_INCLUDES ${HDF5_INCLUDE_DIRS})
+    set(CMAKE_REQUIRED_LIBRARIES ${HDF5_LIBRARIES} MPI::MPI_CXX)
+  endif()
+  # Re-run on every configure so switching HDF5_DIR is never masked by a
+  # stale cached result.
+  unset(SW4_HDF5_IS_PARALLEL CACHE)
+  check_cxx_source_compiles("
+    #include <mpi.h>
+    #include <hdf5.h>
+    #ifndef H5_HAVE_PARALLEL
+    #error HDF5 was built without MPI support
+    #endif
+    int main() {
+      hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+      H5Pset_fapl_mpio(fapl, MPI_COMM_SELF, MPI_INFO_NULL);
+      return 0;
+    }" SW4_HDF5_IS_PARALLEL)
+  cmake_pop_check_state()
+  if(NOT SW4_HDF5_IS_PARALLEL)
+    if(HDF5_DIR)
+      set(_sw4_hdf5_where "HDF5_DIR=${HDF5_DIR}")
+    else()
+      set(_sw4_hdf5_where "include dirs: ${HDF5_INCLUDE_DIRS}")
+    endif()
+    message(FATAL_ERROR
+      "USE_HDF5=ON requires a parallel (MPI-enabled) HDF5, but the HDF5 found "
+      "(version ${HDF5_VERSION}, ${_sw4_hdf5_where}) was built "
+      "without MPI (H5_HAVE_PARALLEL is not defined in its H5pubconf.h). "
+      "Point CMake at a parallel build, e.g. -DHDF5_DIR=<prefix>/lib/cmake/hdf5 "
+      "or -DHDF5_PREFER_PARALLEL=ON, or configure with -DUSE_HDF5=OFF.")
+  endif()
 endif()
 
 option(USE_ZFP "Use ZFP compression." OFF)
@@ -144,7 +188,7 @@ set(SW4_SRC_C_FILES src/EW.C src/Sarray.C src/version.C src/parseInputFile.C
     src/MaterialVolimagefile.C src/MaterialRfile.C src/MaterialSfile.C src/AnisotropicMaterialBlock.C
     src/sacutils.C src/DataPatches.C src/addmemvarforcing2.C src/consintp.C src/oddIoddJinterp.C
     src/evenIoddJinterp.C src/oddIevenJinterp.C src/evenIevenJinterp.C src/CheckPoint.C src/geodyn.C
-    src/AllDims.C src/Patch.C src/RandomizedMaterial.C src/MaterialInvtest.C src/sw4-prof.C
+    src/AllDims.C src/Patch.C src/RandomizedMaterial.C src/MaterialInvtest.C src/sw4-prof.C src/sw4timer.C src/sw4mpiprof.C src/sw4ompt.C
     src/sachdf5.C src/readhdf5.C src/TestTwilight.C src/TestPointSource.C src/curvilinear4sgwind.C
     src/TestEcons.C src/GridGenerator.C src/GridGeneratorGeneral.C src/GridGeneratorGaussianHill.C
     src/CurvilinearInterface2.C src/SfileOutput.C src/pseudohess.C src/fastmarching.C src/solveTT.C
@@ -180,6 +224,34 @@ target_compile_definitions(sw4_config INTERFACE
     EW_WHEN="${CURDATETIME}"
     CMAKE_FC_FUNC=1
 )
+
+option(SW4_TIMERS "Collect region timers and print a min/avg/max table at the end of the run." ON)
+option(SW4_TIMERS_MPI "Charge MPI time, bytes and messages to the timer regions (PMPI wrappers). Turn off when using another PMPI tool." ON)
+if(NOT SW4_TIMERS)
+  target_compile_definitions(sw4_config INTERFACE SW4_NO_TIMERS)
+endif()
+if(NOT SW4_TIMERS_MPI)
+  target_compile_definitions(sw4_config INTERFACE SW4_NO_MPI_TIMERS)
+endif()
+
+# OpenMP thread timing through the OMPT tools interface. Needs omp-tools.h and
+# an OMPT-capable runtime (LLVM libomp, Intel libiomp5); GCC's libgomp has
+# neither, and the report then simply omits the OpenMP table.
+option(SW4_TIMERS_OMPT "Charge OpenMP parallel time and thread imbalance to the timer regions (OMPT)." ON)
+set(SW4_HAVE_OMPT OFF)
+if(SW4_TIMERS AND SW4_TIMERS_OMPT)
+  include(CheckIncludeFileCXX)
+  set(CMAKE_REQUIRED_FLAGS "${OpenMP_CXX_FLAGS}")
+  set(CMAKE_REQUIRED_INCLUDES "${OpenMP_CXX_INCLUDE_DIRS}")
+  check_include_file_cxx(omp-tools.h SW4_OMP_TOOLS_H)
+  unset(CMAKE_REQUIRED_FLAGS)
+  unset(CMAKE_REQUIRED_INCLUDES)
+  if(SW4_OMP_TOOLS_H)
+    set(SW4_HAVE_OMPT ON)
+    target_compile_definitions(sw4_config INTERFACE SW4_HAVE_OMPT)
+  endif()
+endif()
+message(STATUS "SW4 region timers: ${SW4_TIMERS}, MPI: ${SW4_TIMERS_MPI}, OpenMP (OMPT): ${SW4_HAVE_OMPT}")
 
 if(USE_PROJ AND PROJ_FOUND)
   target_compile_definitions(sw4_config INTERFACE ENABLE_PROJ)
@@ -231,6 +303,13 @@ target_compile_options(sw4_config INTERFACE
     "$<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:RelWithDebInfo>>:SHELL:${SW4_RELEASE_FORT_FLAGS}>"
 )
 
+# HDF5 goes first: link order also sets include-directory order, and other
+# dependencies' prefixes (e.g. PROJ in /opt/homebrew/include) may hold a
+# serial hdf5.h that would otherwise shadow the parallel one checked above.
+if(USE_HDF5 AND HDF5_FOUND)
+  target_link_libraries(sw4_config INTERFACE HDF5::HDF5)
+endif()
+
 target_link_libraries(sw4_config INTERFACE
     MPI::MPI_C
     MPI::MPI_CXX
@@ -241,10 +320,6 @@ target_link_libraries(sw4_config INTERFACE
 
 if(USE_PROJ AND PROJ_FOUND)
   target_link_libraries(sw4_config INTERFACE PROJ::proj)
-endif()
-
-if(USE_HDF5 AND HDF5_FOUND)
-  target_link_libraries(sw4_config INTERFACE HDF5::HDF5)
 endif()
 
 if(USE_ZFP)
@@ -261,6 +336,11 @@ target_link_libraries(sw4_common PUBLIC sw4_config)
 
 add_executable(sw4 src/main.C)
 target_link_libraries(sw4 PRIVATE sw4_common)
+if(SW4_HAVE_OMPT)
+  # The OpenMP runtime looks up ompt_start_tool in the global symbol table,
+  # which on Linux only holds the executable's symbols when exported.
+  set_target_properties(sw4 PROPERTIES ENABLE_EXPORTS ON)
+endif()
 
 add_custom_command(TARGET sw4 POST_BUILD COMMAND cat ${CMAKE_SOURCE_DIR}/wave.txt)
 
@@ -275,6 +355,9 @@ endif()
 if(BUILD_SW4MOPT)
   add_executable(sw4mopt ${SW4_SRC_MOPT_FILES})
   target_link_libraries(sw4mopt PRIVATE sw4_common)
+  if(SW4_HAVE_OMPT)
+    set_target_properties(sw4mopt PROPERTIES ENABLE_EXPORTS ON)
+  endif()
 endif()
 
 include(GNUInstallDirs)
@@ -287,5 +370,6 @@ endif()
 # tests/harness (see tests/README.md). Select with labels: `ctest -L pr` runs
 # the pull-request tier, plain `ctest` runs everything (the nightly tier).
 if(BUILD_TESTING)
+  include(cmake/UnitTests.cmake)
   add_subdirectory(tests)
 endif()

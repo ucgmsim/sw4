@@ -1,4 +1,5 @@
 #include "EW.h"
+#include "sw4timer.h"
 #include "cf_interface.h"
 
 #define SQR(x) ((x)*(x))
@@ -30,6 +31,7 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
 		   Sarray& Uc, Sarray& Unextc, Sarray& Bc, Sarray& Muc, Sarray& Lambdac, Sarray& Rhoc, float_sw4 hc,
 		   float_sw4 cof, int gc, int gf, int is_periodic[2])
 {
+   SW4_TIMER_START("setup");
    // At boundaries to the left and right, at least three ghost points are required
    // e.g., domain in i-direction:   i=-2,-1,0,1,2,...,Ni,Ni+1,Ni+2,Ni+3
    // we solve for ghost points at i=2,..,Ni-1, assuming Dirichlet conditions given on i=1,i=Ni and
@@ -206,9 +208,12 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
          for( int c=1 ; c<=3 ; c++ )
             ucd[(ic-m_iStart[gc]) + (size_t)niC*(jc-m_jStart[gc]) + (size_t)niC*njC*(c-1)] = Uc(c,ic,jc,0);
 
+   SW4_TIMER_STOP("setup");
+
 // Start iteration
    while( jacerr > m_citol && it < m_cimaxiter )
    {
+      SW4_TIMER_START("jacobi");
       double rmax[6]={0,0,0,0,0,0};
 //
 // REMARK: check jump condition in the presence of stretching function;
@@ -300,8 +305,14 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
 //FTNC			       gf, gc, nkf, mDt, hf, hc, cof, relax,
 //FTNC			       m_sbop, m_ghcof);
 
+      SW4_TIMER_STOP("jacobi");
+
+      SW4_TIMER_START("communicate_2d");
       communicate_plane_2d_d( ufd.data(), gf );
       communicate_plane_2d_d( ucd.data(), gc );
+      SW4_TIMER_STOP("communicate_2d");
+
+      SW4_TIMER_START("convergence_check"); // Allreduce: includes waiting for slower ranks
       double jacerrtmp = 0;
       for (int q=0; q<6; q++)
          jacerrtmp += rmax[q];
@@ -312,6 +323,7 @@ void EW::consintp( Sarray& Uf, Sarray& Unextf, Sarray& Bf, Sarray& Muf, Sarray& 
       if( jacerr0 > 1e-38 )
 	 jacerr = jacerr/jacerr0;
       it++;
+      SW4_TIMER_STOP("convergence_check");
 
    } // end while jacerr > eps (Outer iteration)
 

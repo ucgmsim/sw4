@@ -114,6 +114,7 @@ int local_to_global_event( int e ) const;
 
 void setupRun( vector<vector<Source*> > & a_GlobalUniqueSources );
 
+int preroll_steps( vector<Source*> & a_Sources, bool save_sides );
 void solve( vector<Source*> & a_GlobalSources, vector<TimeSeries*> & a_GlobalTimeSeries,
 	    vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda, vector<Sarray>& a_Rho,
 	    vector<Sarray>& U, vector<Sarray>& Um,
@@ -156,6 +157,9 @@ void extractRecordData(TimeSeries::receiverMode mode, int i0, int j0, int k0, in
 // some (all?) of these functions are called from parseInputFile() and should be made private
 void badOption(string name, char* option) const;
 bool startswith(const char begin[], char *line);
+// Read one line of any length from an input file into buf (NUL terminated, writable
+// for strtok). Returns false at end of file.
+static bool readInputLine(std::istream& in, std::vector<char>& buf);
 void processGrid(char* buffer);
 void processRefinement(char* buffer);
 void deprecatedOption(const string& command, 
@@ -238,8 +242,8 @@ void initialData(float_sw4 a_t, vector<Sarray> & a_U, vector<Sarray*> & a_AlphaV
 bool exactSol(float_sw4 a_t, vector<Sarray> & a_U, vector<Sarray*> & a_AlphaVE, vector<Source*>& source );
 void exactRhsTwilight(float_sw4 a_t, vector<Sarray> & a_F);
 void exactAccTwilight(float_sw4 a_t, vector<Sarray> & a_Uacc);
-void Force(float_sw4 a_t, vector<Sarray> & a_F, vector<GridPointSource*> point_sources, vector<int> identsources );
-void Force_tt(float_sw4 a_t, vector<Sarray> & a_F, vector<GridPointSource*> point_sources, vector<int> identsources );
+void Force(float_sw4 a_t, vector<Sarray> & a_F, const vector<GridPointSource*>& point_sources, const vector<int>& identsources );
+void Force_tt(float_sw4 a_t, vector<Sarray> & a_F, const vector<GridPointSource*>& point_sources, const vector<int>& identsources );
 void sort_grid_point_sources( vector<GridPointSource*>& point_sources, vector<int>& identsources );
 
 void normOfDifference( vector<Sarray> & a_Uex,  vector<Sarray> & a_U, float_sw4 &diffInf, float_sw4 &diffL2, float_sw4 &xInf,
@@ -510,6 +514,19 @@ int computeNearestGridPoint2(int & a_i,
 			     float_sw4 a_x, 
 			     float_sw4 a_y, 
 			     float_sw4 a_z);
+
+// Receivers: the grid node nearest to (a_x,a_y,a_z) in all three directions
+// (computeNearestGridPoint2 returns the low corner in i and j, which sources
+// need as a stencil base). Returns true on the single rank that owns that node
+// as an interior point. Coordinates are double regardless of float_sw4 so that
+// float and double builds pick the same node.
+int computeReceiverGridPoint(int & a_i,
+			     int & a_j,
+			     int & a_k,
+			     int & a_g,
+			     double a_x,
+			     double a_y,
+			     double a_z);
 
 int computeInvGridMap( float_sw4& a_i, float_sw4& a_j, float_sw4& a_k, int& a_g,
                        float_sw4 a_x, float_sw4 a_y, float_sw4 a_z );
@@ -1324,11 +1341,11 @@ void velsum_ci( int is, int ie, int js, int je, int ks, int ke,
 
    void enforceIC( std::vector<Sarray> & a_Up, std::vector<Sarray> & a_U, std::vector<Sarray> & a_Um,
                    vector<Sarray*>& a_AlphaVEp, vector<Sarray*>& a_AlphaVE, vector<Sarray*>& a_AlphaVEm,
-                   float_sw4 t, bool predictor, vector<Sarray> &F, std::vector<GridPointSource*> point_sources,
+                   float_sw4 t, bool predictor, vector<Sarray> &F, const std::vector<GridPointSource*>& point_sources,
                    vector<Sarray>& a_Rho, vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda, bool backward=false );
    void enforceIC2( std::vector<Sarray> & a_Up, std::vector<Sarray> & a_U, std::vector<Sarray> & a_Um,
                     vector<Sarray*>& a_AlphaVEp, float_sw4 t, 
-                    vector<Sarray> &F, std::vector<GridPointSource*> point_sources,
+                    vector<Sarray> &F, const std::vector<GridPointSource*>& point_sources,
                     vector<Sarray>& a_Rho, vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda );
 
    void CurviCartIC( int gcart, vector<Sarray> &a_U, vector<Sarray>& a_Rho, vector<Sarray>& a_Mu, 
@@ -1346,7 +1363,7 @@ void velsum_ci( int is, int ie, int js, int je, int ks, int ke,
                                        Sarray* a_AlphaVEp, Sarray* a_AlphaVE, Sarray* a_AlphaVEm, 
                                        Sarray& Utt, Sarray& Unext,
                                        int g, int kic, float_sw4 t, Sarray &Ftt, 
-                                       std::vector<GridPointSource*> point_sources, 
+                                       const std::vector<GridPointSource*>& point_sources, 
                                        Sarray& a_Rho, Sarray& a_Mu, Sarray& a_Lambda );
 
    // void compute_preliminary_corrector( Sarray& a_Up, Sarray& a_U, Sarray& a_Um,
@@ -1355,7 +1372,7 @@ void velsum_ci( int is, int ie, int js, int je, int ks, int ke,
 
    void compute_preliminary_predictor( Sarray& a_Up, Sarray& a_U, Sarray* a_AlphaVEp, Sarray& Unext,
                                        int g, int kic, float_sw4 t, Sarray &F, 
-                                       vector<GridPointSource*> point_sources,
+                                       const vector<GridPointSource*>& point_sources,
                                        Sarray& a_Rho, Sarray& a_Mu, Sarray& a_Lambda );
    
    void compute_icstresses( Sarray& a_Up, Sarray& B, int g, int kic, float_sw4* a_str_x, float_sw4* a_str_y, 
@@ -1385,7 +1402,7 @@ void velsum_ci( int is, int ie, int js, int je, int ks, int ke,
    void initial_tw_test( vector<Sarray>& U, vector<Sarray>& Up, vector<Sarray>& F,
 			 vector<Sarray>& Mu, vector<Sarray>& Lambda, vector<Sarray>& Lu,
 			 vector<Sarray>& Uacc, vector<Sarray*> AlphaVE,
-			 vector<GridPointSource*> point_sources, vector<int> identsources,
+			 const vector<GridPointSource*>& point_sources, const vector<int>& identsources,
 			 float_sw4 t );
    void checkpoint_twilight_test( vector<Sarray>& Um, vector<Sarray>& U, vector<Sarray>& Up,
 				  vector<Sarray*> AlphaVEm, vector<Sarray*> AlphaVE,
@@ -1713,7 +1730,10 @@ bool m_output_load;
 int m_projection_cycle;
 
 bool m_checkfornan;
-bool m_failonnan;   // when set, MPI_Abort as soon as a NaN is detected
+bool m_failonnan;   // when set, MPI_Abort as soon as a NaN or Inf is detected
+// The run is declared diverged, and aborted, once max|U| exceeds this (on the
+// printing cadence, see solve.C). <= 0 disables. Default 1e30, see EW.C.
+float_sw4 m_divergence_limit;
 // 'developer allowsourceinsupergrid=1': downgrade the source-in-the-sponge
 // abort to a warning. The diagnostic is still printed in full.
 bool m_allow_source_in_supergrid;

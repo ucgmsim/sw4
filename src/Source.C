@@ -1143,6 +1143,19 @@ alph*alph*alph*alph*alph)*(1.0/3.0+pow(alph-2.0,3.0)/24.0+pow(alph-2.0,2.0)/
 /48.0);
 }
 
+//-----------------------------------------------------------------------
+bool Source::filteredDiscreteStart( float_sw4& tstart ) const
+{
+   if( m_timeFuncIsReady && m_is_filtered &&
+       (mTimeDependence == iDiscrete || mTimeDependence == iDiscrete6moments ||
+        mTimeDependence == iDiscrete3forces) )
+   {
+      tstart = mPar[0];
+      return true;
+   }
+   return false;
+}
+
 //------ filter and fix up any discrete time functions ----------------
 void Source::prepareTimeFunc(bool doFilter, float_sw4 sw4TimeStep, int sw4TimeSamples, Filter* sw4_filter)
 {
@@ -1175,6 +1188,10 @@ void Source::prepareTimeFunc(bool doFilter, float_sw4 sw4TimeStep, int sw4TimeSa
          float_sw4 tstart = mPar[0];
          int ext_npts = npts + 2*nPadding;
          float_sw4 *ext_par = new float_sw4[ext_npts+1];
+// NOTE: ext_tstart is negative when tstart < preCursorTime, e.g. for the
+// hypocentre of an SRF (tinit=0). EW::solve then starts time stepping at
+// that negative time (a "pre-roll" without output), so the precursor is
+// not cut off at t=0; see EW::preroll_steps.
          float_sw4 ext_tstart = tstart - nPadding*dt;
 // setup ext_par
          ext_par[0] = ext_tstart;

@@ -2628,7 +2628,7 @@ void EW::getDtFromRestartFile()
 void EW::initial_tw_test( vector<Sarray>& U, vector<Sarray>& Up, vector<Sarray>& F,
 			  vector<Sarray>& Mu, vector<Sarray>& Lambda, vector<Sarray>& Lu,
 			  vector<Sarray>& Uacc, vector<Sarray*> AlphaVE,
-			  vector<GridPointSource*> point_sources, vector<int> identsources,
+			  const vector<GridPointSource*>& point_sources, const vector<int>& identsources,
 			  float_sw4 t )
 {
    if (m_twilight_forcing && getVerbosity() >= 3) // only do these tests if verbose>=3

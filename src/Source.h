@@ -134,6 +134,10 @@ public:
   bool get_CorrectForMu(){return mShearModulusFactor;};
   void set_CorrectForMu(bool smf){mShearModulusFactor=smf;};
   float_sw4 getTimeOffset() const { return mT0; };
+  // Start time of a prefiltered discrete (SRF/rupture) time function, which
+  // prepareTimeFunc has extended back by the filter's acausal precursor.
+  // Returns false if this source has no such function prepared on this rank.
+  bool filteredDiscreteStart( float_sw4& tstart ) const;
 
  private:
   Source();

@@ -90,8 +90,27 @@ stdout_regex = "dropped 1 rupture points positioned outside grid"
 name = "sfile-too-small"
 params = { layers = [{ bottom = 1000.0, vp = 3000.0, vs = 1500.0, rho = 2200.0, qp = 150.0, qs = 75.0 }, { bottom = 6800.0, vp = 4000.0, vs = 2300.0, rho = 2500.0, qp = 230.0, qs = 115.0 }], sfile_L = 6000.0, material = "attenuation nmech=3 maxfreq=10 phasefreq=0.5\nsfile filename=layers.sfile directory=." }
 expect = "failure"
-stdout_regex = "sfile|cover|outside"
-xfail = "MaterialSfile clamps to the sfile edge: points outside the sfile silently get the nearest edge material."
+stdout_regex = "does not cover the computational grid"
+
+[[run]]
+name = "sfile-too-shallow"
+params = { layers = [{ bottom = 1000.0, vp = 3000.0, vs = 1500.0, rho = 2200.0, qp = 150.0, qs = 75.0 }, { bottom = 4000.0, vp = 4000.0, vs = 2300.0, rho = 2500.0, qp = 230.0, qs = 115.0 }], material = "attenuation nmech=3 maxfreq=10 phasefreq=0.5\nsfile filename=layers.sfile directory=." }
+expect = "failure"
+stdout_regex = "does not cover the computational grid"
+
+[[run]]
+name = "sfile-over-block"
+# A smaller sfile on top of a background block is a legitimate layering: the
+# points outside the sfile keep the block material, and SW4 says so.
+params = { layers = [{ bottom = 1000.0, vp = 3000.0, vs = 1500.0, rho = 2200.0, qp = 150.0, qs = 75.0 }, { bottom = 6800.0, vp = 4000.0, vs = 2300.0, rho = 2500.0, qp = 230.0, qs = 115.0 }], sfile_L = 6000.0, material = "attenuation nmech=3 maxfreq=10 phasefreq=0.5\nblock vp=4000 vs=2300 rho=2500 qp=230 qs=115\nsfile filename=layers.sfile directory=." }
+expect = "success"
+stdout_regex = "outside the sfile and keep the material of earlier material commands"
+
+[[run]]
+name = "checkpoint-time"
+params = { material = "block vp=4000 vs=2300 rho=2500\ncheckpoint time=0.2 file=chk" }
+expect = "failure"
+stdout_regex = "use cycle= or cycleInterval="
 
 [[run]]
 name = "station-outside"

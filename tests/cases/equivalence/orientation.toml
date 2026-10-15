@@ -37,3 +37,9 @@ name = "orientation"
 kind = "component_orientation"
 runs = ["nsew", "xyz"]
 tol_deg = 0.05
+
+[[check]]
+name = "component-metadata"
+kind = "rechdf5_components"
+runs = ["nsew", "xyz"]
+description = "Per-component CMPAZ/CMPINC: NS/EW/UP point north/east/up whatever the grid azimuth; grid X/Y at az/az+90 (normalised to [0, 360)), Z down."
