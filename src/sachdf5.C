@@ -370,12 +370,19 @@ static int createOneTimeSeriesHDF5File(vector<TimeSeries*> & TimeSeries, const s
   // small datasets into whole pages, written as the buffer fills and at
   // close. SW4_HDF5_PAGED=0 restores the old unpaged layout;
   // SW4_HDF5_PAGE_SIZE sets the page size in bytes.
+  //
+  // Parallel HDF5 before 1.14.5 rejects any page buffer, so CMake defines
+  // SW4_HDF5_NO_PAGED for those builds and the file is always unpaged.
   hid_t fcpl = H5Pcreate(H5P_FILE_CREATE);
+#ifdef SW4_HDF5_NO_PAGED
+  bool paged = false;
+#else
   bool paged = true;
-  hsize_t page_size = SW4_HDF5_DEFAULT_PAGE_SIZE;
   const char *paged_env = getenv("SW4_HDF5_PAGED");
   if (paged_env != NULL)
     paged = atoi(paged_env) != 0;
+#endif
+  hsize_t page_size = SW4_HDF5_DEFAULT_PAGE_SIZE;
   const char *page_size_env = getenv("SW4_HDF5_PAGE_SIZE");
   if (page_size_env != NULL && atoll(page_size_env) >= 512)
     page_size = (hsize_t)atoll(page_size_env);
