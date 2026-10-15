@@ -25,6 +25,7 @@ class Run:
     xfail: str | dict | None = None  # known defect (or {precision: reason}): expectation currently NOT met
     after: list[str] = field(default_factory=list)  # runs whose outputs this run reads
     copy_from: dict = field(default_factory=dict)  # {run = name, files = [...]}: copied in before running
+    env: dict[str, str] = field(default_factory=dict)  # extra environment variables for SW4
 
 
 @dataclass
@@ -85,6 +86,7 @@ def load_case(path: Path, cases_dir: Path) -> Case:
             xfail=r.get("xfail"),
             after=list(r.get("after", [])),
             copy_from=dict(r.get("copy_from", {})),
+            env={k: str(v) for k, v in {**raw.get("env", {}), **r.get("env", {})}.items()},
         )
     checks: dict[str, Check] = {}
     for c in raw.get("check", []):

@@ -60,7 +60,9 @@ expect = 4.0
 ```
 
 A run can expect SW4 to fail (`expect = "failure"`, with `stdout_regex`), wait
-for another run (`after = [...]`) and copy files from it (`copy_from`).
+for another run (`after = [...]`) and copy files from it (`copy_from`). An
+`[env]` table, at the top level or on a run, sets environment variables for
+SW4 (e.g. `SW4_IO_MAX_BYTES_PER_CALL`, see `cases/parallel/io-limit.toml`).
 
 **Known defects** are marked `xfail = "reason"` on a run or check. The test
 passes while the defect is present (XFAIL) and fails once it is fixed (XPASS),
