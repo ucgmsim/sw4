@@ -1185,6 +1185,17 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 
     if( preroll )
     {
+// Progress during the pre-roll, which otherwise prints nothing and can take
+// longer than the recorded part of the run. Same cadence as printTime.
+       const int kpre = currentTimeStep + npre; // 1..npre
+       if( currentTimeStep < 0 && mPrintInterval > 0 && !mQuiet && proc_zero() &&
+           ( kpre == 1 || kpre % mPrintInterval == 0 ) )
+       {
+          const double elapsed = MPI_Wtime() - time_start_solve;
+          printf("  Pre-roll step %d of %d, t = %.4f s, %.1f s elapsed, ~%.0f s until recording starts\n",
+                 kpre, npre, (double)t, elapsed, elapsed/kpre*(npre-kpre) );
+          fflush(stdout);
+       }
 // The pre-roll ends at t=mTstart. Set t exactly (no accumulated round-off),
 // cycle the arrays and record the first time level as the run without a
 // pre-roll would have done before its first step.

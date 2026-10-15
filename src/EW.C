@@ -5342,6 +5342,18 @@ void EW::Force_tt(float_sw4 a_t, vector<Sarray> &a_F,
   }
 }
 
+namespace {
+// Timer region name for attenuation mechanism a; sw4timer keeps the pointer,
+// so the names must be literals.
+[[maybe_unused]] const char* mechanism_region(int a) {
+  static const char *const names[] = {"mechanism_1", "mechanism_2",
+                                      "mechanism_3", "mechanism_4",
+                                      "mechanism_5", "mechanism_6",
+                                      "mechanism_7", "mechanism_8"};
+  return a < 8 ? names[a] : "mechanism_9+";
+}
+} // namespace
+
 //---------------------------------------------------------------------------
 // perhaps a better name would be evalLu ??
 void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
@@ -5377,6 +5389,7 @@ void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
                       // grid?
     nz = m_global_nz[g];
     onesided_ptr = m_onesided[g];
+    SW4_TIMER_START("elastic");
     char op = '='; // Assign Uacc := L(u)
                    // FTNC    if( m_croutines )
     {
@@ -5390,6 +5403,7 @@ void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
                        onesided_ptr, m_acof, m_bope, m_ghcof, uacc_ptr, u_ptr,
                        mu_ptr, la_ptr, h, op);
     }
+    SW4_TIMER_STOP("elastic");
     // FTNC    else
     // FTNC    {
     // FTNC       if( usingSupergrid() )
@@ -5407,7 +5421,9 @@ void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
 
     if (m_use_attenuation && m_number_mechanisms > 0) {
       op = '-'; // Subtract Uacc := Uacc - L_a(alpha)
+      SW4_TIMER_START("attenuation");
       for (int a = 0; a < m_number_mechanisms; a++) {
+        SW4_TIMER_START(mechanism_region(a));
         float_sw4 *alpha_ptr = a_AlphaVE[g][a].c_ptr();
         float_sw4 *mua_ptr = mMuVE[g][a].c_ptr();
         float_sw4 *lambdaa_ptr = mLambdaVE[g][a].c_ptr();
@@ -5428,6 +5444,7 @@ void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
                            onesided_ptr, m_acof_no_gp, m_bope, m_ghcof_no_gp,
                            uacc_ptr, alpha_ptr, mua_ptr, lambdaa_ptr, h, op);
         }
+        SW4_TIMER_STOP(mechanism_region(a));
         // FTNC	  else
         // FTNC	  {
         // FTNC	     if(  usingSupergrid() )
@@ -5440,6 +5457,7 @@ void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
         // &klast, &nz, onesided_ptr, m_acof_no_gp, m_bope, m_ghcof_no_gp, FTNC
         // uacc_ptr, alpha_ptr, mua_ptr, lambdaa_ptr, &h, &op ); FTNC	  }
       }
+      SW4_TIMER_STOP("attenuation");
       //    nn=a_Uacc[g].count_nans();
       //    if( nn > 0 )
       //       cout << "Second application of LU " << nn << " nans" << endl;
@@ -5470,12 +5488,14 @@ void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
     klast = m_kEnd[g];
     onesided_ptr = m_onesided[g];
     int nkg = m_global_nz[g];
+    SW4_TIMER_START("elastic");
     char op = '='; // assign Uacc := L_u(u)
                    // FTNC     if( m_croutines )
     curvilinear4sg_ci(ifirst, ilast, jfirst, jlast, kfirst, klast, u_ptr,
                       mu_ptr, la_ptr, met_ptr, jac_ptr, uacc_ptr, onesided_ptr,
                       m_acof, m_bope, m_ghcof, m_acof_no_gp, m_ghcof_no_gp,
                       m_sg_str_x[g], m_sg_str_y[g], nkg, op);
+    SW4_TIMER_STOP("elastic");
     //			   m_acof, m_ghcof, m_sg_str_x[g], m_sg_str_y[g], nkg,
     //op );
     // FTNC     else
@@ -5491,7 +5511,9 @@ void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
     // m_acof, m_bope, m_ghcof, &op ); FTNC     }
     if (m_use_attenuation && m_number_mechanisms > 0) {
       op = '-'; // Subtract Uacc := Uacc - L_a(alpha)
+      SW4_TIMER_START("attenuation");
       for (int a = 0; a < m_number_mechanisms; a++) {
+        SW4_TIMER_START(mechanism_region(a));
         float_sw4 *alpha_ptr = a_AlphaVE[g][a].c_ptr();
         float_sw4 *mua_ptr = mMuVE[g][a].c_ptr();
         float_sw4 *lambdaa_ptr = mLambdaVE[g][a].c_ptr();
@@ -5503,6 +5525,7 @@ void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
                             m_ghcof_no_gp, m_acof_no_gp, m_ghcof_no_gp,
                             m_sg_str_x[g], m_sg_str_y[g], nkg, op);
         }
+        SW4_TIMER_STOP(mechanism_region(a));
         // FTNC	  else
         // FTNC	  {
         // FTNC	     if(  usingSupergrid() )
@@ -5516,6 +5539,7 @@ void EW::evalRHS(vector<Sarray> &a_U, vector<Sarray> &a_Mu,
         // uacc_ptr, onesided_ptr, m_acof_no_gp, m_bope, m_ghcof_no_gp, &op );
         // FTNC	  }
       }
+      SW4_TIMER_STOP("attenuation");
     }
   }
   SW4_TIMER_STOP("curvilinear");
