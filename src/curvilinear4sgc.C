@@ -1739,9 +1739,14 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	       // averaging the coefficient
 // 54*8*8+25*8 = 3656 ops, tot=3939
 	       float_sw4 mucofu2, mucofuv, mucofuw, mucofvw, mucofv2, mucofw2;
+// Constant trip-count loops (qq,mm = 1..8) rather than q,m = nk-7..nk: with
+// the runtime bounds the compiler does not fully unroll and fold the 8x8
+// coefficient loops below, and this upper closure ran 4.5x slower per point
+// than the lower one (k=1..6, which loops q=1..8). Same arithmetic in the
+// same order, so bit-identical.
 	       #pragma GCC unroll 8
-	       for( int q=nk-7 ; q <= nk ; q++ )
-	       {
+	       for( int qq=1 ; qq <= 8 ; qq++ )
+	       { const int q = nk-8+qq;
 		  mucofu2=0;
 		  mucofuv=0;
 		  mucofuw=0;
@@ -1749,8 +1754,8 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 		  mucofv2=0;
 		  mucofw2=0;
 		  #pragma GCC unroll 8
-		  for( int m=nk-7 ; m <= nk ; m++ )
-		  {
+		  for( int mm=1 ; mm <= 8 ; mm++ )
+		  { const int m = nk-8+mm;
 		     mucofu2 += 
 			acof_no_gp(nk-k+1,nk-q+1,nk-m+1)*(
 		      (2*mu(i,j,m)+la(i,j,m) )*met(2,i,j,m)*strx(i)*met(2,i,j,m)*strx(i)
@@ -1873,8 +1878,8 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	       float_sw4 dvdrm2 = 0, dvdrm1=0, dvdrp1=0, dvdrp2=0;
 	       float_sw4 dwdrm2 = 0, dwdrm1=0, dwdrp1=0, dwdrp2=0;
 	       #pragma GCC unroll 8
-	       for( int q=nk-7 ; q <= nk ; q++ )
-	       {
+	       for( int qq=1 ; qq <= 8 ; qq++ )
+	       { const int q = nk-8+qq;
 		  dudrm2 -= bope(nk-k+1,nk-q+1)*u(1,i-2,j,q);
 		  dvdrm2 -= bope(nk-k+1,nk-q+1)*u(2,i-2,j,q);
 		  dwdrm2 -= bope(nk-k+1,nk-q+1)*u(3,i-2,j,q);
@@ -1959,8 +1964,8 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	       dwdrp1 = 0;
 	       dwdrp2 = 0;
 	       #pragma GCC unroll 8
-	       for( int q=nk-7 ; q <= nk ; q++ )
-	       {
+	       for( int qq=1 ; qq <= 8 ; qq++ )
+	       { const int q = nk-8+qq;
 		  dudrm2 -= bope(nk-k+1,nk-q+1)*u(1,i,j-2,q);
 		  dvdrm2 -= bope(nk-k+1,nk-q+1)*u(2,i,j-2,q);
 		  dwdrm2 -= bope(nk-k+1,nk-q+1)*u(3,i,j-2,q);
@@ -2032,8 +2037,8 @@ static void curvilinear4sg_ci_impl( int ifirst, int ilast, int jfirst, int jlast
 	       // pr and qr derivatives at once
 // in loop: 8*(53+53+43) = 1192 ops, tot=6037
 	       #pragma GCC unroll 8
-	       for( int q=nk-7 ; q <= nk ; q++ )
-	       {
+	       for( int qq=1 ; qq <= 8 ; qq++ )
+	       { const int q = nk-8+qq;
 		  // (u-eq)
 // 53 ops
 		  r1 -= bope(nk-k+1,nk-q+1)*( 
