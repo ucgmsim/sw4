@@ -311,7 +311,7 @@ void GridPointSource::initializeTimeFunction()
 //-----------------------------------------------------------------------
 void GridPointSource::getFxyz( float_sw4 t, float_sw4* fxyz ) const
 {
-   float_sw4 afun, afunv[6];
+   float_sw4 afun = 0, afunv[6]; // only set for the time dependences that use them
    if( mTimeDependence != iDiscrete6moments && mTimeDependence != iDiscrete3forces )
       afun= mTimeFunc(mFreq,t-mT0,mPar, mNpar, mIpar, mNipar );
    else if( mTimeDependence == iDiscrete6moments )
@@ -419,7 +419,7 @@ void GridPointSource::getFxyz_notime( float_sw4* fxyz ) const
 //-----------------------------------------------------------------------
 void GridPointSource::getFxyztt( float_sw4 t, float_sw4* fxyz ) const
 {
-   float_sw4 afun, afunv[6];
+   float_sw4 afun = 0, afunv[6]; // only set for the time dependences that use them
    if( mTimeDependence != iDiscrete6moments && mTimeDependence != iDiscrete3forces )
       afun= mTimeFunc_tt(mFreq,t-mT0,mPar, mNpar, mIpar, mNipar );
    else if( mTimeDependence == iDiscrete6moments )
@@ -522,7 +522,7 @@ void GridPointSource::set_derivative( int der, const float_sw4 dir[11] )
    if( ((der >= 0 && der <= 8) || der == 11) && !m_jacobian_known )
    {
       std::cerr << "GridPointSource::set_derivative: derivative " << der
-                << " needs the source jacobian, which this grid point source was not given" << std::endl;
+                << " needs the source jacobian, which this grid point source was not given\n";
       MPI_Abort(MPI_COMM_WORLD, 1);
    }
    if( der >= 0 && der <= 11 )
@@ -752,7 +752,7 @@ void GridPointSource::print_info() const
       {
          for( int m=0 ; m < 9 ; m++ )
             cout << m_deriv->jacobian[c+3*m] << " " ;
-         cout << endl;
+         cout << '\n';
       }
    }
    cout << "Time dep " << mTimeDependence << endl;
