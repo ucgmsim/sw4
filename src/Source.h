@@ -115,7 +115,11 @@ public:
   float_sw4 compute_t0_increase( float_sw4 t0_min ) const;
   void adjust_t0( float_sw4 dt0 );
 
-  void set_grid_point_sources4( EW *a_EW, std::vector<GridPointSource*>& point_sources );
+  // keep_derivatives=false leaves out the parameter derivatives (jacobian, Hessian) of
+  // each grid point source unless this source has a derivative set: a forward run
+  // never reads them, and they are most of a GridPointSource's memory.
+  void set_grid_point_sources4( EW *a_EW, std::vector<GridPointSource*>& point_sources,
+                                bool keep_derivatives = true );
 
   void exact_testmoments( int kx[3], int ky[3], int kz[3], float_sw4 momexact[3] );
   void getForces( float_sw4& fx, float_sw4& fy, float_sw4& fz ) const;
