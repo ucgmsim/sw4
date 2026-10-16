@@ -360,7 +360,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   {
      if( proc_zero() )
         cerr << "EW::solve: internal error: the source time functions were tabulated for "
-             << npre_tab << " pre-roll steps, but the run needs " << npre << endl;
+             << npre_tab << " pre-roll steps, but the run needs " << npre << '\n';
      MPI_Abort(MPI_COMM_WORLD, 1);
   }
 

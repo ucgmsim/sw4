@@ -9786,7 +9786,7 @@ void EW::evalSourceTimeFuncs(float_sw4 a_t, bool tt) {
     const long n = tabulated_time_index(m_srcTimes[kind], a_t);
     if (n < 0) {
       cerr << "EW::evalSourceTimeFuncs: source time functions are tabulated, but t = " << a_t
-           << " is not one of the tabulated time steps" << endl;
+           << " is not one of the tabulated time steps\n";
       MPI_Abort(MPI_COMM_WORLD, 1);
     }
 #pragma omp parallel for

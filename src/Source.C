@@ -2926,7 +2926,7 @@ Source* Source::copy( std::string a_name )
    if( m_table )
    {
       std::cerr << "Source::copy: the time function of source " << mName
-                << " has been tabulated and its spline freed" << std::endl;
+                << " has been tabulated and its spline freed\n";
       MPI_Abort(MPI_COMM_WORLD, 1);
    }
    Source* retval = new Source();

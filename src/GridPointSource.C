@@ -559,7 +559,7 @@ float_sw4 GridPointSource::tabulated( int kind, float_sw4 t ) const
   if( n < 0 )
   {
      std::cerr << "GridPointSource: time function " << (kind == 0 ? "" : "second derivative ")
-               << "requested at t = " << t << ", which is not one of the tabulated time steps" << std::endl;
+               << "requested at t = " << t << ", which is not one of the tabulated time steps\n";
      MPI_Abort(MPI_COMM_WORLD, 1);
   }
   return m_table->at( kind, n );
@@ -571,7 +571,7 @@ void GridPointSource::require_spline( const char* what ) const
   if( m_table )
   {
      std::cerr << "GridPointSource::" << what << ": the source time function is tabulated"
-               << " at the solver's time steps, its spline has been freed" << std::endl;
+               << " at the solver's time steps, its spline has been freed\n";
      MPI_Abort(MPI_COMM_WORLD, 1);
   }
 }
