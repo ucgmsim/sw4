@@ -76,20 +76,29 @@ GridPointSource::GridPointSource( float_sw4 frequency, float_sw4 t0,
   m_jacobian_known = jacobian != NULL;
   if( jacobian != NULL )
      for( int m=0 ; m < 27 ; m++ )
-	m_jacobian[m] = jacobian[m];
+	derivatives().jacobian[m] = jacobian[m];
 
   m_hessian_known = false;
   if( dddp != NULL && hess1 != NULL && hess2 != NULL && hess3 != NULL )
   {
+     Derivatives& d = derivatives();
      for( int m=0 ; m < 9 ; m++ )
      {
-	m_dddp[m] = dddp[m];
-        m_hesspos1[m] = hess1[m];
-        m_hesspos2[m] = hess2[m];
-        m_hesspos3[m] = hess3[m];
+	d.dddp[m] = dddp[m];
+        d.hesspos1[m] = hess1[m];
+        d.hesspos2[m] = hess2[m];
+        d.hesspos3[m] = hess3[m];
      }
      m_hessian_known = true;
   }
+}
+
+//-----------------------------------------------------------------------
+GridPointSource::Derivatives& GridPointSource::derivatives()
+{
+   if( !m_deriv )
+      m_deriv = std::make_unique<Derivatives>();
+   return *m_deriv;
 }
 
 //-----------------------------------------------------------------------
@@ -357,9 +366,9 @@ void GridPointSource::getFxyz( float_sw4 t, float_sw4* fxyz ) const
   }
   else if( m_derivative >= 0 && m_derivative <= 8 )
   {
-     fxyz[0] = m_jacobian[m_derivative*3]*afun;
-     fxyz[1] = m_jacobian[m_derivative*3+1]*afun;
-     fxyz[2] = m_jacobian[m_derivative*3+2]*afun;
+     fxyz[0] = m_deriv->jacobian[m_derivative*3]*afun;
+     fxyz[1] = m_deriv->jacobian[m_derivative*3+1]*afun;
+     fxyz[2] = m_deriv->jacobian[m_derivative*3+2]*afun;
   }
   else if( m_derivative == 9 )
   {
@@ -381,20 +390,20 @@ void GridPointSource::getFxyz( float_sw4 t, float_sw4* fxyz ) const
      int i;
      for( i=0 ; i < 9; i++ )
      {
-        fxyz[0] += afun*m_jacobian[i*3]*m_dir[i];
-        fxyz[1] += afun*m_jacobian[i*3+1]*m_dir[i];
-        fxyz[2] += afun*m_jacobian[i*3+2]*m_dir[i];
+        fxyz[0] += afun*m_deriv->jacobian[i*3]*m_deriv->dir[i];
+        fxyz[1] += afun*m_deriv->jacobian[i*3+1]*m_deriv->dir[i];
+        fxyz[2] += afun*m_deriv->jacobian[i*3+2]*m_deriv->dir[i];
      }
      i = 9;
      afun = -mTimeFunc_t(mFreq,t-mT0,mPar, mNpar, mIpar, mNipar);
-     fxyz[0] += afun*mForces[0]*m_dir[i];
-     fxyz[1] += afun*mForces[1]*m_dir[i];
-     fxyz[2] += afun*mForces[2]*m_dir[i];
+     fxyz[0] += afun*mForces[0]*m_deriv->dir[i];
+     fxyz[1] += afun*mForces[1]*m_deriv->dir[i];
+     fxyz[2] += afun*mForces[2]*m_deriv->dir[i];
      i = 10;
      afun =  mTimeFunc_om(mFreq,t-mT0,mPar, mNpar, mIpar, mNipar);
-     fxyz[0] += afun*mForces[0]*m_dir[i];
-     fxyz[1] += afun*mForces[1]*m_dir[i];
-     fxyz[2] += afun*mForces[2]*m_dir[i];
+     fxyz[0] += afun*mForces[0]*m_deriv->dir[i];
+     fxyz[1] += afun*mForces[1]*m_deriv->dir[i];
+     fxyz[2] += afun*mForces[2]*m_deriv->dir[i];
   }
 }
 
@@ -466,9 +475,9 @@ void GridPointSource::getFxyztt( float_sw4 t, float_sw4* fxyz ) const
   }
   else if( m_derivative >= 0 && m_derivative <= 8 )
   {
-     fxyz[0] = m_jacobian[m_derivative*3]*afun;
-     fxyz[1] = m_jacobian[m_derivative*3+1]*afun;
-     fxyz[2] = m_jacobian[m_derivative*3+2]*afun;
+     fxyz[0] = m_deriv->jacobian[m_derivative*3]*afun;
+     fxyz[1] = m_deriv->jacobian[m_derivative*3+1]*afun;
+     fxyz[2] = m_deriv->jacobian[m_derivative*3+2]*afun;
   }
   else if( m_derivative == 9 )
   {
@@ -490,30 +499,37 @@ void GridPointSource::getFxyztt( float_sw4 t, float_sw4* fxyz ) const
      int i;
      for( i=0 ; i < 9; i++ )
      {
-        fxyz[0] += afun*m_jacobian[i*3]*m_dir[i];
-        fxyz[1] += afun*m_jacobian[i*3+1]*m_dir[i];
-        fxyz[2] += afun*m_jacobian[i*3+2]*m_dir[i];
+        fxyz[0] += afun*m_deriv->jacobian[i*3]*m_deriv->dir[i];
+        fxyz[1] += afun*m_deriv->jacobian[i*3+1]*m_deriv->dir[i];
+        fxyz[2] += afun*m_deriv->jacobian[i*3+2]*m_deriv->dir[i];
      }
      i = 9;
      afun = -mTimeFunc_ttt(mFreq,t-mT0,mPar, mNpar, mIpar, mNipar);
-     fxyz[0] += afun*mForces[0]*m_dir[i];
-     fxyz[1] += afun*mForces[1]*m_dir[i];
-     fxyz[2] += afun*mForces[2]*m_dir[i];
+     fxyz[0] += afun*mForces[0]*m_deriv->dir[i];
+     fxyz[1] += afun*mForces[1]*m_deriv->dir[i];
+     fxyz[2] += afun*mForces[2]*m_deriv->dir[i];
      i = 10;
      afun =  mTimeFunc_omtt(mFreq,t-mT0,mPar, mNpar, mIpar, mNipar);
-     fxyz[0] += afun*mForces[0]*m_dir[i];
-     fxyz[1] += afun*mForces[1]*m_dir[i];
-     fxyz[2] += afun*mForces[2]*m_dir[i];
+     fxyz[0] += afun*mForces[0]*m_deriv->dir[i];
+     fxyz[1] += afun*mForces[1]*m_deriv->dir[i];
+     fxyz[2] += afun*mForces[2]*m_deriv->dir[i];
   }
 }
 
 //-----------------------------------------------------------------------
 void GridPointSource::set_derivative( int der, const float_sw4 dir[11] )
 {
+   if( ((der >= 0 && der <= 8) || der == 11) && !m_jacobian_known )
+   {
+      std::cerr << "GridPointSource::set_derivative: derivative " << der
+                << " needs the source jacobian, which this grid point source was not given" << std::endl;
+      MPI_Abort(MPI_COMM_WORLD, 1);
+   }
    if( der >= 0 && der <= 11 )
       m_derivative = der;
+   Derivatives& d = derivatives();
    for( int i=0 ; i < 11 ; i++ )
-      m_dir[i] = dir[i];
+      d.dir[i] = dir[i];
 }
 
 //-----------------------------------------------------------------------
@@ -608,10 +624,10 @@ void GridPointSource::add_to_gradient( std::vector<Sarray> & kappa, std::vector<
       // derivative wrt. position (m=0,1,2) and moment tensor components (m=3,..,8)
       for( int m= 0 ; m < 9 ; m++ )
       {
-	 gradient[m] -= g*(  kap1*m_jacobian[3*m] + kap2*m_jacobian[3*m+1] +
-				  kap3*m_jacobian[3*m+2]  )*h3;
-	 gradient[m] -= dt2o12*g0*( eta1*m_jacobian[3*m] + eta2*m_jacobian[3*m+1] +
-					 eta3*m_jacobian[3*m+2]  )*h3;
+	 gradient[m] -= g*(  kap1*m_deriv->jacobian[3*m] + kap2*m_deriv->jacobian[3*m+1] +
+				  kap3*m_deriv->jacobian[3*m+2]  )*h3;
+	 gradient[m] -= dt2o12*g0*( eta1*m_deriv->jacobian[3*m] + eta2*m_deriv->jacobian[3*m+1] +
+					 eta3*m_deriv->jacobian[3*m+2]  )*h3;
       }
 
       // derivative wrt. (t0, freq)
@@ -659,24 +675,24 @@ void GridPointSource::add_to_hessian( std::vector<Sarray> & kappa, std::vector<S
       for( int m=0 ; m < 3 ; m++ )
 	 for( int j=m ; j < 3 ; j++ )
 	 {
-	    hessian[m+11*j] -= (kap1*c1+eta1*c2)*m_hesspos1[m+3*j]+(kap2*c1+eta2*c2)*m_hesspos2[m+3*j]+
-	       (kap3*c1+eta3*c2)*m_hesspos3[m+3*j];
+	    hessian[m+11*j] -= (kap1*c1+eta1*c2)*m_deriv->hesspos1[m+3*j]+(kap2*c1+eta2*c2)*m_deriv->hesspos2[m+3*j]+
+	       (kap3*c1+eta3*c2)*m_deriv->hesspos3[m+3*j];
 	 }
       // (pos,mij)
       for( int m = 0; m < 3 ; m++ )
       {
 	 int j=3;
-	 hessian[m+11*j] -= (c1*kap1+eta1*c2)*m_dddp[m];
+	 hessian[m+11*j] -= (c1*kap1+eta1*c2)*m_deriv->dddp[m];
 	 j = 4;
-	 hessian[m+11*j] -= (c1*kap1+eta1*c2)*m_dddp[m+3] + (c1*kap2+eta2*c2)*m_dddp[m];
+	 hessian[m+11*j] -= (c1*kap1+eta1*c2)*m_deriv->dddp[m+3] + (c1*kap2+eta2*c2)*m_deriv->dddp[m];
 	 j = 5;
-	 hessian[m+11*j] -= (c1*kap1+eta1*c2)*m_dddp[m+6] + (c1*kap3+eta3*c2)*m_dddp[m];      
+	 hessian[m+11*j] -= (c1*kap1+eta1*c2)*m_deriv->dddp[m+6] + (c1*kap3+eta3*c2)*m_deriv->dddp[m];      
 	 j = 6;
-	 hessian[m+11*j] -= (c1*kap2+eta2*c2)*m_dddp[m+3];
+	 hessian[m+11*j] -= (c1*kap2+eta2*c2)*m_deriv->dddp[m+3];
 	 j = 7;
-	 hessian[m+11*j] -= (c1*kap2+eta2*c2)*m_dddp[m+6] + (c1*kap3+eta3*c2)*m_dddp[m+3];
+	 hessian[m+11*j] -= (c1*kap2+eta2*c2)*m_deriv->dddp[m+6] + (c1*kap3+eta3*c2)*m_deriv->dddp[m+3];
 	 j = 8;
-	 hessian[m+11*j] -= (c1*kap3+eta3*c2)*m_dddp[m+6];
+	 hessian[m+11*j] -= (c1*kap3+eta3*c2)*m_deriv->dddp[m+6];
       }
       // (pos,t0)
       float_sw4 dgt0 = -mTimeFunc_t(mFreq,t-mT0,mPar, mNpar, mIpar, mNipar);
@@ -694,11 +710,11 @@ void GridPointSource::add_to_hessian( std::vector<Sarray> & kappa, std::vector<S
       for( int m=0 ; m < 9 ; m++ )
       {
 	 int j = 9;
-	 hessian[m+11*j] -= ((c1t0*kap1+c2t0*eta1)*m_jacobian[3*m] + (c1t0*kap2+c2t0*eta2)*m_jacobian[3*m+1] +
-			     (c1t0*kap3+c2t0*eta3)*m_jacobian[3*m+2])*h3;
+	 hessian[m+11*j] -= ((c1t0*kap1+c2t0*eta1)*m_deriv->jacobian[3*m] + (c1t0*kap2+c2t0*eta2)*m_deriv->jacobian[3*m+1] +
+			     (c1t0*kap3+c2t0*eta3)*m_deriv->jacobian[3*m+2])*h3;
 	 j = 10;
-	 hessian[m+11*j] -= ((c1om0*kap1+c2om0*eta1)*m_jacobian[3*m] + (c1om0*kap2+c2om0*eta2)*m_jacobian[3*m+1] +
-			     (c1om0*kap3+c2om0*eta3)*m_jacobian[3*m+2])*h3;
+	 hessian[m+11*j] -= ((c1om0*kap1+c2om0*eta1)*m_deriv->jacobian[3*m] + (c1om0*kap2+c2om0*eta2)*m_deriv->jacobian[3*m+1] +
+			     (c1om0*kap3+c2om0*eta3)*m_deriv->jacobian[3*m+2])*h3;
       }
       float_sw4 cmfact0 = (kap1*mForces[0]+kap2*mForces[1]+kap3*mForces[2]);
       float_sw4 cmfact  = ((kap1*mForces[0]+kap2*mForces[1]+kap3*mForces[2])+
@@ -729,12 +745,15 @@ void GridPointSource::print_info() const
    cout << "-----------------------------------------------------------------------"<<endl;
    cout << " position " << m_i0 << " " << m_j0 << " " << m_k0 << endl;
    cout << "Forces = " << mForces[0] << " " << mForces[1] << " " << mForces[2] << endl;
-   cout << " jac = \n";
-   for( int c=0 ; c < 3 ; c++ )
+   if( m_jacobian_known )
    {
-       for( int m=0 ; m < 9 ; m++ )
-	  cout << m_jacobian[c+3*m] << " " ;
-       cout << endl;
+      cout << " jac = \n";
+      for( int c=0 ; c < 3 ; c++ )
+      {
+         for( int m=0 ; m < 9 ; m++ )
+            cout << m_deriv->jacobian[c+3*m] << " " ;
+         cout << endl;
+      }
    }
    cout << "Time dep " << mTimeDependence << endl;
    cout << "-----------------------------------------------------------------------"<<endl;

@@ -1298,8 +1298,10 @@ void Source::prepareTimeFunc(bool doFilter, float_sw4 sw4TimeStep, int sw4TimeSa
 
 
 //-----------------------------------------------------------------------
-void Source::set_grid_point_sources4( EW *a_EW, vector<GridPointSource*>& point_sources )
+void Source::set_grid_point_sources4( EW *a_EW, vector<GridPointSource*>& point_sources,
+                                      bool keep_derivatives )
 {
+   const bool derivdata = keep_derivatives || m_derivative >= 0;
 // This routine is called from all processors, for each input source.
    int i,j,k,g;
    int success = a_EW->computeNearestGridPoint2( i, j, k, g, mX0, mY0, mZ0 );
@@ -2355,7 +2357,9 @@ void Source::set_grid_point_sources4( EW *a_EW, vector<GridPointSource*>& point_
                      GridPointSource* sourcePtr = new GridPointSource( mFreq, mT0, i, j, k, g, 
                                                                        fx, fy, fz, mTimeDependence, mNcyc,
                                                                        mPar, mNpar, mIpar, mNipar,
-                                                                       dsdp, dddp, dh1, dh2, dh3 );
+                                                                       derivdata ? dsdp : NULL, derivdata ? dddp : NULL,
+                                                                       derivdata ? dh1 : NULL, derivdata ? dh2 : NULL,
+                                                                       derivdata ? dh3 : NULL );
                      if( m_derivative >= 0 )
                         sourcePtr->set_derivative(m_derivative,m_dir);
                      point_sources.push_back(sourcePtr);
@@ -2384,7 +2388,9 @@ void Source::set_grid_point_sources4( EW *a_EW, vector<GridPointSource*>& point_
                      GridPointSource* sourcePtr = new GridPointSource( mFreq, mT0, i, j, kk, g+1, 
                                                                        fx, fy, fz, mTimeDependence, mNcyc,
                                                                        mPar, mNpar, mIpar, mNipar,
-                                                                       dsdp, dddp, dh1, dh2, dh3 );
+                                                                       derivdata ? dsdp : NULL, derivdata ? dddp : NULL,
+                                                                       derivdata ? dh1 : NULL, derivdata ? dh2 : NULL,
+                                                                       derivdata ? dh3 : NULL );
                      if( m_derivative >= 0 )
                         sourcePtr->set_derivative(m_derivative,m_dir);
                      point_sources.push_back(sourcePtr);
@@ -2411,7 +2417,9 @@ void Source::set_grid_point_sources4( EW *a_EW, vector<GridPointSource*>& point_
                      GridPointSource* sourcePtr = new GridPointSource( mFreq, mT0, i, j, kk, g-1, 
                                                                        fx, fy, fz, mTimeDependence, mNcyc,
                                                                        mPar, mNpar, mIpar, mNipar,
-                                                                       dsdp, dddp, dh1, dh2, dh3 );
+                                                                       derivdata ? dsdp : NULL, derivdata ? dddp : NULL,
+                                                                       derivdata ? dh1 : NULL, derivdata ? dh2 : NULL,
+                                                                       derivdata ? dh3 : NULL );
                      if( m_derivative >= 0 )
                         sourcePtr->set_derivative(m_derivative,m_dir);
                      point_sources.push_back(sourcePtr);
@@ -2460,7 +2468,9 @@ void Source::set_grid_point_sources4( EW *a_EW, vector<GridPointSource*>& point_
                         GridPointSource* sourcePtr = new GridPointSource( mFreq, mT0, i, j, kk, g+1, 
                                                                           fx, fy, fz, mTimeDependence, mNcyc,
                                                                           mPar, mNpar, mIpar, mNipar,
-                                                                          dsdp, dddp, dh1, dh2, dh3 );
+                                                                          derivdata ? dsdp : NULL, derivdata ? dddp : NULL,
+                                                                       derivdata ? dh1 : NULL, derivdata ? dh2 : NULL,
+                                                                       derivdata ? dh3 : NULL );
                         point_sources.push_back(sourcePtr);
                      }
                   }
@@ -2498,7 +2508,9 @@ void Source::set_grid_point_sources4( EW *a_EW, vector<GridPointSource*>& point_
                         GridPointSource* sourcePtr = new GridPointSource( mFreq, mT0, i, j, kk, g-1, 
                                                                           fx, fy, fz, mTimeDependence, mNcyc,
                                                                           mPar, mNpar, mIpar, mNipar,
-                                                                          dsdp, dddp, dh1, dh2, dh3 );
+                                                                          derivdata ? dsdp : NULL, derivdata ? dddp : NULL,
+                                                                       derivdata ? dh1 : NULL, derivdata ? dh2 : NULL,
+                                                                       derivdata ? dh3 : NULL );
                         point_sources.push_back(sourcePtr);
                      }
                   } // end for i

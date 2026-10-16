@@ -42,6 +42,8 @@
 #include "Sarray.h"
 #include "Filter.h"
 
+#include <memory>
+
 class GridPointSource
 {
    friend std::ostream& operator<<(std::ostream& output, const GridPointSource& s);
@@ -118,10 +120,19 @@ public:
    //  float_sw4 m_min_exponent;
   int m_derivative;
   bool m_jacobian_known;
-  float_sw4 m_jacobian[27];
   bool m_hessian_known;
-  float_sw4 m_hesspos1[9], m_hesspos2[9], m_hesspos3[9], m_dddp[9]; 
-  float_sw4 m_dir[11];
+  // Parameter derivatives of the forces, for derivative, gradient and Hessian
+  // computations only. They are most of the object, and a rupture spreads into
+  // millions of grid point sources, so the block is only allocated when the
+  // constructor is given a jacobian or set_derivative is called.
+  struct Derivatives
+  {
+    float_sw4 jacobian[27];
+    float_sw4 hesspos1[9], hesspos2[9], hesspos3[9], dddp[9];
+    float_sw4 dir[11];
+  };
+  std::unique_ptr<Derivatives> m_deriv;
+  Derivatives& derivatives();
 };
 
 #endif

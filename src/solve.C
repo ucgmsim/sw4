@@ -297,7 +297,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 
 // Transfer source terms to each individual grid as point sources at grid points.
   for( unsigned int i=0 ; i < a_Sources.size() ; i++ )
-      a_Sources[i]->set_grid_point_sources4( this, point_sources );
+      a_Sources[i]->set_grid_point_sources4( this, point_sources, false );
 
 // Pre-roll. A 2-pass (zero-phase) prefilter makes a source time function
 // acausal: Source::prepareTimeFunc extends each discrete (SRF/rupture) time
