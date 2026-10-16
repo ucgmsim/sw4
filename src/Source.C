@@ -37,6 +37,7 @@
 
 #include <fenv.h>
 #include <cmath>
+#include <algorithm>
 
 #include  "EW.h"
 #include "Filter.h"
@@ -45,6 +46,33 @@
 
 #include "time_functions.h"
 #include "F77_FUNC.h"
+
+//-----------------------------------------------------------------------
+// prepareTimeFunc pads a discrete time series by the filter's precursor on
+// both sides and moves its start back by as much. Shared with
+// predictedFilteredDiscreteStart so both give the same start.
+static Filter source_filter( Filter* sw4_filter )
+{
+   return Filter( sw4_filter->get_type(), sw4_filter->get_order(), sw4_filter->get_passes(),
+                  sw4_filter->get_corner_freq1(), sw4_filter->get_corner_freq2() );
+}
+
+static int precursor_padding( Filter& my_filter, float_sw4 dt )
+{
+   my_filter.computeSOS( dt );
+   float_sw4 preCursorTime = my_filter.estimatePrecursor();
+   return static_cast<int>(ceil(preCursorTime/dt));
+}
+
+// not inlined, so that both callers get bitwise the same start
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+static float_sw4 padded_start( float_sw4 tstart, int nPadding, float_sw4 dt )
+{
+   return tstart - nPadding*dt;
+}
+
 
 //#include <fcntl.h>
 //#include <unistd.h>
@@ -1150,10 +1178,72 @@ bool Source::filteredDiscreteStart( float_sw4& tstart ) const
        (mTimeDependence == iDiscrete || mTimeDependence == iDiscrete6moments ||
         mTimeDependence == iDiscrete3forces) )
    {
-      tstart = mPar[0];
+      tstart = m_filtered_tstart; // mPar[0], which tabulate_time_function frees
       return true;
    }
    return false;
+}
+
+//-----------------------------------------------------------------------
+bool Source::predictedFilteredDiscreteStart( Filter* sw4_filter, float_sw4& tstart ) const
+{
+   if( !(mTimeDependence == iDiscrete || mTimeDependence == iDiscrete6moments ||
+         mTimeDependence == iDiscrete3forces) || mIgnore )
+      return false;
+   if( m_timeFuncIsReady )
+      return filteredDiscreteStart( tstart );
+   Filter my_filter = source_filter( sw4_filter );
+   float_sw4 dt = 1/mFreq;
+   tstart = padded_start( mPar[0], precursor_padding( my_filter, dt ), dt );
+   return true;
+}
+
+//-----------------------------------------------------------------------
+size_t Source::tabulate_time_function( const std::vector<float_sw4>& times_f,
+                                     const std::vector<float_sw4>& times_tt )
+{
+   if( !(m_timeFuncIsReady && m_is_filtered && mTimeDependence == iDiscrete && m_derivative == -1) )
+      return 0;
+   float_sw4 (*fn[2])(float_sw4, float_sw4, float_sw4*, int, int*, int) = { Discrete, Discrete_tt };
+   const std::vector<float_sw4>* times[2] = { &times_f, &times_tt };
+   const int npts = mIpar[0];
+   // Discrete clamps to the first (k < 0) or last (k > npts-2) spline interval;
+   // the same arithmetic as Discrete on the argument GridPointSource passes
+   auto interval = [&]( float_sw4 t ) {
+      float_sw4 a = t - mT0;
+      return static_cast<int>(floor(a*mFreq));
+   };
+   auto tab = std::make_unique<SourceTimeTable>();
+   for( int kind = 0 ; kind < 2 ; kind++ )
+   {
+      const std::vector<float_sw4>& T = *times[kind];
+      tab->times[kind] = &T;
+      // any argument before the spline (or after it) gives the clamped value
+      tab->before[kind] = fn[kind]( mFreq, -1/mFreq, mPar, mNpar, mIpar, mNipar );
+      tab->after[kind] = fn[kind]( mFreq, (npts+1)/mFreq, mPar, mNpar, mIpar, mNipar );
+      std::size_t lo = std::partition_point( T.begin(), T.end(),
+                                             [&]( float_sw4 t ) { return interval(t) < 0; } ) - T.begin();
+      std::size_t hi = std::partition_point( T.begin(), T.end(),
+                                             [&]( float_sw4 t ) { return interval(t) <= npts-2; } ) - T.begin();
+      // two extra entries on each side; then make sure every time left out
+      // really gives the clamped value
+      lo = lo >= 2 ? lo-2 : 0;
+      hi = std::min( hi+2, T.size() );
+      while( lo > 0 && fn[kind]( mFreq, T[lo-1]-mT0, mPar, mNpar, mIpar, mNipar ) != tab->before[kind] )
+         lo--;
+      while( hi < T.size() && fn[kind]( mFreq, T[hi]-mT0, mPar, mNpar, mIpar, mNipar ) != tab->after[kind] )
+         hi++;
+      tab->first[kind] = lo;
+      tab->values[kind].resize( hi > lo ? hi-lo : 0 );
+      for( std::size_t n = lo ; n < hi ; n++ )
+         tab->values[kind][n-lo] = fn[kind]( mFreq, T[n]-mT0, mPar, mNpar, mIpar, mNipar );
+   }
+   const size_t freed = mNpar*sizeof(float_sw4);
+   delete[] mPar;
+   mPar = nullptr;
+   mNpar = 0;
+   m_table = std::move( tab );
+   return freed;
 }
 
 //------ filter and fix up any discrete time functions ----------------
@@ -1175,14 +1265,11 @@ void Source::prepareTimeFunc(bool doFilter, float_sw4 sw4TimeStep, int sw4TimeSa
          // 2. extend time grid by appropriate number of time samples, pad with zeros
          // 3. Perform filtering with the dt of the time series
          // 4. Interpolate by spline
-         Filter my_filter( sw4_filter->get_type(), sw4_filter->get_order(), sw4_filter->get_passes(),
-                           sw4_filter->get_corner_freq1(), sw4_filter->get_corner_freq2());
+         Filter my_filter = source_filter( sw4_filter );
 // time step in the time series
          float_sw4 dt = 1/mFreq;
 // setup the filter for time step dt
-         my_filter.computeSOS( dt );
-         float_sw4 preCursorTime = my_filter.estimatePrecursor();
-         int nPadding = static_cast<int>(ceil(preCursorTime/dt));
+         int nPadding = precursor_padding( my_filter, dt );
 // current number of points
          int npts = mIpar[0];
          float_sw4 tstart = mPar[0];
@@ -1192,7 +1279,7 @@ void Source::prepareTimeFunc(bool doFilter, float_sw4 sw4TimeStep, int sw4TimeSa
 // hypocentre of an SRF (tinit=0). EW::solve then starts time stepping at
 // that negative time (a "pre-roll" without output), so the precursor is
 // not cut off at t=0; see EW::preroll_steps.
-         float_sw4 ext_tstart = tstart - nPadding*dt;
+         float_sw4 ext_tstart = padded_start( tstart, nPadding, dt );
 // setup ext_par
          ext_par[0] = ext_tstart;
          int i;
@@ -1249,6 +1336,7 @@ void Source::prepareTimeFunc(bool doFilter, float_sw4 sw4TimeStep, int sw4TimeSa
    // Build the spline representation
          spline_interpolation();
          m_is_filtered = true;
+         m_filtered_tstart = mPar[0];
 // only do the filtering once
          m_timeFuncIsReady = true;
       } // end doFilter
@@ -2835,6 +2923,12 @@ Source* Source::copy( std::string a_name )
    if( a_name == " " )
       a_name = mName;
 
+   if( m_table )
+   {
+      std::cerr << "Source::copy: the time function of source " << mName
+                << " has been tabulated and its spline freed\n";
+      MPI_Abort(MPI_COMM_WORLD, 1);
+   }
    Source* retval = new Source();
    //   retval->m_i0 = m_i0;
    //   retval->m_j0 = m_j0;

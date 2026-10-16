@@ -241,6 +241,8 @@ main(int argc, char **argv)
       int ng=simulation.mNumberOfGrids;
       vector<DataPatches*> upred_saved(ng), ucorr_saved(ng);
       vector<Sarray> U(ng), Um(ng), ph(ng);
+      // one solve, and the sources are not used again: see SourceTimeTable
+      simulation.set_tabulate_source_time_functions( true );
       SW4_TIMER_START("solve");
       simulation.solve( GlobalSources[0], GlobalTimeSeries[0], simulation.mMu, 
 			simulation.mLambda, simulation.mRho, U, Um, upred_saved, 

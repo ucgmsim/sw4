@@ -304,7 +304,7 @@ void GridPointSource::getFxyz( float_sw4 t, float_sw4* fxyz ) const
 {
    float_sw4 afun, afunv[6];
    if( mTimeDependence != iDiscrete6moments && mTimeDependence != iDiscrete3forces )
-      afun= mTimeFunc(mFreq,t-mT0,mPar, mNpar, mIpar, mNipar );
+      afun= m_table ? tabulated( 0, t ) : mTimeFunc(mFreq,t-mT0,mPar, mNpar, mIpar, mNipar );
    else if( mTimeDependence == iDiscrete6moments )
    {
       int npts = mIpar[0];
@@ -412,7 +412,7 @@ void GridPointSource::getFxyztt( float_sw4 t, float_sw4* fxyz ) const
 {
    float_sw4 afun, afunv[6];
    if( mTimeDependence != iDiscrete6moments && mTimeDependence != iDiscrete3forces )
-      afun= mTimeFunc_tt(mFreq,t-mT0,mPar, mNpar, mIpar, mNipar );
+      afun= m_table ? tabulated( 1, t ) : mTimeFunc_tt(mFreq,t-mT0,mPar, mNpar, mIpar, mNipar );
    else if( mTimeDependence == iDiscrete6moments )
    {
       int npts = mIpar[0];
@@ -530,32 +530,78 @@ void GridPointSource::limitFrequency(float_sw4 max_freq)
 }
 
 //-----------------------------------------------------------------------
+bool GridPointSource::hasScalarTimeFunc() const
+{
+  return m_derivative == -1 && mTimeDependence != iDiscrete6moments &&
+         mTimeDependence != iDiscrete3forces;
+}
+
+//-----------------------------------------------------------------------
+bool GridPointSource::sameTimeFunc( const GridPointSource& o ) const
+{
+  return m_table == o.m_table && mTimeFunc == o.mTimeFunc && mTimeFunc_tt == o.mTimeFunc_tt &&
+         mFreq == o.mFreq && mT0 == o.mT0 && mPar == o.mPar && mNpar == o.mNpar &&
+         mIpar == o.mIpar && mNipar == o.mNipar;
+}
+
+//-----------------------------------------------------------------------
 float_sw4 GridPointSource::getTimeFunc(float_sw4 t) const
 {
+  if( m_table )
+     return tabulated( 0, t );
   return mTimeFunc(mFreq, t - mT0, mPar, mNpar, mIpar, mNipar);
+}
+
+//-----------------------------------------------------------------------
+float_sw4 GridPointSource::tabulated( int kind, float_sw4 t ) const
+{
+  const long n = tabulated_time_index( *m_table->times[kind], t );
+  if( n < 0 )
+  {
+     std::cerr << "GridPointSource: time function " << (kind == 0 ? "" : "second derivative ")
+               << "requested at t = " << t << ", which is not one of the tabulated time steps\n";
+     MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+  return m_table->at( kind, n );
+}
+
+//-----------------------------------------------------------------------
+void GridPointSource::require_spline( const char* what ) const
+{
+  if( m_table )
+  {
+     std::cerr << "GridPointSource::" << what << ": the source time function is tabulated"
+               << " at the solver's time steps, its spline has been freed\n";
+     MPI_Abort(MPI_COMM_WORLD, 1);
+  }
 }
 
 //-----------------------------------------------------------------------
 float_sw4 GridPointSource::evalTimeFunc_t(float_sw4 t) const
 {
+  require_spline( "evalTimeFunc_t" );
   return mTimeFunc_t(mFreq, t - mT0, mPar, mNpar, mIpar, mNipar);
 }
 
 //-----------------------------------------------------------------------
 float_sw4 GridPointSource::evalTimeFunc_tt(float_sw4 t) const
 {
+  if( m_table )
+     return tabulated( 1, t );
   return mTimeFunc_tt(mFreq, t - mT0, mPar, mNpar, mIpar, mNipar);
 }
 
 //-----------------------------------------------------------------------
 float_sw4 GridPointSource::evalTimeFunc_ttt(float_sw4 t) const
 {
+  require_spline( "evalTimeFunc_ttt" );
   return mTimeFunc_ttt(mFreq, t - mT0, mPar, mNpar, mIpar, mNipar);
 }
 
 //-----------------------------------------------------------------------
 float_sw4 GridPointSource::evalTimeFunc_tttt(float_sw4 t) const
 {
+  require_spline( "evalTimeFunc_tttt" );
   return mTimeFunc_tttt(mFreq, t - mT0, mPar, mNpar, mIpar, mNipar);
 }
 
@@ -584,6 +630,7 @@ void GridPointSource::add_to_gradient( std::vector<Sarray> & kappa, std::vector<
 				       float_sw4 t, float_sw4 dt, float_sw4 gradient[11], std::vector<float_sw4> & h,
 				       vector<Sarray>& Jac, bool topography_exists )
 {
+   require_spline( "add_to_gradient" );
    if( m_jacobian_known )
    {
       float_sw4 normwgh[4]={17.0/48.0, 59.0/48.0, 43.0/48.0, 49.0/48.0 };
@@ -633,6 +680,7 @@ void GridPointSource::add_to_hessian( std::vector<Sarray> & kappa, std::vector<S
 				      std::vector<float_sw4> & h )
 // Add upper part of symmetric matrix
 {
+   require_spline( "add_to_hessian" );
    if( m_hessian_known && m_jacobian_known )
    {
       float_sw4 normwgh[4]={17.0/48.0, 59.0/48.0, 43.0/48.0, 49.0/48.0 };

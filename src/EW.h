@@ -114,7 +114,12 @@ int local_to_global_event( int e ) const;
 
 void setupRun( vector<vector<Source*> > & a_GlobalUniqueSources );
 
-int preroll_steps( vector<Source*> & a_Sources, bool save_sides );
+int preroll_steps( vector<Source*> & a_Sources, bool save_sides, bool predict=false );
+// Plain forward runs (sw4, not sw4mopt) evaluate each prefiltered SRF/rupture
+// time function only at solve()'s time steps, so solve() tabulates it there
+// and frees its spline (see SourceTimeTable). Only for a single solve() with
+// sources that are not reused afterwards.
+void set_tabulate_source_time_functions( bool on ) { m_tabulate_source_timefuncs = on; }
 void solve( vector<Source*> & a_GlobalSources, vector<TimeSeries*> & a_GlobalTimeSeries,
 	    vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda, vector<Sarray>& a_Rho,
 	    vector<Sarray>& U, vector<Sarray>& Um,
@@ -244,6 +249,12 @@ void exactRhsTwilight(float_sw4 a_t, vector<Sarray> & a_F);
 void exactAccTwilight(float_sw4 a_t, vector<Sarray> & a_Uacc);
 void Force(float_sw4 a_t, vector<Sarray> & a_F, const vector<GridPointSource*>& point_sources, const vector<int>& identsources );
 void Force_tt(float_sw4 a_t, vector<Sarray> & a_F, const vector<GridPointSource*>& point_sources, const vector<int>& identsources );
+// Cache of the distinct time functions used by the grid point sources (many grid point
+// sources, e.g. all those spread from one rupture subfault, share a time function).
+// Force/Force_tt then evaluate each time function once per call instead of once per
+// grid point source. Only used for the point_sources vector it was built for.
+void buildSourceTimeFuncCache( const vector<GridPointSource*>& point_sources );
+void clearSourceTimeFuncCache();
 void sort_grid_point_sources( vector<GridPointSource*>& point_sources, vector<int>& identsources );
 
 void normOfDifference( vector<Sarray> & a_Uex,  vector<Sarray> & a_U, float_sw4 &diffInf, float_sw4 &diffL2, float_sw4 &xInf,
@@ -1507,6 +1518,22 @@ vector<Sarray> mRho;
 vector<Sarray*> mMuVE, mLambdaVE;// Attenuation material
 vector<Sarray> mC; // Anisotropic material parameters
 Sarray mCcurv; // Anisotropic material with metric (on curvilinear grid).
+
+struct SourceTimeFuncCache {
+   const GridPointSource* const* key = nullptr; // point_sources.data() it was built for
+   size_t n = 0;                                 // point_sources.size() it was built for
+   std::vector<int> tf;                          // time function index of each source
+   std::vector<const GridPointSource*> rep;      // one representative source per time function
+   std::vector<float_sw4> forces;                // 3 force components per source
+   std::vector<float_sw4> val;                   // time function values at the current time
+   bool tabulated = false;                       // every time function is tabulated in m_srcTimes
+} m_srcTFcache;
+bool useSourceTimeFuncCache( const vector<GridPointSource*>& point_sources ) const;
+void evalSourceTimeFuncs( float_sw4 a_t, bool tt );
+bool m_tabulate_source_timefuncs = false;
+// Sorted, distinct times of the Force (0) and Force_tt (1) calls in solve()
+std::vector<float_sw4> m_srcTimes[2];
+void source_evaluation_times( float_sw4 tbegin, int npre, int nsteps );
 
 // Store coefficeints needed for Mesh refinement
 vector<Sarray> m_Morf, m_Mlrf, m_Mufs, m_Mlfs, m_Morc, m_Mlrc, m_Mucs, m_Mlcs;
