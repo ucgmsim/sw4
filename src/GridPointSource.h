@@ -94,7 +94,12 @@ public:
   // True if this source evaluates exactly the same time function as 'o'
   bool sameTimeFunc( const GridPointSource& o ) const;
   const float_sw4* getForces() const { return mForces; }
-  const float_sw4* getTimeFuncPar() const { return mPar; }
+  // Identifies the time function: its spline, or its table once tabulated
+  const void* timeFuncKey() const { return m_table ? static_cast<const void*>(m_table) : mPar; }
+  // Evaluate the source's tabulated time function instead of its spline,
+  // which Source::tabulate_time_function has freed (see SourceTimeTable)
+  void set_time_table( const SourceTimeTable* table ) { m_table = table; mPar = nullptr; }
+  const SourceTimeTable* timeTable() const { return m_table; }
 
  private:
 
@@ -124,6 +129,9 @@ public:
   int mNcyc;
    //  float_sw4 m_min_exponent;
   int m_derivative;
+  const SourceTimeTable* m_table = nullptr;
+  float_sw4 tabulated( int kind, float_sw4 t ) const;
+  void require_spline( const char* what ) const;
   bool m_jacobian_known;
   float_sw4 m_jacobian[27];
   bool m_hessian_known;

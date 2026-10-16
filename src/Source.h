@@ -39,6 +39,9 @@
 #include <vector>
 #include <string>
 #include "TimeDep.h"
+#include "SourceTimeTable.h"
+
+#include <memory>
 
 class EW;
 
@@ -138,6 +141,18 @@ public:
   // prepareTimeFunc has extended back by the filter's acausal precursor.
   // Returns false if this source has no such function prepared on this rank.
   bool filteredDiscreteStart( float_sw4& tstart ) const;
+  // The start filteredDiscreteStart will return once prepareTimeFunc has
+  // prefiltered this source with sw4_filter (false if it would not be a
+  // prefiltered discrete function). Used to know the pre-roll before any
+  // source is prepared.
+  bool predictedFilteredDiscreteStart( Filter* sw4_filter, float_sw4& tstart ) const;
+  // For a prefiltered scalar discrete time function: store its values at the
+  // given times (kind 0: function, kind 1: second derivative; see
+  // SourceTimeTable) and free the spline. Returns the bytes of spline freed,
+  // or 0, leaving the source unchanged, for any other time function.
+  size_t tabulate_time_function( const std::vector<float_sw4>& times_f,
+                               const std::vector<float_sw4>& times_tt );
+  const SourceTimeTable* timeTable() const { return m_table.get(); }
 
  private:
   Source();
@@ -190,6 +205,8 @@ public:
   timeDep mTimeDependence;
   float_sw4 m_dir[11];
   bool m_is_filtered;
+  float_sw4 m_filtered_tstart = 0; // start of the prefiltered discrete function
+  std::unique_ptr<SourceTimeTable> m_table; // set by tabulate_time_function
 
   float_sw4 m_zTopo;
   bool mIgnore;

@@ -80,7 +80,10 @@ void add_pseudohessian_terms2( int ifirst, int ilast, int jfirst, int jlast,
 //
 // Analytic time functions are filtered on the solver's grid from t=0 and are
 // not affected (prepareTimeFunc warns that t0 should be increased instead).
-int EW::preroll_steps( vector<Source*> & a_Sources, bool save_sides )
+//
+// predict=true gives the same result before set_grid_point_sources4, from the
+// start each source will have once prepared (and prints nothing).
+int EW::preroll_steps( vector<Source*> & a_Sources, bool save_sides, bool predict )
 {
    if( !m_prefilter_sources || m_check_point->do_restart() )
       return 0; // a restart continues from a state that already includes it
@@ -88,7 +91,9 @@ int EW::preroll_steps( vector<Source*> & a_Sources, bool save_sides )
    for( unsigned int s=0 ; s < a_Sources.size() ; s++ )
    {
       float_sw4 ts;
-      if( a_Sources[s]->filteredDiscreteStart( ts ) && ts < tmin_loc )
+      bool has = predict ? a_Sources[s]->predictedFilteredDiscreteStart( m_filter_ptr, ts )
+                         : a_Sources[s]->filteredDiscreteStart( ts );
+      if( has && ts < tmin_loc )
          tmin_loc = ts;
    }
    MPI_Allreduce( &tmin_loc, &tmin, 1, m_mpifloat, MPI_MIN, m_1d_communicator );
@@ -96,7 +101,7 @@ int EW::preroll_steps( vector<Source*> & a_Sources, bool save_sides )
       return 0;
    if( m_twilight_forcing || m_testing || m_do_geodynbc || save_sides )
    {
-      if( proc_zero() )
+      if( proc_zero() && !predict )
          printf("\n*** WARNING: prefiltered source time functions start at t=%g, before the start"
                 " of the simulation (t=%g).\n*** No pre-roll is possible in this mode: the filter"
                 " precursor before t=%g is cut off.\n\n",
@@ -105,7 +110,7 @@ int EW::preroll_steps( vector<Source*> & a_Sources, bool save_sides )
    }
 // 1e-6: do not add a whole step for round-off in a start time on the grid
    int npre = static_cast<int>(ceil( (mTstart-tmin)/mDt - 1e-6 ));
-   if( npre > 0 && !mQuiet && proc_zero() )
+   if( npre > 0 && !predict && !mQuiet && proc_zero() )
       printf("\nPrefiltered source time functions start at t=%g s, before t=%g s (the 2-pass\n"
              "filter's acausal precursor). Time stepping starts at t=%g s with %d pre-roll steps;\n"
              "receivers, images and checkpoints still start at t=%g s.\n\n",
@@ -295,9 +300,48 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
   if( m_point_source_test )
      m_point_source_test->set_source( a_Sources[0] );
 
+// Plain forward runs tabulate each prefiltered SRF/rupture time function at the
+// times this solve evaluates it, and free its spline as soon as its grid point
+// sources exist, so only one spline is held at a time (see SourceTimeTable).
+// The times depend on the pre-roll, which is predicted here from the sources'
+// unfiltered time series and checked against preroll_steps below.
+  const bool tabulate = m_tabulate_source_timefuncs && m_prefilter_sources &&
+     !m_check_point->do_restart() && !m_twilight_forcing && !m_testing && !m_do_geodynbc && !save_sides;
+  int npre_tab = 0;
+  float_sw4 tbegin_tab = mTstart;
+  if( tabulate )
+  {
+     npre_tab = preroll_steps( a_Sources, save_sides, true );
+     tbegin_tab = mTstart - npre_tab*mDt;
+     source_evaluation_times( tbegin_tab, npre_tab, mNumberOfTimeSteps[event] );
+  }
+
 // Transfer source terms to each individual grid as point sources at grid points.
+  double tab_counts[3] = {0, 0, 0}; // sources tabulated, spline bytes freed, table bytes
   for( unsigned int i=0 ; i < a_Sources.size() ; i++ )
+  {
+      const size_t s0 = point_sources.size();
       a_Sources[i]->set_grid_point_sources4( this, point_sources );
+      const size_t freed = tabulate ? a_Sources[i]->tabulate_time_function( m_srcTimes[0], m_srcTimes[1] ) : 0;
+      if( freed > 0 )
+      {
+         const SourceTimeTable* tab = a_Sources[i]->timeTable();
+         tab_counts[0] += 1;
+         tab_counts[1] += freed;
+         tab_counts[2] += (tab->values[0].size() + tab->values[1].size())*sizeof(float_sw4);
+         for( size_t s = s0 ; s < point_sources.size() ; s++ )
+            point_sources[s]->set_time_table( tab );
+      }
+  }
+  if( tabulate )
+  {
+     double tab_tot[3];
+     MPI_Reduce( tab_counts, tab_tot, 3, MPI_DOUBLE, MPI_SUM, 0, m_1d_communicator );
+     if( !mQuiet && mVerbose >= 1 && proc_zero() && tab_tot[0] > 0 )
+        printf("Tabulated %.0f prefiltered source time functions (one per rank holding a source) at %zu + %zu solver times:"
+               " %.1f MB of splines freed, %.1f MB of tables\n", tab_tot[0], m_srcTimes[0].size(),
+               m_srcTimes[1].size(), tab_tot[1]/1e6, tab_tot[2]/1e6 );
+  }
 
 // Pre-roll. A 2-pass (zero-phase) prefilter makes a source time function
 // acausal: Source::prepareTimeFunc extends each discrete (SRF/rupture) time
@@ -312,6 +356,13 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 // starts at t=mTstart exactly as before: time axes, step counts and
 // ORIGINTIME are the same, only the solution at t=mTstart is no longer zero.
   int npre = preroll_steps( a_Sources, save_sides );
+  if( tabulate && npre != npre_tab )
+  {
+     if( proc_zero() )
+        cerr << "EW::solve: internal error: the source time functions were tabulated for "
+             << npre_tab << " pre-roll steps, but the run needs " << npre << endl;
+     MPI_Abort(MPI_COMM_WORLD, 1);
+  }
 
   //  std::cout << m_myRank << " no of sources = " << point_sources.size() << std::endl;
   //  std::cout << m_myRank << " no of receivers = " << a_TimeSeries.size() << std::endl;
@@ -457,7 +508,7 @@ void EW::solve( vector<Source*> & a_Sources, vector<TimeSeries*> & a_TimeSeries,
 // However, the time variable 't' is incremented at the end of the time stepping loop. Thus the time step index is one step
 // ahead of 't' at the start.
      beginCycle = 1 - npre; // npre > 0: pre-roll, see preroll_steps
-     t = mTstart - npre*mDt;
+     t = tabulate ? tbegin_tab : mTstart - npre*mDt; // the same value the tables use
      initialData(t, U, AlphaVE);
      initialData(t-mDt, Um, AlphaVEm );
   }

@@ -114,7 +114,12 @@ int local_to_global_event( int e ) const;
 
 void setupRun( vector<vector<Source*> > & a_GlobalUniqueSources );
 
-int preroll_steps( vector<Source*> & a_Sources, bool save_sides );
+int preroll_steps( vector<Source*> & a_Sources, bool save_sides, bool predict=false );
+// Plain forward runs (sw4, not sw4mopt) evaluate each prefiltered SRF/rupture
+// time function only at solve()'s time steps, so solve() tabulates it there
+// and frees its spline (see SourceTimeTable). Only for a single solve() with
+// sources that are not reused afterwards.
+void set_tabulate_source_time_functions( bool on ) { m_tabulate_source_timefuncs = on; }
 void solve( vector<Source*> & a_GlobalSources, vector<TimeSeries*> & a_GlobalTimeSeries,
 	    vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda, vector<Sarray>& a_Rho,
 	    vector<Sarray>& U, vector<Sarray>& Um,
@@ -1521,9 +1526,14 @@ struct SourceTimeFuncCache {
    std::vector<const GridPointSource*> rep;      // one representative source per time function
    std::vector<float_sw4> forces;                // 3 force components per source
    std::vector<float_sw4> val;                   // time function values at the current time
+   bool tabulated = false;                       // every time function is tabulated in m_srcTimes
 } m_srcTFcache;
 bool useSourceTimeFuncCache( const vector<GridPointSource*>& point_sources ) const;
 void evalSourceTimeFuncs( float_sw4 a_t, bool tt );
+bool m_tabulate_source_timefuncs = false;
+// Sorted, distinct times of the Force (0) and Force_tt (1) calls in solve()
+std::vector<float_sw4> m_srcTimes[2];
+void source_evaluation_times( float_sw4 tbegin, int npre, int nsteps );
 
 // Store coefficeints needed for Mesh refinement
 vector<Sarray> m_Morf, m_Mlrf, m_Mufs, m_Mlfs, m_Morc, m_Mlrc, m_Mucs, m_Mlcs;

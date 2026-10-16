@@ -9736,10 +9736,10 @@ void EW::buildSourceTimeFuncCache(
   c.tf.resize(n);
   c.forces.resize(3 * n);
   // Sources sharing a time function share its mPar array, so hash on that pointer
-  std::unordered_map<const float_sw4 *, std::vector<int>> byPar;
+  std::unordered_map<const void *, std::vector<int>> byPar;
   for (size_t s = 0; s < n; s++) {
     const GridPointSource *ps = point_sources[s];
-    std::vector<int> &cand = byPar[ps->getTimeFuncPar()];
+    std::vector<int> &cand = byPar[ps->timeFuncKey()];
     int u = -1;
     for (int c0 : cand)
       if (ps->sameTimeFunc(*c.rep[c0])) {
@@ -9756,6 +9756,10 @@ void EW::buildSourceTimeFuncCache(
       c.forces[3 * s + m] = ps->getForces()[m];
   }
   c.val.resize(c.rep.size());
+  c.tabulated = !c.rep.empty();
+  for (const GridPointSource *ps : c.rep)
+    if (ps->timeTable() == nullptr)
+      c.tabulated = false;
   c.key = point_sources.data();
   c.n = n;
   if (!mQuiet && m_myRank == 0 && mVerbose >= 2)
@@ -9776,12 +9780,48 @@ void EW::evalSourceTimeFuncs(float_sw4 a_t, bool tt) {
   const int nu = m_srcTFcache.rep.size();
   const GridPointSource *const *rep = m_srcTFcache.rep.data();
   float_sw4 *val = m_srcTFcache.val.data();
+  if (m_srcTFcache.tabulated) {
+    // every time function is tabulated at the same times: look t up once
+    const int kind = tt ? 1 : 0;
+    const long n = tabulated_time_index(m_srcTimes[kind], a_t);
+    if (n < 0) {
+      cerr << "EW::evalSourceTimeFuncs: source time functions are tabulated, but t = " << a_t
+           << " is not one of the tabulated time steps" << endl;
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+#pragma omp parallel for
+    for (int u = 0; u < nu; u++)
+      val[u] = rep[u]->timeTable()->at(kind, n);
+    return;
+  }
   // Force uses the time function, Force_tt its second derivative
   float_sw4 (GridPointSource::*timefunc)(float_sw4) const =
       tt ? &GridPointSource::evalTimeFunc_tt : &GridPointSource::getTimeFunc;
 #pragma omp parallel for
   for (int u = 0; u < nu; u++)
     val[u] = (rep[u]->*timefunc)(a_t);
+}
+
+// The times solve() passes to Force and Force_tt, in the same arithmetic:
+// Force(t) once before the loop, then Force_tt(t) (4th order) and
+// Force(t+mDt) each step, t += mDt, and t = mTstart where the pre-roll ends.
+void EW::source_evaluation_times(float_sw4 tbegin, int npre, int nsteps) {
+  for (std::vector<float_sw4> &v : m_srcTimes)
+    v.clear();
+  float_sw4 t = tbegin;
+  m_srcTimes[0].push_back(t);
+  for (int step = 1 - npre; step <= nsteps; step++) {
+    if (mOrder == 4)
+      m_srcTimes[1].push_back(t);
+    m_srcTimes[0].push_back(t + mDt);
+    t += mDt;
+    if (step == 0)
+      t = mTstart;
+  }
+  for (std::vector<float_sw4> &v : m_srcTimes) {
+    std::sort(v.begin(), v.end());
+    v.erase(std::unique(v.begin(), v.end()), v.end());
+  }
 }
 
 void EW::sort_grid_point_sources(vector<GridPointSource *> &point_sources,
