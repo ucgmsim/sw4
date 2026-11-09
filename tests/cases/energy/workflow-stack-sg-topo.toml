@@ -43,7 +43,10 @@ name = "energy-strict"
 kind = "energy"
 runs = ["pr"]
 mode = "decay"
-xfail = "Default zetabreak=0.95 leaves only the bottom 2 of 29 curvilinear rows exactly Cartesian. The single-curvilinear-grid (curviCartIsSmooth) join copies ghost rows between grids, which is the same operator as one grid only if the metric is Cartesian wherever the Cartesian stencils reach: rows >= Nz-2, and with the finite-difference metric (metric_ci, k+-2) the mapping itself at rows >= Nz-4. So the coupling is not energy-neutral: ~1e-9 per step without supergrid, amplified ~100x by the 1/(strx*stry) weight in the sponge. zetabreak <= (Nz-5)/(Nz-1) conserves to 1e-11 (energy-strict-zb)."
+# zetaBreak is now capped at (Nz-5)/(Nz-1), so the default mapping is the
+# energy-neutral one energy-strict-zb tests (was xfail: the default 0.95
+# left only 2 of 29 curvilinear rows Cartesian and the energy rose 1e-7 a step).
+tol = { double = 1e-8, float = 5e-3 }
 
 [[check]]
 name = "energy-strict-zb"
