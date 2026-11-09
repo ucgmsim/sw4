@@ -50,6 +50,14 @@ float_sw4 get_tw_omega() const {return m_tw_omega;}
 void   set_twilight( float_sw4 omega );
 void   print_parameters() const;
 void set_eps( float_sw4 new_eps );
+float_sw4 get_eps() const {return m_epsL;}
+bool is_active() const {return m_left || m_right;}
+
+// Largest eigenvalue of the 1-D supergrid damping operator of this taper, per
+// unit damping coefficient, on the grid x_i = xmin + (i-1)*h, i=1..n, with
+// zero (Dirichlet) values outside. 'order' is the dissipation order (4 or 6).
+// See SuperGrid.C for why this bounds the damping coefficient.
+double damping_spectral_radius( float_sw4 xmin, float_sw4 h, int n, int order ) const;
 
 private:
 bool m_left, m_right;

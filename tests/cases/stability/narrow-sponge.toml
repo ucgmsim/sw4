@@ -1,4 +1,4 @@
-description = "ST-02: with two mesh refinement interfaces, a supergrid sponge of 6 coarse cells diverges within the first steps (the refinement interface iteration stops converging and the run fills with NaN); 10 cells is stable but marginal (interface non-convergence warnings) and 12 is clean. The workflow uses 15-30 cells. SW4 accepts the narrow sponge without complaint, so this pins the boundary: gp=12 must run clean, gp=6 must not silently succeed."
+description = "ST-02: with two mesh refinement interfaces, a supergrid sponge of 6 coarse cells used to diverge within the first steps: the block-Jacobi iteration of the refinement interface (EW::consintp) diverged with its fixed relaxation 0.94 (err 1e9 after 20 iterations, then NaN), even with dc=0, because the stretching phi falls by large factors between neighbouring grid points of a narrow layer and the restriction of the phi-scaled fine tractions outweighs the diagonal. consintp now restarts a diverging iteration with half the relaxation (and proportionally more iterations) and keeps the reduced factor for that interface; gp=6 settles at 0.235 and runs clean, as does gp=4. The coarse grid's default damping coefficient is also reduced to fit the 6-point layer (see stability/default-cfl). gp=12 must converge without a restart. The workflow uses 15-30 cells."
 labels = ["stability", "supergrid", "mr"]
 input = "narrow-sponge.in"
 ranks = 4
@@ -16,10 +16,21 @@ params = { gp = 12 }
 [[run]]
 name = "gp6"
 params = { gp = 6 }
-expect = "failure"
 
 [[check]]
 name = "gp12-clean"
 kind = "stdout_absent"
 runs = ["gp12"]
+patterns = ["no convergence", "nan", "restarting it with relaxation"]
+
+[[check]]
+name = "gp6-clean"
+kind = "stdout_absent"
+runs = ["gp6"]
 patterns = ["no convergence", "nan"]
+
+[[check]]
+name = "gp6-relaxation-adapted"
+kind = "stdout_present"
+runs = ["gp6"]
+patterns = ["consintp: interface iteration between grids 0 and 1 did not converge .* restarting it with relaxation"]
