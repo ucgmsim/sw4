@@ -1,0 +1,68 @@
+description = "EN-04: the workflow grid stack with topography (curvilinear top grid, mapping order 3, two refinement interfaces) and supergrid damping on the horizontal sides: the energy never increases. The supergrid stretching enters the curvilinear energy (energy4c_ci) as in the Cartesian one, rho*J/(strx*stry), so the logged energy is the norm the stability proof bounds."
+labels = ["energy", "curvi", "mr", "supergrid"]
+input = "energy.in"
+ranks = 4
+
+[params]
+xy = 12.0
+cfl = 0.9
+dev = ""
+z = 26.0
+nx = 13
+t = 30.0
+topo = "topography input=gaussian zmax=6 order=3 gaussianAmp=2 gaussianXc=6 gaussianYc=6.5 gaussianLx=2.5 gaussianLy=3"
+refinements = "refinement zmax=9\nrefinement zmax=15"
+atten = ""
+sg = "supergrid gp=4 dc=0"
+cpcs = 1.732
+bch = "supergrid"
+teextra = "sg_eps=1e-2"
+
+[[run]]
+name = "pr"
+
+[[run]]
+name = "zb"
+params = { topo = "topography input=gaussian zmax=6 order=3 gaussianAmp=2 gaussianXc=6 gaussianYc=6.5 gaussianLx=2.5 gaussianLy=3 zetabreak=0.85" }
+
+[[run]]
+name = "long"
+tier = "nightly"
+params = { t = 300.0 }
+
+[[check]]
+name = "energy"
+kind = "energy"
+runs = ["pr"]
+mode = "decay"
+tol = { double = 5e-7, float = 2e-3 }
+description = "Decays overall (-3.6e-6 over 580 steps) with isolated step-to-step increases up to 1.2e-7 (double). Without the stretching in energy4c_ci the logged quantity jumped by up to 2e-3 per step."
+
+[[check]]
+name = "energy-strict"
+kind = "energy"
+runs = ["pr"]
+mode = "decay"
+xfail = "Default zetabreak=0.95 leaves only the bottom 2 of 29 curvilinear rows exactly Cartesian. The single-curvilinear-grid (curviCartIsSmooth) join copies ghost rows between grids, which is the same operator as one grid only if the metric is Cartesian wherever the Cartesian stencils reach: rows >= Nz-2, and with the finite-difference metric (metric_ci, k+-2) the mapping itself at rows >= Nz-4. So the coupling is not energy-neutral: ~1e-9 per step without supergrid, amplified ~100x by the 1/(strx*stry) weight in the sponge. zetabreak <= (Nz-5)/(Nz-1) conserves to 1e-11 (energy-strict-zb)."
+
+[[check]]
+name = "energy-strict-zb"
+kind = "energy"
+runs = ["zb"]
+mode = "decay"
+# float: single-precision round-off in the energy sum, not the coupling
+# (CI test / float: 2.06e-3 in one step of 632, total change 9e-4).
+tol = { double = 1e-8, float = 5e-3 }
+description = "Same stack with zetabreak=0.85: the bottom 5 curvilinear rows are uniform, so the smooth curvilinear/Cartesian join is exactly one SBP operator and the energy is conserved (max rise 6e-12 relative with zetabreak=0.857)."
+
+[[check]]
+name = "energy-long"
+kind = "energy"
+runs = ["long"]
+mode = "decay"
+tol = { double = 5e-7, float = 2e-3 }
+
+[[check]]
+name = "interface-converged"
+kind = "stdout_absent"
+pattern = "no convergence"

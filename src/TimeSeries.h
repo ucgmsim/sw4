@@ -322,6 +322,9 @@ float_sw4 m_scalefactor;
    hid_t *m_fid_ptr;
    bool m_isIncAzWritten;
    int  m_nptsWritten;
+   // On restart: leading samples of the existing HDF5 file that are kept
+   // verbatim (recorded before the checkpoint cycle) instead of rewritten.
+   int  m_nptsKeptOnRestart;
    int  m_nsteps;
    std::string m_fidName;
    TimeSeries *m_ts0Ptr;
