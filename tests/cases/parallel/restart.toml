@@ -48,3 +48,17 @@ name = "agree"
 kind = "restart_agree"
 runs = ["straight", "restarted"]
 bitwise = true
+
+[[check]]
+name = "agree-cycle"
+kind = "restart_agree"
+runs = ["straight-cycle", "restarted-cycle"]
+# Not bitwise for the same reason as "agree" above (restart round trip of
+# the pre-checkpoint samples; #27 fixes it and can make both bitwise).
+bitwise = true
+
+[[check]]
+name = "cycle-option-used"
+kind = "stdout_absent"
+runs = ["straight-cycle"]
+pattern = "ignoring checkpoint line option"
