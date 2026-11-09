@@ -1,4 +1,4 @@
-description = "EN-02: the workflow grid stack (curvilinear top grid, mapping order 3, over two refinement interfaces) at the workflow CFL 0.9: the energy never increases (it is conserved to about 4e-6 over 600 steps: the curvilinear/Cartesian interface is slightly dissipative)."
+description = "EN-02: the workflow grid stack (curvilinear top grid, mapping order 3, over two refinement interfaces) at the workflow CFL 0.9: the energy is conserved to round-off (4.7e-14 over 625 steps, largest step-to-step rise 1.1e-14, double). With a single curvilinear grid the curvilinear/Cartesian join only copies ghost points, which is energy-exact only if the curvilinear metric is Cartesian wherever the Cartesian stencils reach: the old mapping's zetaBreak is capped at (Nz-5)/(Nz-1) for that. With zetaBreak = 0.95 (Nz = 29) the energy drifted by -3.3e-6 with step-to-step rises up to 1.3e-9."
 labels = ["energy", "curvi", "mr"]
 input = "energy.in"
 ranks = 4
@@ -31,12 +31,21 @@ name = "energy"
 kind = "energy"
 runs = ["pr"]
 mode = "decay"
+tol = { double = 1e-12, float = 2e-3 }
+
+[[check]]
+name = "energy-conserved"
+kind = "energy"
+runs = ["pr"]
+mode = "conserve"
+tol = { double = 1e-11, float = 1e-3 }
 
 [[check]]
 name = "energy-long"
 kind = "energy"
 runs = ["long"]
 mode = "decay"
+tol = { double = 1e-12, float = 2e-3 }
 
 [[check]]
 name = "interface-converged"

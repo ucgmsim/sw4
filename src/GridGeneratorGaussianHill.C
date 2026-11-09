@@ -45,7 +45,8 @@ bool GridGeneratorGaussianHill::grid_mapping( EW* a_ew, float_sw4 q, float_sw4 r
    // old
       int nz           = a_ew->m_global_nz[g];
       float_sw4 zu1    = m_topo_zmax - (nz-1)*h;
-      float_sw4 izb    = 1.0/(m_zetaBreak*(nz-1));
+      const float_sw4 zetaBreak = zeta_break(nz);
+      float_sw4 izb    = 1.0/(zetaBreak*(nz-1));
       z = m_topo_zmax - (nz-s)*h;
       float_sw4 zeta  = (s-1)*izb;
       if( zeta < 1 )
@@ -106,14 +107,15 @@ bool GridGeneratorGaussianHill::inverse_grid_mapping( EW* a_ew, float_sw4 x, flo
          int nz           = a_ew->m_global_nz[g];
 //   If z is in the Cartesian part of grid, this is the s value:
          s = (z-m_topo_zmax)/h + nz;
-         float_sw4 zlim = m_topo_zmax - (nz-1)*(1-m_zetaBreak)*h;
+         const float_sw4 zetaBreak = zeta_break(nz);
+         float_sw4 zlim = m_topo_zmax - (nz-1)*(1-zetaBreak)*h;
          if( z >= zlim )
             return true;
          else
          {
          // z is in the curvilinear part, solve non-linear equation
             float_sw4 z0  = m_topo_zmax - (nz-1)*h + tau;
-            float_sw4 izb = 1.0/(m_zetaBreak*(nz-1));
+            float_sw4 izb = 1.0/(zetaBreak*(nz-1));
             // 1e-12 sits below FLT_EPSILON (~1.2e-7), unattainable in single
             // precision; loosen like EW.C's m_citol (EW.C:569).
             float_sw4 tol = sizeof(float_sw4) == 4 ? 1e-4 : 1e-12;
@@ -210,7 +212,8 @@ void GridGeneratorGaussianHill::grid_mapping_diff(
    // old
       int nz           = a_ew->m_global_nz[g];
       float_sw4 zu1    = m_topo_zmax - (nz-1)*h;
-      float_sw4 izb    = 1.0/(m_zetaBreak*(nz-1));
+      const float_sw4 zetaBreak = zeta_break(nz);
+      float_sw4 izb    = 1.0/(zetaBreak*(nz-1));
       //      z = m_topo_zmax - (nz-s)*h;
       float_sw4 zeta  = (s-1)*izb;
       zq = zr = 0;
@@ -225,10 +228,10 @@ void GridGeneratorGaussianHill::grid_mapping_diff(
          float_sw4 omsm = (1-zeta);
          for( int l=2 ; l <= m-2 ; l++ )
             omsm *= (1-zeta);
-         zss -= (m/m_zetaBreak)*((m-1)/m_zetaBreak)*omsm*(zu1+tau);
+         zss -= (m/zetaBreak)*((m-1)/zetaBreak)*omsm*(zu1+tau);
          zss *= inzm1*inzm1;
          omsm *= (1-zeta);
-         zs += (m/m_zetaBreak)*omsm*(zu1+tau);
+         zs += (m/zetaBreak)*omsm*(zu1+tau);
          zs *= inzm1;
          omsm *= (1-zeta);
 
@@ -336,7 +339,9 @@ void GridGeneratorGaussianHill::generate_grid_and_met_old_gh( EW *a_ew, Sarray& 
    int nz           = a_ew->m_global_nz[g];
    float_sw4 zu1    = m_topo_zmax - (nz-1)*h;
    float_sw4 inzm1  = 1.0/(nz-1);
-   float_sw4 izb    = 1.0/(m_zetaBreak*(nz-1));
+   report_zeta_break( a_ew, nz );
+   const float_sw4 zetaBreak = zeta_break(nz);
+   float_sw4 izb    = 1.0/(zetaBreak*(nz-1));
    int m=m_grid_interpolation_order; // shorter name
    for (int k=a_x.m_kb; k<=a_x.m_ke; k++)
       for (int j=a_x.m_jb; j<=a_x.m_je; j++)
@@ -357,7 +362,7 @@ void GridGeneratorGaussianHill::generate_grid_and_met_old_gh( EW *a_ew, Sarray& 
                float_sw4 omsm = (1-s);
                for( int l=2 ; l <= m-1 ; l++ )
                   omsm *= (1-s);
-               zr += (m/m_zetaBreak)*omsm*(zu1+tau);
+               zr += (m/zetaBreak)*omsm*(zu1+tau);
                omsm *= (1-s);
                a_z(i,j,k) -=  omsm*(zu1 + tau);
                zp = omsm*(-taup);
@@ -372,8 +377,8 @@ void GridGeneratorGaussianHill::generate_grid_and_met_old_gh( EW *a_ew, Sarray& 
             {
                std::cout << "Error, zr = " << zr << " at " << i << " "
                          <<  j << " " <<  k << std::endl;
-	       std::cout << " s= " << s << " zu1, tau, m, m_zetaBreak" << zu1 << " "
-			 << tau << " " << m << " " << m_zetaBreak << std::endl;
+	       std::cout << " s= " << s << " zu1, tau, m, zetaBreak" << zu1 << " "
+			 << tau << " " << m << " " << zetaBreak << "\n";
 	       exit(0);
                return;
             }
