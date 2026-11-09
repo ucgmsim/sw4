@@ -213,10 +213,14 @@ void GridGeneratorGaussianHill::grid_mapping_diff(
       float_sw4 izb    = 1.0/(m_zetaBreak*(nz-1));
       //      z = m_topo_zmax - (nz-s)*h;
       float_sw4 zeta  = (s-1)*izb;
+      // Below the break (zeta >= 1) the mapping is z = topo_zmax - (nz-s)*h:
+      // zs = h and every other derivative is zero.
       zq = zr = 0;
-      zs = h*(nz-1);
+      zqq = zqr = zqs = zrr = zrs = zss = 0;
+      zs = h;
       if( zeta < 1 )
       {
+         zs = h*(nz-1);
          int m=m_grid_interpolation_order; // shorter name
          float_sw4 tau, tauq, taur, tauqq, tauqr, taurr;
          topder( (q-1)*h, (r-1)*h, tau, tauq, taur );
@@ -230,6 +234,8 @@ void GridGeneratorGaussianHill::grid_mapping_diff(
          omsm *= (1-zeta);
          zs += (m/m_zetaBreak)*omsm*(zu1+tau);
          zs *= inzm1;
+         zqs = (m/m_zetaBreak)*omsm*tauq*h*inzm1;
+         zrs = (m/m_zetaBreak)*omsm*taur*h*inzm1;
          omsm *= (1-zeta);
 
          zq = omsm*(-tauq)*h;

@@ -1,0 +1,72 @@
+description = "EQ-11: a point moment source in the bottom rows of a single curvilinear grid (flat Gaussian topography of amplitude 0, zmax=1600, h=200, so Nz=9 and the old mapping is Cartesian below z=1520) gives the same seismograms as the same source on a Cartesian grid. The source's 6-point stencil reaches across the curvilinear/Cartesian join, where both grids have the same h and (i,j). Guards two fixes: the stencil rows placed on the Cartesian grid were scaled by the volume of a 2:1 coarser grid (1/(8h^3) instead of 1/h^3, Source.C), and below the mapping break GridGeneratorGaussianHill::grid_mapping_diff returned zs = (Nz-1)h instead of h, which scaled every vertical-derivative (mxz, myz, mzz) term of a source there by 1/(Nz-1). z=1300: general double couple, stencil rows k=5..10 (kk=1,2 on the Cartesian grid). z=1550: last curvilinear row (kc=Nz-1) and below the break, mxy (horizontal derivatives) and mxz (vertical derivative) separately."
+labels = ["equivalence", "curvi", "source"]
+input = "eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 0.0
+t = 5.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+# Off the grid nodes horizontally, so the horizontal stencil weights are not trivial.
+src_de = 130.0
+src_dn = -70.0
+station_mode = "xy"
+stations = [["N", 0, 3000], ["E", 3000, 0], ["SW", -2000, -2000], ["NE2", 1000, 2600]]
+recvars = ""
+rec = ""
+curvi = "topography input=gaussian zmax=1600 order=3 gaussianAmp=0.0 gaussianXc=6000 gaussianYc=6000 gaussianLx=2000 gaussianLy=2000"
+mt1300 = "source x={{src_x}} y={{src_y}} z=1300 m0=1e15 strike=30 dip=70 rake=45 t0=1.5 freq=3.3333333333 type=Gaussian"
+mxy1550 = "source x={{src_x}} y={{src_y}} z=1550 m0=1e15 mxy=1 t0=1.5 freq=3.3333333333 type=Gaussian"
+mxz1550 = "source x={{src_x}} y={{src_y}} z=1550 m0=1e15 mxz=1 t0=1.5 freq=3.3333333333 type=Gaussian"
+source = ""
+
+[[run]]
+name = "cartesian-mt1300"
+params = { source = "{{mt1300}}" }
+
+[[run]]
+name = "curvilinear-mt1300"
+params = { source = "{{mt1300}}", topo = "{{curvi}}" }
+
+[[run]]
+name = "cartesian-mxy1550"
+params = { source = "{{mxy1550}}" }
+
+[[run]]
+name = "curvilinear-mxy1550"
+params = { source = "{{mxy1550}}", topo = "{{curvi}}" }
+
+[[run]]
+name = "cartesian-mxz1550"
+params = { source = "{{mxz1550}}" }
+
+[[run]]
+name = "curvilinear-mxz1550"
+params = { source = "{{mxz1550}}", topo = "{{curvi}}" }
+
+[[check]]
+name = "mt-two-rows-above-join"
+kind = "traces_agree"
+runs = ["cartesian-mt1300", "curvilinear-mt1300"]
+rtol = { double = 1e-6, float = 1e-3 }
+
+[[check]]
+name = "mxy-last-row"
+kind = "traces_agree"
+runs = ["cartesian-mxy1550", "curvilinear-mxy1550"]
+rtol = { double = 1e-6, float = 1e-3 }
+
+[[check]]
+name = "mxz-last-row"
+kind = "traces_agree"
+runs = ["cartesian-mxz1550", "curvilinear-mxz1550"]
+rtol = { double = 1e-6, float = 1e-3 }
