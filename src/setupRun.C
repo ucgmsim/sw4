@@ -33,6 +33,8 @@
 #include "CurvilinearInterface2.h"
 #include "GridGenerator.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 // making directories
@@ -848,22 +850,22 @@ float_sw4 EW::mu_at_point( float_sw4 x, float_sw4 y, float_sw4 z, int g )
              x, y, z, g);
       MPI_Abort(MPI_COMM_WORLD,1);
    }
+   // Lower node of the cell holding index coordinate t, clamped so the cell
+   // [n, n+1] lies within [lo, hi], and t's fractional position in that cell.
+   auto cell = []( float_sw4 t, int lo, int hi, int& n ) {
+      n = std::clamp( static_cast<int>(floor(t)), lo, hi-1 );
+      return std::clamp( t-n, static_cast<float_sw4>(0), static_cast<float_sw4>(1) );
+   };
+   auto lerp = []( float_sw4 w, float_sw4 v0, float_sw4 v1 ) { return (1-w)*v0 + w*v1; };
+
    Sarray& mu = mMu[g];
-   int i = static_cast<int>(floor(q));
-   int j = static_cast<int>(floor(r));
-   int k = static_cast<int>(floor(s));
-   i = min(max(i, mu.m_ib), mu.m_ie-1);
-   j = min(max(j, mu.m_jb), mu.m_je-1);
-   k = min(max(k, 1), m_global_nz[g]-1);
-   float_sw4 a = min(max(q-i, static_cast<float_sw4>(0)), static_cast<float_sw4>(1));
-   float_sw4 b = min(max(r-j, static_cast<float_sw4>(0)), static_cast<float_sw4>(1));
-   float_sw4 c = min(max(s-k, static_cast<float_sw4>(0)), static_cast<float_sw4>(1));
-   float_sw4 val = 0;
-   for( int dk=0 ; dk <= 1 ; dk++ )
-      for( int dj=0 ; dj <= 1 ; dj++ )
-         for( int di=0 ; di <= 1 ; di++ )
-            val += (di ? a : 1-a)*(dj ? b : 1-b)*(dk ? c : 1-c)*mu(i+di,j+dj,k+dk);
-   return val;
+   int i, j, k;
+   const float_sw4 a = cell( q, mu.m_ib, mu.m_ie, i );
+   const float_sw4 b = cell( r, mu.m_jb, mu.m_je, j );
+   const float_sw4 c = cell( s, 1, m_global_nz[g], k );
+   auto along_x = [&]( int jj, int kk ) { return lerp( a, mu(i,jj,kk), mu(i+1,jj,kk) ); };
+   auto along_xy = [&]( int kk ) { return lerp( b, along_x(j,kk), along_x(j+1,kk) ); };
+   return lerp( c, along_xy(k), along_xy(k+1) );
 }
 
 //-----------------------------------------------------------------------
