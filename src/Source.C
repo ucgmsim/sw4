@@ -1990,7 +1990,10 @@ void Source::set_grid_point_sources4( EW *a_EW, vector<GridPointSource*>& point_
                      if( curvilineargm1 )
                         wF /= a_EW->mJ[g-1](i,j,kk);
                      else
-                        wF /= 8*h*h*h;
+                        // The top Cartesian grid has the same h as the curvilinear grid
+                        // above it and shares its (i,j) (update_curvilinear_cartesian_interface),
+                        // so the cell volume is h^3, not that of a 2:1 refinement.
+                        wF /= h*h*h;
                      GridPointSource* sourcePtr = new GridPointSource( mFreq, mT0,
                                                                        i,j,kk,g-1,
                                                                        wF*mForces[0], wF*mForces[1], wF*mForces[2],
@@ -2490,7 +2493,9 @@ void Source::set_grid_point_sources4( EW *a_EW, vector<GridPointSource*>& point_
                      if( curvilineargm1 )
                         jaci = 1/a_EW->mJ[g-1](i,j,kk);
                      else
-                        jaci = 1.0/(8*h*h*h);
+                        // Same h and (i,j) on both sides of the curvilinear/Cartesian join:
+                        // the cell volume is h^3, not that of a 2:1 refinement.
+                        jaci = 1.0/(h*h*h);
 
                      float_sw4 fx = -(mForces[0]*wFx+mForces[1]*wFy+mForces[2]*wFz)*jaci;
                      float_sw4 fy = -(mForces[1]*wFx+mForces[3]*wFy+mForces[4]*wFz)*jaci;

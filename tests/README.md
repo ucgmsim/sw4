@@ -90,7 +90,7 @@ Tolerances are per precision: `rtol = { double = 1e-6, float = 1e-3 }`.
 | `analytic` | Lamb's problem, a whole-space point source, a source near a refinement interface |
 | `energy` | Discrete energy of random data: conserved or decaying on the workflow grid stack, with attenuation and supergrid; the attenuation CFL regression (6f62621b) |
 | `workflow` | Mini-NZ, a scaled-down copy of the input ~/src/workflow generates: the rechdf5 and imagehdf5 contract, projection, golden traces, float vs double |
-| `equivalence` | One physical problem posed in different ways: SRF vs `source`, SRF HDF5 vs ASCII, slip-rate output is velocity, sfile vs `block`, flat curvilinear vs Cartesian, rechdf5 vs text, `width` vs `gp`, mirror symmetry, grid rotation, NS/EW orientation |
+| `equivalence` | One physical problem posed in different ways: SRF vs `source`, SRF HDF5 vs ASCII, slip-rate output is velocity, sfile vs `block`, flat curvilinear vs Cartesian, a source across the curvilinear/Cartesian join, rechdf5 vs text, `width` vs `gp`, mirror symmetry, grid rotation, NS/EW orientation |
 | `supergrid` | Reflection from the absorbing layer |
 | `prefilter` | The prefilter is a zero-phase Butterworth; precursor truncation |
 | `parallel` | Bitwise identical results across MPI ranks and threads; checkpoint and restart |
