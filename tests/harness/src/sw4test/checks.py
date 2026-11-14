@@ -349,5 +349,23 @@ def stdout_present(ctx: Ctx) -> bool:
     return ok
 
 
+@check("seismic_moment")
+def seismic_moment(ctx: Ctx) -> bool:
+    """The total seismic moment SW4 prints equals the run's `m0` parameter in every run."""
+    rtol = ctx.tol("rtol", 1e-6)
+    ok = True
+    for r in ctx.run_names:
+        m = re.search(r"Total seismic moment \(M0\):\s*(\S+)\s*Nm", _output_text(ctx, r))
+        if not m:
+            print(f"FAIL {r}: SW4 printed no total seismic moment")
+            ok = False
+            continue
+        got, ref = float(m.group(1)), float(ctx.params(r)["m0"])
+        good = relerr(got, ref) <= rtol
+        print(f"  {'ok ' if good else 'BAD'} {r}: M0 = {got:.6e} Nm, expected {ref:.6e} (rel. diff {got / ref - 1:+.3e}, rtol {rtol:.1e})")
+        ok &= good
+    return ok
+
+
 # Further check kinds register themselves on import.
 from . import checks_waveforms  # noqa: E402,F401

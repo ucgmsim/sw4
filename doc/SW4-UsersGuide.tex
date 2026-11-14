@@ -3159,7 +3159,10 @@ The \verb+rupture+ command is used to describe complex time-dependent rupture me
 fault surface. The \verb+rupture+ command reads a SRF (Standard Rupture Format) file and generates a
 kinematic rupture model consisting of a set of moment tensor source terms. The local shear modulus
 of the material is taken into account to calculate the strength of each source terms such that the
-prescribed amount of slip is achieved on each sub-fault of the SRF file.
+prescribed amount of slip is achieved on each sub-fault of the SRF file. The shear modulus is that
+of the material model, $\mu=\rho C_S^2$. With attenuation enabled it is therefore the modulus at
+the reference frequency \verb+phasefreq+, and the seismic moment does not depend on $Q_S$ or on
+the other parameters of the \verb+attenuation+ command.
 
 The SRF file format is described on the SCEC wiki webpage:
 \verb+http://scec.usc.edu/scecpedia/Standard_Rupture_Format+

@@ -1543,6 +1543,7 @@ vector<float_sw4> m_curviRefLev;
 
 private:
 void preprocessSources( vector<vector<Source*> >& a_GlobalSources );
+void scale_sources_by_shear_modulus( vector<vector<Source*> > & a_GlobalUniqueSources );
 float_sw4 mu_at_point( float_sw4 x, float_sw4 y, float_sw4 z, int g );
 void revvector( int npts, float_sw4* v );
 
