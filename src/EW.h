@@ -1638,6 +1638,8 @@ vector<int *> m_BndryWindow;
 bool m_use_attenuation, m_att_use_max_frequency;
 int m_number_mechanisms;
 float_sw4 m_velo_omega, m_min_omega, m_max_omega, m_att_max_frequency, m_att_ppw;
+// ratio max/min of the frequency band where Q is fitted (default 100 = two decades)
+float_sw4 m_att_bandwidth;
 float_sw4 m_qmultiplier;
 
 vector<Sarray> mQp, mQs;
