@@ -2173,11 +2173,15 @@ attenuation nmech=3 phasefreq=2.5 maxfreq=10
 \end{verbatim}
 enables visco-elastic modeling with three SLS mechanisms, tuned for the max frequency
 $f_{max}=10$~Hz, such that the phase velocities are valid at the reference frequency
-$f_r=2.5$~Hz. For simplicity, the lower frequency in the modeling is always two orders of
+$f_r=2.5$~Hz. By default, the lower frequency in the modeling is two orders of
 magnitude smaller than the max frequency,
 \[
 	f_{min}=\frac{f_{max}}{100}.
 \]
+The ratio $f_{max}/f_{min}$ can be changed with the \verb+bandwidth+ option. A narrower band lets
+fewer mechanisms hold $Q$ close to constant (for example, $n=2$ with \verb+bandwidth=10+ keeps
+$Q$ within about 5\% of its target over the band), but $Q$ is not controlled outside
+$[f_{min},f_{max}]$, so the band must cover all frequencies of interest in the simulation.
 
 Instead of using \verb+maxfreq+, the upper frequency limit can alternatively be specified through the
 \verb+minppw+ option. In this case the material model is first evaluated to find $\min V_S/h$. The
@@ -2682,7 +2686,7 @@ attenuation phasefreq=2.5 nmech=3 maxfreq=15
 In this case, three standard linear solid mechanisms are used (\verb+nmech=3+) to give a material
 with approximately constant quality factors in the frequency band $0.15 \leq f \leq 15$ Hz. Note
 that only the upper frequency limit needs to be specified (\verb+maxfreq=15+); the lower limit is
-always 100 times smaller (and can not be specified). Since the visco-elastic material is dispersive,
+100 times smaller by default (see the \verb+bandwidth+ option). Since the visco-elastic material is dispersive,
 we use the \verb+phasefreq=2.5+ option to specify at what frequency the compressional and shear
 speeds should apply. In the description of the LOH.3 problem this frequency is given as 2.5 Hz, see
 Day et al.~\cite{Day-2003}.
@@ -3216,7 +3220,7 @@ commands, and are ignored if present.
 \begin{flushleft}\bf
 	Syntax:\\
 	\tt
-	attenuation phasefreq=... nmech=... maxfreq=... minppw=... qmultiplier=...
+	attenuation phasefreq=... nmech=... maxfreq=... minppw=... qmultiplier=... bandwidth=...
 	\\
 	\bf Required parameters:\\
 	\rm None \\
@@ -3233,14 +3237,21 @@ commands, and are ignored if present.
 		minppw             & Calculate the upper frequency limit based on this number of grid points per shortest
 		wave length ($>0$) & real                                                                                 & None      & None                     \\ \hline
 		qmultiplier        & A number that will multiply both $Q_P$ and $Q_S$                                     & real$>0$  & None      & 1.0          \\ \hline
+		bandwidth          & Ratio $f_{max}/f_{min}$ ($>1$) of the frequency band where $Q_P$ and $Q_S$ are approximated & real & None & 100 \\ \hline
 	\end{tabular}
 \end{center}
-\index{attenuation parameters!phasefreq, nmech, maxfreq, minppw, qmultiplier}
+\index{attenuation parameters!phasefreq, nmech, maxfreq, minppw, qmultiplier, bandwidth}
 If you specify the \verb+minppw+ option, the upper frequency limit is calculated based on the
 relation $P=\min C_S/(h f)$, i.e.,
 \[
 	f_{max} = \frac{1}{P_{min}}\min \frac{C_S}{h},\quad f_{max} = \mbox{maxfreq},\quad P_{min}=\mbox{minppw}.
 \]
+The lower frequency limit is $f_{min} = f_{max}/{\tt bandwidth}$, with $f_{max}$ given by either
+\verb+maxfreq+ or \verb+minppw+. A narrower band lets fewer mechanisms keep $Q$ close to constant
+inside the band, but $Q$ is not controlled outside it (it grows rapidly above $f_{max}$ and below
+$f_{min}$). Too many mechanisms for a narrow band over-fits: some mechanisms get negative weights
+(e.g.\ $n\geq 4$ with {\tt bandwidth}$\leq 12$). With \verb+nmech=1+ the single relaxation frequency
+is $f_{max}$ and \verb+bandwidth+ has no effect; it is also ignored when \verb+nmech=0+.
 The {\tt qmultiplier} value will multiply $Q_P$ and $Q_S$ at all grid points, before the computation starts,
 \[
 	Q_P := {\tt qmultiplier} \times Q_P\qquad Q_S := {\tt qmultiplier} \times Q_S.

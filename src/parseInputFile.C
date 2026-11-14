@@ -1563,6 +1563,12 @@ void EW::processAttenuation(char* buffer)
         foundppw = true;
         CHECK_INPUT(m_att_ppw >= 0, "ERROR: minimum ppw must be >= 0, not " << m_att_ppw);
      }
+     else if( startswith("bandwidth=",token) )
+     {
+        token += 10;
+        m_att_bandwidth = atof( token );
+        CHECK_INPUT(m_att_bandwidth > 1, "ERROR: bandwidth (ratio of max to min frequency) must be > 1, not " << m_att_bandwidth);
+     }
      else if( startswith("qmultiplier=",token) )
      {
         token += 12;
