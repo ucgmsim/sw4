@@ -579,7 +579,7 @@ EW::EW(const string &fileName, vector<vector<Source *>> &a_GlobalSources,
       m_use_attenuation(false), m_number_mechanisms(0), m_velo_omega(-1.0),
       m_min_omega(-1.0), m_max_omega(-1.0), m_geodynbc_found(false),
       m_geodynbc_center(false), m_do_geodynbc(false),
-      m_att_use_max_frequency(false), m_att_ppw(8.0),
+      m_att_use_max_frequency(false), m_att_ppw(8.0), m_att_bandwidth(100.0),
       m_inverse_problem(a_invproblem), m_maxit(0), m_maxrestart(0),
       m_iniguess_pos(false), m_iniguess_t0fr(false), m_iniguess_mom(false),
       m_iniguess_shifts(false), m_output_initial_seismograms(false),
@@ -9268,8 +9268,9 @@ void EW::setup_attenuation_relaxation(float_sw4 minvsoh) {
   //       m_min_omega = m_max_omega/2000.; // decent accuracy for 5 mechanisms
   //     }
 
-  // always use a frequency band that is 2 decades wide
-  m_min_omega = m_max_omega / 100.;
+  // the band is m_att_bandwidth wide (attenuation bandwidth=, default 100, i.e.
+  // 2 decades). It is unused when n == 1.
+  m_min_omega = m_max_omega / m_att_bandwidth;
 
   if (proc_zero()) {
     printf("\n*** Attenuation parameters calculated for %i mechanisms,\n"
