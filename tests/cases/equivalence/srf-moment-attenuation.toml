@@ -1,0 +1,58 @@
+description = "EQ-12: the moment of an SRF (slip x area) source does not depend on the attenuation settings. SW4 scales each SRF subfault by the shear modulus at the source; with attenuation on it used to read mu after setup_viscoelastic had replaced it by the unrelaxed modulus mu/|M(phasefreq)|, which inflated the moment by a factor set by the local Qs and the fit (Qs=25, phasefreq=0.5: +8.0% with nmech=3 maxfreq=2.5, +8.9% with nmech=2, +12.3% with maxfreq=10). One Gaussian SRF point in a Qs=25 half-space: the printed total moment equals rho*vs^2*area*slip without attenuation, with two different fits, for the ASCII reader, and on a curvilinear grid; and the SRF seismograms equal those of `source m0=rho*vs^2*area*slip` in the same viscoelastic medium (measured 9e-4, as without attenuation in srf-vs-source; 8e-2 before the fix)."
+labels = ["equivalence", "rupture", "hdf5", "attenuation", "source"]
+input = "eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 0.0
+t = 5.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+block = "block vp=4000 vs=2300 rho=2500 qs=25 qp=50"
+n3 = "attenuation nmech=3 maxfreq=2.5 phasefreq=0.5"
+n2 = "attenuation nmech=2 maxfreq=2.5 phasefreq=0.5"
+material = "{{n3}}\n{{block}}"
+source = "rupturehdf5 file=src.srf.h5"
+recvars = ""
+rec = ""
+
+[[run]]
+name = "srf-elastic"
+params = { material = "{{block}}" }
+
+[[run]]
+name = "srf-n3"
+
+[[run]]
+name = "srf-n2"
+params = { material = "{{n2}}\n{{block}}" }
+
+[[run]]
+name = "srf-ascii-n3"
+params = { source = "rupture file=src.srf" }
+
+[[run]]
+name = "srf-n3-curvilinear"
+params = { src_dep_km = 1.0, topo = "topography input=gaussian zmax=1600 order=3 gaussianAmp=0.0 gaussianXc=6000 gaussianYc=6000 gaussianLx=2000 gaussianLy=2000" }
+
+[[run]]
+name = "moment-tensor-n3"
+params = { source = "source lat={{src_lat}} lon={{src_lon}} depth={{src_dep}} m0={{m0}} strike={{stk}} dip={{dip}} rake={{rake}} t0={{src_t0}} freq={{src_freq}} type=Gaussian" }
+
+[[check]]
+name = "moment-is-model-mu-slip-area"
+kind = "seismic_moment"
+rtol = { double = 1e-6, float = 1e-5 }
+
+[[check]]
+name = "srf-vs-moment-tensor-with-attenuation"
+kind = "traces_agree"
+runs = ["srf-n3", "moment-tensor-n3"]
+rtol = 2e-3

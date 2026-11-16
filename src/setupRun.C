@@ -383,6 +383,10 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
 
   assign_supergrid_damping_arrays();
 
+// multiply slip sources (rupture files) by the shear modulus of the material model.
+// Must precede setup_viscoelastic(), which overwrites mMu with the unrelaxed modulus.
+  scale_sources_by_shear_modulus( a_GlobalUniqueSources );
+
 // convert Qp and Qs to muVE, lambdaVE, and compute unrelaxed lambda, mu
   if( m_use_attenuation )
   {
@@ -481,7 +485,7 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
 // if we got this far, the object should be ready for time-stepping
   mIsInitialized = true;
 
-// do source specific initialization such as prefiltering, scaling by mu, compute epicenter, etc (see below)
+// do source specific initialization such as prefiltering, compute epicenter, etc (see below)
   preprocessSources( a_GlobalUniqueSources );
   
   double time_start_solve = MPI_Wtime();
@@ -555,7 +559,7 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
 
 // For non-testing modes, this routine performs the following tasks:
 // 1: computes the epicenter, i.e. the location of the source with the earliest start time
-// 2: if any source returns get_ShearModulusFactor() == true, it multiplies Mij by the shear modulus
+// 2: (scaling Mij by the shear modulus is done earlier, in scale_sources_by_shear_modulus())
 // 3: evaluate the min and max z-coordinate of all sources
 // 4: sets freq=1/dt in all sources with iDirac time-function
 // 5: modifies the time function if pre-filtering is enabled *** MOVED TO Source:prepareTimeFunc() ***
@@ -650,76 +654,6 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
       
 // Set up 'normal' sources for point_source_test, lamb_test, or standard seismic case.
 
-// if the sources were defined by a rupture file, we need to multiply the Mij coefficients by mu (shear modulus)
-	  bool need_mu_corr=false;
-#pragma omp parallel for reduction(||:need_mu_corr)
-	  for( int i=0 ; i < a_GlobalUniqueSources[e].size() ; i++ )
-	     need_mu_corr = (need_mu_corr || a_GlobalUniqueSources[e][i]->get_CorrectForMu( ));
-
-// must communicate need_mu_corr
-	  int mu_corr_global=0, mu_corr_loc= need_mu_corr? 1:0;
-      
-// take max over all procs to communicate 
-	  MPI_Allreduce( &mu_corr_loc, &mu_corr_global, 1, MPI_INT, MPI_MAX, m_cartesian_communicator);
-	  need_mu_corr=(bool) mu_corr_global;
-
-// tmp
-//      printf(" Proc #%i, sources needs correction for shear modulus: %s\n", getRank(), need_mu_corr? "TRUE":"FALSE");
-
-	  if (!mQuiet && mVerbose >= 3 && proc_zero() )
-	     printf(" Some sources needs correction for shear modulus: %s\n", need_mu_corr? "TRUE":"FALSE");
-
-	  if (need_mu_corr)
-	  {
-	     int nSources=a_GlobalUniqueSources[e].size();
-	// if (proc_zero())
-	//   printf("Number of sources: %i\n", nSources);
-
-// allocate a temp array for the mu value at all source locations
-             float_sw4 *mu_source_loc = new float_sw4[nSources];
-             float_sw4 *mu_source_global = new float_sw4[nSources];
-// initialize
-
-#pragma omp parallel for
-             for (int s=0; s<nSources; s++)
-             {
-                mu_source_loc[s]=-1.0;
-                mu_source_global[s]=-1.0;
-             }
-	
-// fill in the values that are known to this processor
-             for (int s=0; s<nSources; s++)
-                if (a_GlobalUniqueSources[e][s]->myPoint())
-                   mu_source_loc[s] = mu_at_point( a_GlobalUniqueSources[e][s]->getX0(),
-                                                   a_GlobalUniqueSources[e][s]->getY0(),
-                                                   a_GlobalUniqueSources[e][s]->getZ0(),
-                                                   a_GlobalUniqueSources[e][s]->m_grid );
-// take max over all procs: communicate 
-             MPI_Allreduce( mu_source_loc, mu_source_global, nSources, m_mpifloat, MPI_MAX, m_cartesian_communicator);
-
-             if (!mQuiet && mVerbose >= 3 && proc_zero() )
-                printf(" Done communicating shear modulus to all procs\n");
-// tmp
-	// for (s=0; s<nSources; s++)
-	//   printf("Proc #%i, source#%i, mu=%e\n", getRank(), s, mu_source_global[s]);
-
-// scale all moments components
-#pragma omp parallel for
-             for (int s=0; s<nSources; s++)
-                if (a_GlobalUniqueSources[e][s]->get_CorrectForMu())
-                {
-                   float_sw4 mu, mxx, mxy, mxz, myy, myz, mzz;
-                   mu = mu_source_global[s];
-                   a_GlobalUniqueSources[e][s]->getMoments( mxx, mxy, mxz, myy, myz, mzz);
-                   a_GlobalUniqueSources[e][s]->setMoments( mu*mxx, mu*mxy, mu*mxz, mu*myy, mu*myz, mu*mzz);
-// lower the flag
-                   a_GlobalUniqueSources[e][s]->set_CorrectForMu(false);
-                }
-// cleanup
-             delete[] mu_source_loc;
-             delete[] mu_source_global;
-          } // end if need_mu_corr
-      
       
 // limit max freq parameter (right now the raw freq parameter in the time function) Either rad/s or Hz depending on the time fcn
       // if (m_limit_source_freq)
@@ -824,6 +758,91 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
    
   mSourcesOK = true;
 } // end preprocessSources
+
+//-----------------------------------------------------------------------
+void EW::scale_sources_by_shear_modulus( vector<vector<Source*> > & a_GlobalUniqueSources )
+{
+// Sources given as slip (rupture files) carry area*slip and are multiplied here
+// by the shear modulus at the source. Must be called before setup_viscoelastic(),
+// which replaces mMu by the unrelaxed modulus mu/|M(phasefreq)|: the moment of a
+// prescribed slip is defined with the modulus of the material model, mu=rho*Vs^2
+// at the reference frequency, and must not depend on Q or on how the attenuation
+// model is fitted (number of mechanisms, maxfreq).
+   if( m_testing )
+      return;
+   for( int e=0 ; e < a_GlobalUniqueSources.size() ; e++ )
+   {
+// if the sources were defined by a rupture file, we need to multiply the Mij coefficients by mu (shear modulus)
+	  bool need_mu_corr=false;
+#pragma omp parallel for reduction(||:need_mu_corr)
+	  for( int i=0 ; i < a_GlobalUniqueSources[e].size() ; i++ )
+	     need_mu_corr = (need_mu_corr || a_GlobalUniqueSources[e][i]->get_CorrectForMu( ));
+
+// must communicate need_mu_corr
+	  int mu_corr_global=0, mu_corr_loc= need_mu_corr? 1:0;
+      
+// take max over all procs to communicate 
+	  MPI_Allreduce( &mu_corr_loc, &mu_corr_global, 1, MPI_INT, MPI_MAX, m_cartesian_communicator);
+	  need_mu_corr=(bool) mu_corr_global;
+
+// tmp
+//      printf(" Proc #%i, sources needs correction for shear modulus: %s\n", getRank(), need_mu_corr? "TRUE":"FALSE");
+
+	  if (!mQuiet && mVerbose >= 3 && proc_zero() )
+	     printf(" Some sources needs correction for shear modulus: %s\n", need_mu_corr? "TRUE":"FALSE");
+
+	  if (need_mu_corr)
+	  {
+	     int nSources=a_GlobalUniqueSources[e].size();
+	// if (proc_zero())
+	//   printf("Number of sources: %i\n", nSources);
+
+// allocate a temp array for the mu value at all source locations
+             float_sw4 *mu_source_loc = new float_sw4[nSources];
+             float_sw4 *mu_source_global = new float_sw4[nSources];
+// initialize
+
+#pragma omp parallel for
+             for (int s=0; s<nSources; s++)
+             {
+                mu_source_loc[s]=-1.0;
+                mu_source_global[s]=-1.0;
+             }
+	
+// fill in the values that are known to this processor
+             for (int s=0; s<nSources; s++)
+                if (a_GlobalUniqueSources[e][s]->myPoint())
+                   mu_source_loc[s] = mu_at_point( a_GlobalUniqueSources[e][s]->getX0(),
+                                                   a_GlobalUniqueSources[e][s]->getY0(),
+                                                   a_GlobalUniqueSources[e][s]->getZ0(),
+                                                   a_GlobalUniqueSources[e][s]->m_grid );
+// take max over all procs: communicate 
+             MPI_Allreduce( mu_source_loc, mu_source_global, nSources, m_mpifloat, MPI_MAX, m_cartesian_communicator);
+
+             if (!mQuiet && mVerbose >= 3 && proc_zero() )
+                printf(" Done communicating shear modulus to all procs\n");
+// tmp
+	// for (s=0; s<nSources; s++)
+	//   printf("Proc #%i, source#%i, mu=%e\n", getRank(), s, mu_source_global[s]);
+
+// scale all moments components
+#pragma omp parallel for
+             for (int s=0; s<nSources; s++)
+                if (a_GlobalUniqueSources[e][s]->get_CorrectForMu())
+                {
+                   float_sw4 mu, mxx, mxy, mxz, myy, myz, mzz;
+                   mu = mu_source_global[s];
+                   a_GlobalUniqueSources[e][s]->getMoments( mxx, mxy, mxz, myy, myz, mzz);
+                   a_GlobalUniqueSources[e][s]->setMoments( mu*mxx, mu*mxy, mu*mxz, mu*myy, mu*myz, mu*mzz);
+// lower the flag
+                   a_GlobalUniqueSources[e][s]->set_CorrectForMu(false);
+                }
+// cleanup
+             delete[] mu_source_loc;
+             delete[] mu_source_global;
+          } // end if need_mu_corr
+   }
+}
 
 //-----------------------------------------------------------------------
 // Shear modulus at (x,y,z) in grid g, trilinear in the grid's index space
