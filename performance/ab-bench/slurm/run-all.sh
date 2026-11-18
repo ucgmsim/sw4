@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+#
+# Archive prior results, submit the full A/B matrix, then watch it.
+#
+#   ./performance/ab-bench/slurm/run-all.sh -A nesi00213
+#
+# Everything is submitted at once. An earlier version chained jobs with
+# --dependency=afterany to stop two of our own runs sharing a node, but that is
+# the wrong trade on a busy cluster: other users' jobs contend regardless, so
+# serialising ours controls almost nothing while multiplying wall-clock. Only
+# --exclusive would actually isolate a run, and a whole free node is rare enough
+# that those jobs effectively never schedule.
+#
+# The mitigation is to measure the noise instead of trying to remove it: the
+# summary now reports each phase's own run-to-run spread, so a contended result
+# announces itself rather than masquerading as signal.
+#
+set -uo pipefail
+
+ACCOUNT="${ACCOUNT:-nesi00213}"
+P_GENOA="${P_GENOA:-genoa}"
+P_MILAN="${P_MILAN:-milan}"
+SIZE="${SIZE:-L}"
+REPS="${REPS:-5}"
+STEPS="${STEPS:-200}"
+MEM="${MEM:-96G}"
+WALL="${WALL:-3:00:00}"
+MODULES_ENV="${MODULES:-}"
+# The commit every A/B is taken against: the one the last production run was
+# built from. Pinning it here is what makes the matrix answer the question that
+# matters -- "is HEAD faster than what we are actually running" -- instead of
+# "is HEAD faster than whatever baseline the script defaults to". hpc3-ab.sl's
+# own default is 23a3410, which predates the entire optimisation series, so a
+# matrix that does not set BASE silently measures months of work at once and
+# cannot tell you whether the last day helped. Move this when production moves.
+PROD_BASE="${PROD_BASE:-d60411e8}"
+DO_ARCHIVE=1; DO_SUBMIT=1; DO_WATCH=1; DRY=0; PACKAGE=0; ONLY=""; INTERVAL="${INTERVAL:-90}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -A|--account) ACCOUNT="$2"; shift 2;;
+    --size) SIZE="$2"; shift 2;;
+    --reps) REPS="$2"; shift 2;;
+    --steps) STEPS="$2"; shift 2;;
+    --mem) MEM="$2"; shift 2;;
+    --wall) WALL="$2"; shift 2;;
+    --no-archive) DO_ARCHIVE=0; shift;;
+    --no-submit)  DO_SUBMIT=0; shift;;
+    --no-watch)   DO_WATCH=0; shift;;
+    --watch-only) DO_ARCHIVE=0; DO_SUBMIT=0; shift;;
+    # --dry-run must not move anything. It archived a completed round's results
+    # once, which is a surprising thing for a command whose entire purpose is
+    # to show what WOULD happen. Nothing was lost -- archiving is a move -- but
+    # a dry run has no business touching the filesystem.
+    --dry-run) DRY=1; DO_ARCHIVE=0; shift;;
+    --package) PACKAGE=1; shift;;
+    --only) ONLY="$2"; DO_ARCHIVE=0; shift 2;;
+    --interval) INTERVAL="$2"; shift 2;;
+    --base) PROD_BASE="$2"; shift 2;;
+    -h|--help)
+      sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
+      echo "Options: -A ACCOUNT --size S|M|L|XL --reps N --steps N --mem X --wall H:MM:SS"
+      echo "         --no-archive --no-submit --no-watch --watch-only --dry-run --interval SEC"
+      echo "         --base REF  A/B every job against REF (default $PROD_BASE,"
+      echo "                     the commit the last production run was built from)"
+      echo "         --package   submit the whole-node package matrix instead: everything"
+      echo "                     since the base as ONE unit, on prod-full (see script)"
+      echo "         --only A,B  submit only the named matrix rows; implies --no-archive and APPENDS"
+      echo "                     to .ab-jobs, so already-queued jobs keep being watched"
+      exit 0;;
+    *) echo "unknown option: $1" >&2; exit 2;;
+  esac
+done
+
+REPO="$(git rev-parse --show-toplevel 2>/dev/null)"
+[ -z "$REPO" ] && { echo "not in a git repo (did .git come across in the rsync?)"; exit 1; }
+cd "$REPO" || exit 1
+AB="performance/ab-bench/slurm/hpc3-ab.sl"
+COMM="performance/ab-bench/slurm/hpc3-comm.sl"
+for f in "$AB" "$COMM"; do [ -x "$f" ] || chmod +x "$f" 2>/dev/null; done
+STATE="$REPO/.ab-jobs"
+
+# ---------------------------------------------------------------- archive ----
+if [ "$DO_ARCHIVE" = 1 ]; then
+  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+  ARC="$REPO/ab-archive/$STAMP"
+  shopt -s nullglob
+  MOVED=0
+  for x in "$REPO"/ab-comm-* "$REPO"/ab-genoa-* "$REPO"/ab-milan-* "$REPO"/ab-local-* \
+           "$REPO"/ab-results-* "$REPO"/sw4-ab-*.out "$REPO"/sw4-comm-*.out "$STATE"; do
+    [ -e "$x" ] || continue
+    mkdir -p "$ARC"
+    # detach any worktrees the old run registered, else git keeps a stale ref
+    for wt in "$x"/wt-base "$x"/wt-head; do
+      [ -d "$wt" ] && git worktree remove --force "$wt" >/dev/null 2>&1
+    done
+    mv "$x" "$ARC"/ && MOVED=$((MOVED+1))
+  done
+  shopt -u nullglob
+  git worktree prune >/dev/null 2>&1
+  if [ "$MOVED" -gt 0 ]; then echo "archived $MOVED item(s) -> ab-archive/$STAMP"
+  else echo "nothing to archive"; fi
+fi
+
+# ----------------------------------------------------------------- submit ----
+# name | partition | precision | ranks | cpus-per-task | script | extra
+# name | partition | walltime | nodes | ntasks | cpus-per-task | mem | script | env
+#
+# Production settings throughout: the prod cases carry real supergrid absorbing
+# boundaries (gp=30) and attenuation nmech=3, which is what production runs use
+# and what every twilight case silently does not.
+#
+# SIZE=M is 800k points/rank -> nx~234 at 16 ranks. The previous round used
+# SIZE=L (nx=372) on a four-case list and four of six jobs hit the time limit
+# two reps into curvi-mr, having built in 14-89s. This is ~4x less work with 3x
+# the walltime, and the prod cases have no twilight sin/cos so they are much
+# cheaper per point.
+# Every row carries BASE_ENV so the whole matrix answers one question against
+# one reference. The only row that deliberately does not is P-comm; see there.
+BASE_ENV="BASE=$PROD_BASE HEAD_REF=HEAD"
+PROD_ENV="$BASE_ENV CASES=prod,prod-mr SIZE=M STEPS=150 REPS=4"
+MATRIX=(
+  # the headline: production settings, production layout, both precisions
+  "P-gen-sp|$P_GENOA|6:00:00|1|16|4|96G|$AB|$PROD_ENV PRECISION=single RANKS=16"
+  "P-gen-dp|$P_GENOA|6:00:00|1|16|4|96G|$AB|$PROD_ENV PRECISION=double RANKS=16"
+  # AVX2 contrast -- do the gains survive without AVX-512 on production settings?
+  "P-mil-sp|$P_MILAN|6:00:00|1|16|4|96G|$AB|$PROD_ENV PRECISION=single RANKS=16"
+  # Layout pair. NX is pinned so both solve the SAME problem: per-rank sizing
+  # would give the 2-rank job a 1/8-size grid and make the absolute times
+  # meaningless, which is exactly what happened in the first attempt.
+  "P-lay16|$P_GENOA|6:00:00|1|16|4|96G|$AB|$BASE_ENV CASES=prod STEPS=150 REPS=4 PRECISION=single RANKS=16 NX=235 TIMEVAL=0.2983"
+  "P-lay2|$P_GENOA|6:00:00|1|2|32|96G|$AB|$BASE_ENV CASES=prod STEPS=150 REPS=4 PRECISION=single RANKS=2 NX=235 TIMEVAL=0.2983"
+  # single-precision correctness. STRICT_FP removes FMA re-contraction and one
+  # thread removes reduction ordering, so this MUST come back bit-exact.
+  # Anything else is a real defect and outranks all remaining optimisation work.
+  "P-strict|$P_GENOA|1:00:00|1|4|1|32G|$AB|$BASE_ENV CASES=prod,prod-mr SIZE=S STEPS=100 REPS=2 PRECISION=single STRICT=1 RANKS=4 THREADS_OVERRIDE=1 FORCE=1"
+  # falsifiable prediction: SG cost was measured INDEPENDENT of gp, because the
+  # sweep covers the whole grid either way. gp=12 and gp=30 should cost the
+  # same. If they differ, the premise behind the windowing work is wrong.
+  "P-sg12|$P_GENOA|3:00:00|1|16|4|96G|$AB|$BASE_ENV CASES=prod SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS=16 SW4_BENCH_SGGP=12"
+  "P-sg30|$P_GENOA|3:00:00|1|16|4|96G|$AB|$BASE_ENV CASES=prod SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS=16 SW4_BENCH_SGGP=30"
+  # halo exchange at HEAD across nodes. The ONE row deliberately off PROD_BASE:
+  # BASE=e6ccbba pins it to the revert point so it measures the hand-packing,
+  # not the reverted non-blocking attempt. Nothing between PROD_BASE and HEAD
+  # touches parallelStuff.C, so putting this row on the common base would spend
+  # four nodes for four hours to measure a guaranteed 1.00x.
+  "P-comm|$P_GENOA|4:00:00|4|16|4|96G|$COMM|BASE=e6ccbba HEAD_REF=HEAD SIZE=M STEPS=150 REPS=4 PRECISION=single RANKS_PER_NODE=16"
+)
+
+# ---------------------------------------------------------------- package ----
+# Everything since the last production run as ONE unit: PROD_BASE -> HEAD.
+#
+#   2e32c921  vectorise the SBP boundary closures (67 unroll pragmas)
+#   59f18318  curvilinear MR interface: hoist invariants, stop allocating, thread
+#   59f354ef  RHS kernels: share the k-plane window across threads -- static,1
+#   (working tree) schedule(static,jblk): static,1 measured 0.73-0.98x on
+#             Div-stress in the first round, so this replaces it with a chunk
+#             that keeps j contiguous AND shares the k-plane
+#   (working tree) Sarray 2 MB-aligned + MADV_HUGEPAGE, cache-coloured
+#   (working tree) comm wait/transfer split + per-rank spread (timing only)
+#
+# Mostly on the prod-full case, because the schedule commits' effect exists only
+# at production per-rank plane sizes and ranks-per-CCD; see the case comment.
+#
+# Read P-full-$PKG_RANKS against P-full-nohp before drawing any conclusion about
+# the allocator: they differ only by SW4_HUGEPAGES, so the pair is a clean 2x2
+# against the commit range and the difference between them IS the huge-page
+# effect. The base side is identical in both (it predates the allocator and
+# ignores the variable), which is what makes the comparison legitimate.
+if [ "$PACKAGE" = 1 ]; then
+  PKG_BASE="${PKG_BASE:-$PROD_BASE}"
+  # Whole-node rank count. genoa is 168 cores = 42x4, but a partition/QoS cap
+  # on CPUs per job refused exactly those submissions once; set PKG_RANKS to
+  # the largest multiple of 2 that fits (e.g. 32 for a 128-CPU cap, 40 for one
+  # reserved core). The layout pair uses PKG_RANKS x4 vs PKG_RANKS/2 x8 at the
+  # extent prod-full would pick for PKG_RANKS, so both solve the same grid.
+  PKG_RANKS="${PKG_RANKS:-42}"
+  PKG_HALF=$(( PKG_RANKS / 2 ))
+  PKG_L=$(python3 -c "print(int(round(175*(${PKG_RANKS})**0.5/4))*400)")
+  PKG_ENV="BASE=$PKG_BASE HEAD_REF=HEAD PRECISION=single STEPS=150 REPS=4"
+  # genoa is 2x EPYC 9634 = 168 cores. 42x4 fills the node: the L3 is ours,
+  # the DRAM contention is production's, and 4 threads/rank is the production
+  # layout. If a whole node will not schedule, P-full-16 is the shared-node
+  # fallback -- same per-rank geometry, but the L3 share is unknown.
+  MATRIX=(
+    "P-full-$PKG_RANKS|$P_GENOA|2:30:00|1|$PKG_RANKS|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=$PKG_RANKS"
+    "P-full-16|$P_GENOA|2:30:00|1|16|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=16"
+    # Same job as P-full-$PKG_RANKS with the huge-page path switched off, so
+    # the allocator is isolated from the kernel work. UNVALIDATED on any real
+    # node: the development box throttles ~15% run to run, which is larger than
+    # the effect, and it runs THP=always so its large mmaps were already
+    # huge-backed. If this row beats the huge-page row, the alignment is
+    # costing more in cache aliasing than it returns in TLB reach and the flag
+    # should default off.
+    "P-full-nohp|$P_GENOA|2:30:00|1|$PKG_RANKS|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=$PKG_RANKS SW4_HUGEPAGES=0"
+    # Layout pair at a FIXED problem (SW4_BENCH_L pinned to the 42-rank extent).
+    # Prediction: before the package, 8 threads/rank loses badly to 4 (eight
+    # private stencil windows vs four); after it, the gap mostly closes because
+    # the window is shared. Both sides of both jobs solve the same grid.
+    "P-lay${PKG_RANKS}x4|$P_GENOA|2:30:00|1|$PKG_RANKS|4|96G|$AB|$PKG_ENV CASES=prod-full RANKS=$PKG_RANKS SW4_BENCH_L=$PKG_L"
+    "P-lay${PKG_HALF}x8|$P_GENOA|2:30:00|1|$PKG_HALF|8|96G|$AB|$PKG_ENV CASES=prod-full RANKS=$PKG_HALF SW4_BENCH_L=$PKG_L"
+    # Correctness. Under STRICT_FP (no FMA re-contraction) the whole package
+    # must be bit-exact: the unroll preserves summation order, the schedule
+    # change moves iterations between threads without changing any of them,
+    # and the MR reductions are max(). One thread removes any doubt about
+    # thread ordering; the 4-thread job then proves the schedule change and
+    # the MR threading are order-independent. Both MUST come back bit-exact.
+    "P-strict-1t|$P_GENOA|1:30:00|1|4|1|32G|$AB|BASE=$PKG_BASE HEAD_REF=HEAD PRECISION=single CASES=prod-full,prod-mr,prod-curvi STEPS=100 REPS=2 STRICT=1 RANKS=4 THREADS_OVERRIDE=1 FORCE=1"
+    "P-strict-4t|$P_GENOA|1:30:00|1|4|4|32G|$AB|BASE=$PKG_BASE HEAD_REF=HEAD PRECISION=single CASES=prod-full STEPS=100 REPS=2 STRICT=1 RANKS=4"
+    # The old cube cases, so the package is also read against the numbers every
+    # previous round produced. Expect the closure and MR commits to show here
+    # and the schedule commit not to (the window already fits).
+    "P-cube|$P_GENOA|4:00:00|1|16|4|96G|$AB|$PKG_ENV CASES=prod,prod-mr,prod-curvi SIZE=M RANKS=16"
+  )
+fi
+
+if [ "$DO_SUBMIT" = 1 ]; then
+  # Truncate the state file only for a real submission. This sat above the DRY
+  # check and so a --dry-run cleared the record of the jobs already being
+  # watched, which is the same class of bug as the archiving one above: a
+  # command that only prints what it would do must not edit anything.
+  [ -z "$ONLY" ] && [ "$DRY" = 0 ] && : > "$STATE"
+  echo
+  printf "%-10s %-7s %-6s %-9s %-9s %s\n" JOB PART LAYOUT WALL SIZE JOBID
+  for row in "${MATRIX[@]}"; do
+    IFS='|' read -r name part wall nodes ntasks cpt mem script envs <<< "$row"
+    if [ -n "$ONLY" ] && ! grep -qx "$name" <<< "${ONLY//,/$'\n'}"; then continue; fi
+    if [ "$script" = "$COMM" ]; then
+      layout="${nodes}n x${ntasks}x${cpt}"
+      geom=(--nodes="$nodes" --ntasks-per-node="$ntasks" --cpus-per-task="$cpt")
+    else
+      layout="${ntasks}x${cpt}"
+      geom=(--nodes="$nodes" --ntasks="$ntasks" --cpus-per-task="$cpt")
+    fi
+    sz=$(echo "$envs" | grep -o 'SIZE=[A-Z]*' | head -1)
+    if [ "$DRY" = 1 ]; then
+      echo "DRY: env $envs ${MODULES_ENV:+MODULES='$MODULES_ENV' }sbatch -A $ACCOUNT -p $part -J sw4-$name -t $wall ${geom[*]} --mem=$mem --hint=nomultithread $script"
+      continue
+    fi
+    # shellcheck disable=SC2086
+    jid=$(env $envs ${MODULES_ENV:+MODULES="$MODULES_ENV"} \
+          sbatch --parsable -A "$ACCOUNT" -p "$part" -J "sw4-$name" -t "$wall" \
+              "${geom[@]}" --mem="$mem" --hint=nomultithread "$script" 2>&1) \
+      || { echo "  SUBMIT FAILED $name: $jid"; continue; }
+    echo "$jid|sw4-$name|$part|$layout|$sz" >> "$STATE"
+    printf "%-10s %-7s %-6s %-9s %-9s %s\n" "$name" "$part" "$layout" "$wall" "${sz:-}" "$jid"
+  done
+  [ "$DRY" = 1 ] && exit 0
+  echo
+  echo "all submitted at once -- no --dependency chaining. Other users' jobs"
+  echo "contend regardless, so serialising ours would cost wall-clock without"
+  echo "buying isolation; the per-phase spread in the summary reports the noise"
+  echo "instead. state: $STATE"
+fi
+
+# ------------------------------------------------------------------ watch ----
+[ "$DO_WATCH" = 0 ] && exit 0
+[ -f "$STATE" ] || { echo "no $STATE; nothing to watch"; exit 0; }
+
+dash() {
+  clear 2>/dev/null || true
+  echo "=== sw4 ab-bench $(date '+%F %T') ============================================"
+  printf "%-14s %-7s %-11s %-8s %-10s %s\n" JOB PART LAYOUT SIZE STATE RESULT
+  echo "---------------------------------------------------------------------------------"
+  local pending=0
+  while IFS='|' read -r jid name part prec layout; do
+    [ -z "$jid" ] && continue
+    st=$(squeue -h -j "$jid" -o '%T' 2>/dev/null | head -1)
+    if [ -z "$st" ]; then
+      st=$(sacct -n -j "$jid" -o State%-12 2>/dev/null | head -1 | tr -d ' ')
+      [ -z "$st" ] && st="UNKNOWN"
+    else
+      pending=$((pending+1))
+    fi
+    out=$(ls -t "$REPO"/sw4-*-"$name"-"$jid".out "$REPO"/sw4-*"$jid".out 2>/dev/null | head -1)
+    res="-"
+    if [ -n "$out" ] && [ -f "$out" ]; then
+      res=$(python3 - "$out" <<'PYX'
+import re, sys
+t = open(sys.argv[1], errors="replace").read()
+# the guard prints REFUSING TO RUN and then, with FORCE=1, carries on -- so the
+# message alone is not a refusal. A correctness job read as "refused" once.
+if "REFUSING TO RUN" in t and "FORCE=1 set" not in t: print("refused: bad allocation"); raise SystemExit
+if "FAILED:" in t:
+    print("build/module failure - see .out"); raise SystemExit
+geo = re.search(r'geometry\s+(\d+) cores -> (\d+) ranks x (\d+) threads', t)
+ds  = re.findall(r'^(\S+)\s+\S+\s+divstress\s+\S+\s+\S+\s+([0-9.]+)', t, re.M)
+nf  = re.findall(r'noise floor: \+/-([0-9.]+)%', t)
+bad = ("DIFFERS BEYOND SPREAD" in t) or ("WARNING:" in t and "skew" in t)
+short = "is under" in t
+bits=[]
+if geo: bits.append(f"{geo.group(2)}x{geo.group(3)}t")
+if ds:  bits.append(" ".join(f"{c}:{v}x" for c,v in ds[:4]))
+if nf:  bits.append(f"noise+/-{max(float(x) for x in nf):.1f}%")
+if short: bits.append("TOO-SHORT")
+if bad:   bits.append("CORRECTNESS!")
+print("  ".join(bits) if bits else "running...")
+PYX
+) || res="(parse error)"
+    fi
+    printf "%-14s %-7s %-11s %-8s %-10s %s\n" "${name#sw4-}" "$part" "$layout" "$prec" "$st" "$res"
+  done < "$STATE"
+  echo "---------------------------------------------------------------------------------"
+  echo "$pending job(s) still queued/running.  refresh ${INTERVAL}s.  Ctrl-C to stop watching."
+  return $pending
+}
+
+while :; do
+  dash; left=$?
+  [ "$left" -eq 0 ] && { echo; echo "all jobs finished."; break; }
+  sleep "$INTERVAL"
+done

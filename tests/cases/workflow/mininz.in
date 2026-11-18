@@ -1,0 +1,25 @@
+# Mini-NZ: the command set ~/src/workflow's create-sw4-input emits (fileio, grid,
+# time, rupturehdf5, refinement, then the v26 defaults, sfile, rechdf5), on a
+# 20 km x 20 km problem small enough for CI. Inputs come from sw4test.mininz.
+fileio verbose=2 printcycle=10
+grid proj=tmerc ellps=GRS80 lon_p=173.0 lat_p=0.0 scale=0.9996 x={{lx}} y={{ly}} z={{lz}} h={{hcoarse}} az={{az}} lon={{lon0}} lat={{lat0}}
+time t={{t}}
+rupturehdf5 file=mininz.srf.h5
+{{refinements}}
+supergrid width={{sponge}}
+attenuation maxfreq=10.0 phasefreq=0.5 nmech=3
+developer cfl=0.9 reporttiming=1 failonnan=1
+prefilter order=4 passes=2 fc2={{fc2}} type=lowpass
+{{topography}}
+imagehdf5 mode=topo z=0.0 file=topo cycle=0 precision=float
+imagehdf5 mode=grid z=0.0 file=grid cycle=0 precision=float
+imagehdf5 mode=p z=0.0 file=surf_vp cycle=0 precision=float
+imagehdf5 mode=s z=0.0 file=surf_vs cycle=0 precision=float
+imagehdf5 mode=rho z=0.0 file=surf_rho cycle=0 precision=float
+imagehdf5 mode=mag z=0.0 file=surf_mag timeInterval={{image_dt}} precision=float
+imagehdf5 mode=velmag z=0.0 file=surf_velmag timeInterval={{image_dt}} precision=float
+imagehdf5 mode=uz z=0.0 file=surf_uz timeInterval={{image_dt}} precision=float
+imagehdf5 mode=hmax z=0.0 file=surf_hmax time={{t}} precision=float
+imagehdf5 mode=vmax z=0.0 file=surf_vmax time={{t}} precision=float
+sfile filename=mininz.sfile directory=.
+rechdf5 infile=stations.h5 outfile=out.h5

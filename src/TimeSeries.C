@@ -32,6 +32,7 @@
 // # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA 
 #include <mpi.h>
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <cstdlib>
@@ -57,10 +58,11 @@ using namespace std;
 void parsedate( char* datestr, int& year, int& month, int& day, int& hour, int& minute,
 		int& second, int& msecond, int& fail );
 
-TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, receiverMode mode, 
-                        bool sacFormat, bool usgsFormat, bool hdf5Format, std::string hdf5FileName, 
-                        float_sw4 x, float_sw4 y, float_sw4 depth, 
-                        bool topoDepth, int writeEvery, int downSample, bool xyzcomponent, int event ):
+TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, receiverMode mode,
+                        bool sacFormat, bool usgsFormat, bool hdf5Format, std::string hdf5FileName,
+                        double x, double y, double depth,
+                        bool topoDepth, int writeEvery, int downSample, bool xyzcomponent, int event,
+                        bool deferCollectives, float_sw4 precomputedZTopo ):
   m_ew(a_ew),
   m_mode(mode),
   m_nComp(0),
@@ -75,6 +77,8 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
   mGPX(0.0),
   mGPY(0.0),
   mGPZ(0.0),
+  m_sg_depth(0.0),
+  m_sg_depth_gp(0),
   m_zRelativeToTopography(topoDepth),
   m_zTopo(0.0),
   mWriteEvery(writeEvery),
@@ -107,7 +111,10 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
   m_epi_lon(-122.5),
   m_epi_depth(0.0),
   m_epi_time_offset(0.0),
-  m_x_azimuth(0.0),
+  // Set here, not with the other precomputations below, so it is valid on
+  // ranks that do not own the station too: the rank creating the SAC-HDF5
+  // file writes every station's component azimuths from it.
+  m_x_azimuth(a_ew->getGridAzimuth()),
   mBinaryMode(true),
   //  m_utc_set(false),
   //  m_utc_offset_computed(false),
@@ -127,9 +134,9 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
 #ifdef USE_HDF5
   m_sta_z(depth),
   m_fid_ptr(NULL),
-  m_isMetaWritten(false),
   m_isIncAzWritten(false),
   m_nptsWritten(0),
+  m_nptsKeptOnRestart(0),
   m_nsteps(0),
   m_writeTime(0.0),
 #endif
@@ -139,14 +146,24 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
    m_path         = a_ew->getPath(m_global_event);
 
  // 1. Adjust z if depth below topography is given
-   if (a_ew->topographyExists() ) 
+//
+// When deferCollectives is set, the caller (e.g. readStationHDF5's bulk path)
+// has already computed the global topography elevation for this station with a
+// single batched MPI_Allreduce over all stations, and passes it in as
+// precomputedZTopo. This avoids the per-station collective below, which would
+// otherwise serialize O(#stations) Allreduces - prohibitive for 1e5+ stations.
+   if (deferCollectives)
+   {
+      m_zTopo = a_ew->topographyExists() ? precomputedZTopo : 0;
+   }
+   else if (a_ew->topographyExists() )
    {
       float_sw4 zTopoLocal;
       if(!a_ew->m_gridGenerator->interpolate_topography( a_ew, mX, mY, zTopoLocal, a_ew->mTopoGridExt))
          zTopoLocal=-1e38;
       MPI_Allreduce( &zTopoLocal, &m_zTopo, 1, a_ew->m_mpifloat, MPI_MAX, a_ew->m_1d_communicator );
          //      mZ += m_zTopo;
-   } 
+   }
    else
       m_zTopo = 0;
    if( m_zRelativeToTopography )
@@ -160,15 +177,18 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
 // Make sure the station is below the topography (z is positive downwards)
    if ( mZ < m_zTopo - rofftol)
    {
-      printf("Ignoring SAC station %s mX=%g, mY=%g, mZ=%g, because it is above the topography z=%g\n", 
-	     m_staName.c_str(),  mX,  mY, mZ, m_zTopo);
+// m_zTopo is identical on every rank (batched or per-station Allreduce), so all
+// ranks take this branch together; only rank 0 prints to avoid N-way spam.
+      if (!deferCollectives || a_ew->getRank() == 0)
+         printf("Ignoring SAC station %s mX=%g, mY=%g, mZ=%g, because it is above the topography z=%g\n",
+	        m_staName.c_str(),  mX,  mY, mZ, m_zTopo);
       m_myPoint=false;
       return;
    }
 
 
 // 2. Find nearest grid point and its grid.
-   m_myPoint = a_ew->computeNearestGridPoint2( m_i0, m_j0, m_k0, m_grid0, mX, mY, mZ );
+   m_myPoint = a_ew->computeReceiverGridPoint( m_i0, m_j0, m_k0, m_grid0, mX, mY, mZ );
 
    //   if( m_myPoint )
    //   cout << "station at ("<< mX  << " " << mY << " " << mZ <<" placed at grid point " <<
@@ -184,24 +204,22 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
 //   m_myPoint = a_ew->interior_point_in_proc(m_i0, m_j0, m_grid0);
 
 // The following is a safety check to make sure only one processor writes each time series.
-// We could remove this check if we were certain that interior_point_in_proc() never lies
-   int iwrite = m_myPoint ? 1 : 0;
-   int counter;
-   MPI_Allreduce( &iwrite, &counter, 1, MPI_INT, MPI_SUM, a_ew->m_1d_communicator );
+// We could remove this check if we were certain that interior_point_in_proc() never lies.
+// When deferCollectives is set the caller performs this check in batched form (one
+// Allreduce over all stations) instead of one per station.
+   if( !deferCollectives )
+   {
+      int iwrite = m_myPoint ? 1 : 0;
+      int counter;
+      MPI_Allreduce( &iwrite, &counter, 1, MPI_INT, MPI_SUM, a_ew->m_1d_communicator );
+
+      REQUIRE2(counter == 1,"Exactly one processor must be writing each SAC, but counter = " << counter <<
+	       " for receiver station " << m_fileName << " at (x,y,depth)=" <<  mX << ", " << mY
+               << ", "  << mZ );
+   }
 
    a_ew->get_utc( m_utc, m_event );
-   //   int size;
-   //   MPI_Comm_size(MPI_COMM_WORLD,&size);
-   //   std::vector<int> whoIsOne(size);
-   //   int counter = 0;
-   //   MPI_Allgather(&iwrite, 1, MPI_INT, &whoIsOne[0], 1, MPI_INT, MPI_COMM_WORLD );
-   //   for (unsigned int i = 0; i < whoIsOne.size(); ++i)
-   //      if (whoIsOne[i] == 1)
-   //	 counter++;
 
-   REQUIRE2(counter == 1,"Exactly one processor must be writing each SAC, but counter = " << counter <<
-	    " for receiver station " << m_fileName << " at (x,y,depth)=" <<  mX << ", " << mY 
-            << ", "  << mZ );
    if (!m_myPoint)
    {
       m_compute_scalefactor = false;
@@ -264,9 +282,9 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
 //   }
 //   
 // actual location of station (nearest grid point)
-   float_sw4 xG, yG, zG;
-   xG = (m_i0-1)*a_ew->mGridSize[m_grid0];
-   yG = (m_j0-1)*a_ew->mGridSize[m_grid0];
+   double xG, yG, zG;
+   xG = (m_i0-1)*double(a_ew->mGridSize[m_grid0]);
+   yG = (m_j0-1)*double(a_ew->mGridSize[m_grid0]);
    if (m_grid0 < a_ew->mNumberOfCartesianGrids)
    {
       zG = a_ew->m_zmin[m_grid0] + (m_k0-1)*a_ew->mGridSize[m_grid0];
@@ -283,7 +301,7 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
 
 //   if (a_ew->getVerbosity()>=2 && fabs(mX-xG)+fabs(mY-yG)+fabs(mZ-zG) > 0.001*a_ew->mGridSize[m_grid0] )
 //   mQuietMode = a_ew->getQuiet();
-   if (!m_ew->getQuiet() && a_ew->getVerbosity()>=2 )
+   if (!m_ew->getQuiet() && a_ew->getVerbosity()>=3 )
    {
       cout << "Receiver INFO for station " << m_fileName << ":" << endl <<
       "     initial location (x,y,z) = " << mX << " " << mY << " " << mZ << " zTopo= " << m_zTopo << endl <<
@@ -345,22 +363,20 @@ TimeSeries::TimeSeries( EW* a_ew, std::string fileName, std::string staName, rec
    m_rec_gp_lon=lond;
    m_rec_gp_lat=latd;
 
-   m_calpha = cos(M_PI*m_x_azimuth/180.0);
-   m_salpha = sin(M_PI*m_x_azimuth/180.0);
-
-   float_sw4 cphi   = cos(M_PI*m_rec_lat/180.0);
-   float_sw4 sphi   = sin(M_PI*m_rec_lat/180.0);
-
-   float_sw4 metersperdegree = a_ew->getMetersPerDegree();
-
-//
-// NOTE: this calculation assumes a spheroidal mapping
-//
-   m_thxnrm = m_salpha + (mX*m_salpha+mY*m_calpha)/cphi/metersperdegree * (M_PI/180.0) * sphi * m_calpha;
-   m_thynrm = m_calpha - (mX*m_salpha+mY*m_calpha)/cphi/metersperdegree * (M_PI/180.0) * sphi * m_salpha;
-   float_sw4 nrm = sqrt( m_thxnrm*m_thxnrm + m_thynrm*m_thynrm );
-   m_thxnrm /= nrm;
-   m_thynrm /= nrm;
+// Rotation from grid (x,y) to true (east,north). The grid x-axis points at
+// true azimuth alpha = az + gamma, where gamma is the meridian convergence at
+// the receiver (from the PROJ projection when one is used, otherwise from
+// SW4's spherical mapping; see EW::computeMeridianConvergence). Then
+//    NS = cos(alpha)*ux - sin(alpha)*uy,   EW = sin(alpha)*ux + cos(alpha)*uy,
+// an orthogonal rotation. m_thxnrm/m_thynrm (NS row) and m_salpha/m_calpha
+// (EW row) are kept as separate members because the output and inverse
+// (observation) code use them; they are now the same rotation, so the
+// inverse maps a11..a22 below reduce to its transpose.
+   double alpha = M_PI*(m_x_azimuth + a_ew->computeMeridianConvergence(m_rec_lon, m_rec_lat))/180.0;
+   m_calpha = cos(alpha);
+   m_salpha = sin(alpha);
+   m_thxnrm = m_salpha;
+   m_thynrm = m_calpha;
 
 // Set station ref utc = simulation ref utc
 // m_t0 = 0 is set by default above.
@@ -614,8 +630,6 @@ void TimeSeries::writeFile( string suffix )
   // Open the output HDF5 file if not already opened
   std::string h5fname, fidName;
   hid_t fid, grp = 0; 
-  double stlalodp[3], stxyz[3], dist;
-  float origintime, windows[4];
   int myRank;
   MPI_Comm_rank(m_ew->m_1d_communicator, &myRank);
 
@@ -633,41 +647,15 @@ void TimeSeries::writeFile( string suffix )
     else 
     {
       grp = H5Gopen(fid, const_cast<char*>(m_staName.c_str()), H5P_DEFAULT);
-      if (grp < 0) 
+      if (grp < 0)
         printf("TimeSeries::writeFile Error opening group [%s]\n", m_staName.c_str());
 
-      if (grp > 0 && !m_isMetaWritten) {
-        stlalodp[0] = double(m_rec_lat);
-        stlalodp[1] = double(m_rec_lon);
-        stlalodp[2] = double(m_sta_z);
-
-        openWriteAttr(grp, "STLA,STLO,STDP", H5T_NATIVE_DOUBLE, stlalodp);
-
-        stxyz[0] = double(mX);
-        stxyz[1] = double(mY);
-        stxyz[2] = double(m_sta_z);
-        openWriteAttr(grp, "STX,STY,STZ", H5T_NATIVE_DOUBLE, stxyz);
-
-        origintime = float(m_epi_time_offset);
-        openWriteAttr(fid, "ORIGINTIME", H5T_NATIVE_FLOAT, &origintime);
-
-        // Actual location in SW4
-        stlalodp[0] = double(m_rec_gp_lat);
-        stlalodp[1] = double(m_rec_gp_lon);
-        stlalodp[2] = double(m_sta_z);
-        openWriteAttr(grp, "ACTUALSTLA,STLO,STDP", H5T_NATIVE_DOUBLE, stlalodp);
-
-        // Distance
-        dist = sqrt( (mX-mGPX)*(mX-mGPX)+(mY-mGPY)*(mY-mGPY) );
-        openWriteAttr(grp, "DISTFROMACTUAL", H5T_NATIVE_DOUBLE, &dist);
-
-        stxyz[0] = double(mGPX);
-        stxyz[1] = double(mGPY);
-        stxyz[2] = double(mGPZ);
-        openWriteAttr(grp, "ACTUALSTX,STY,STZ", H5T_NATIVE_DOUBLE, stxyz);
-
-        m_isMetaWritten = true;
-      }
+      // The per-station scalars (STLA/STX/ACTUAL*/DISTFROMACTUAL) and the
+      // file-level ORIGINTIME used to be written here by whichever rank owns
+      // the station. They are small enough to share a filesystem block with
+      // other stations' scalars, so concurrent independent writes from
+      // different ranks silently lost each other's updates. They are now
+      // written by a single rank in writeStationMetadataHDF5().
     }
   }
 
@@ -1209,7 +1197,9 @@ write_sac_format(int npts, char *ofile, float *y, float btime, float dt, char *v
 //              10          11          12          13          14          15           16          17          18
 	       "NZYEAR  ", "NZJDAY  ", "NZHOUR  ", "NZMIN   ", "NZSEC   ", "NZMSEC   ", "KCMPNM  ", "STLA    ", "STLO    ",
 //              19          20          21          22          23          24          25
-	       "EVLA    ", "EVLO    ", "EVDP    ", "O       ", "CMPINC  ", "CMPAZ   ", "KSTNM   "
+	       "EVLA    ", "EVLO    ", "EVDP    ", "O       ", "CMPINC  ", "CMPAZ   ", "KSTNM   ",
+//              26          27          28
+	       "USER8   ", "USER9   ", "KUSER0  "
   };
 
   newhdr();
@@ -1274,6 +1264,24 @@ write_sac_format(int npts, char *ofile, float *y, float btime, float dt, char *v
   // set the station name
   setkhv( nm[25], const_cast<char*>(m_staName.c_str()), nerr);
 
+  // How far this station is inside the supergrid absorbing layer.
+  // USER8/USER9 and KUSER0 are the only free slots in SW4's SAC output, and
+  // the high indices are taken deliberately: USER0/USER1 are the conventional
+  // target for third-party pipelines. The value is the penetration clamped at
+  // zero, never a signed clearance - SAC's "undefined" sentinel is -12345, so
+  // a clearance of -12345 m would be indistinguishable from "not set".
+  if( m_ew != NULL && m_ew->usingSupergrid() )
+  {
+     // Recompute rather than trust the cache: the inversion drivers run the
+     // receiver check over the observations only, so a forward-solution station
+     // may not have been visited.
+     is_in_supergrid_layer();
+     setfhv( nm[26], static_cast<float>(m_sg_depth), nerr);
+     setfhv( nm[27], static_cast<float>(m_sg_depth_gp), nerr);
+     char sgtag[9] = "SGLAYER";
+     setkhv( nm[28], sgtag, nerr);
+  }
+
   if( (makeCopy) && (access( ofile, F_OK ) != -1) ) {
     // if the file exists, move it to a .bak before writing
     stringstream bak;
@@ -1324,12 +1332,14 @@ write_hdf5_format(int npts, hid_t grp, float *y, float btime, float dt, char *va
     fflush(stdout);
   }
 
-  if (count > 0) 
-    ret = openWriteData(grp, var, H5T_NATIVE_FLOAT, (void*)write_data, 1, &start, &count, write_npts, btime, cmpinc, cmpaz, m_isIncAzWritten, isLast);
+  if (count > 0)
+    ret = openWriteData(grp, var, H5T_NATIVE_FLOAT, (void*)write_data, 1, &start, &count, write_npts, btime, cmpinc, cmpaz, m_isIncAzWritten);
 
+  // isLast marks the final component of this station, so the cursor advances
+  // once all components have been written from the same starting offset.
   if (isLast && ret == 1) {
     m_nptsWritten += count;
-    H5Gflush(grp);
+    // H5Gflush(grp);
   }
 
   if (mDownSample > 1) 
@@ -1381,6 +1391,13 @@ void TimeSeries::write_usgs_format(string a_fileName)
    fprintf(fd, "# Actual location (WGS84 longitude, latitude) (deg): %e %e\n", m_rec_gp_lon, m_rec_gp_lat);
 // distance in horizontal plane
    fprintf(fd, "# Distance from target to actual location (m): %e\n", sqrt( (mX-mGPX)*(mX-mGPX)+(mY-mGPY)*(mY-mGPY) ) );
+// Emitted only when the station is actually inside the absorbing layer, so a
+// clean station's file stays byte-identical to before. Recomputed here for the
+// same reason as in write_sac_format.
+   is_in_supergrid_layer();
+   if( m_sg_depth > 0 )
+      fprintf(fd, "# WARNING: this station is %e m (%i grid points) inside the supergrid absorbing layer; the trace is NOT a ground-motion prediction\n",
+              (double)m_sg_depth, m_sg_depth_gp );
    fprintf(fd, "# nColumns: %i\n", m_nComp+1);
    
    fprintf(fd, "# Column 1: Time (s)\n");
@@ -1582,7 +1599,8 @@ void TimeSeries::readFile( EW *ew, bool ignore_utc )
 		  cout << "geographic ";
 	       cout << "components " << endl;
 	    }
-	    float_sw4 tstart, dt, td, ux, uy, uz;
+	    // double, not float_sw4: they are read with "%le"/"%lf" below.
+	    double tstart, dt, td, ux, uy, uz;
 	    int nlines = 0;
 	    if( fscanf(fd,"%le %le %le %le",&tstart,&ux,&uy,&uz) != EOF )
 	       nlines++;
@@ -2136,6 +2154,7 @@ float_sw4 TimeSeries::compute_maxshift( TimeSeries& observed )
       }
       // 2. Use maximum from 1 to start Newton iteration for solving f'(tshift) = 0
       int maxit=15, it=0;
+      // TODO: tol=1e-12 is unattainable in float_sw4 (single precision, ~1.2e-7 floor) -- make it build-aware like EW.C's m_citol (sizeof(float_sw4)==4 ? looser value : 1e-12).
       float_sw4 tol=1e-12;
       float_sw4 err=tol+1;
       float_sw4 t1 = tmax;
@@ -3801,7 +3820,17 @@ void TimeSeries::doRestart(EW *ew, bool ignore_utc, float_sw4 shift, int beginCy
     fullFilePath += "/" + m_hdf5Name;
 #ifdef USE_HDF5
     if( m_myPoint )
+    {
       readSACHDF5(ew, fullFilePath, ignore_utc);
+      // Keep the file's samples from before the checkpoint cycle as they are.
+      // Rewriting them would send them through the (e,n) -> (x,y) -> (e,n)
+      // rotation round trip, which is not exact in float_sw4/float (the
+      // restarted trace then differed from an uninterrupted run by 1 ulp in
+      // early samples in float builds). readSACHDF5 left m_nptsWritten at the
+      // file's length; samples i*mDownSample < beginCycle are kept.
+      int before = beginCycle > 0 ? (beginCycle-1)/mDownSample + 1 : 0;
+      m_nptsKeptOnRestart = std::min(m_nptsWritten, before);
+    }
 #else
     cout << "readSACHDF5: read from HDF5 file but sw4 is not compiled with HDF5!" << endl;
 #endif
@@ -3917,27 +3946,76 @@ float_sw4 TimeSeries::get_scalefactor() const
 }
 
 //-----------------------------------------------------------------------
-bool TimeSeries::is_in_supergrid_layer()
+// Is the recording point inside the supergrid absorbing layer, and if so how
+// far in?
+//
+// This delegates to EW::supergrid_penetration(), the one shared definition, and
+// is a deliberate behaviour change from the old index comparison against the
+// material-inversion "active" box. That predicate:
+//   * never consulted mbcGlobalType, so it returned true near a Dirichlet or
+//     periodic boundary in a run with no sponge at all;
+//   * never looked at the top face, so a z=0 sponge was invisible to it;
+//   * carried an accidental one-gridpoint offset from setup_supergrid's
+//     addlayer=1;
+//   * could not yield a distance.
+//
+// The penetration is evaluated at (mGPX,mGPY,mGPZ), the grid point actually
+// recorded, not at the requested (mX,mY,mZ).
+bool TimeSeries::is_in_supergrid_layer( float_sw4* depth_m, int* depth_gp )
 {
-   if( m_myPoint )
+   if( !m_myPoint || m_ew == NULL || m_grid0 < 0 ||
+       m_grid0 >= m_ew->getNumberOfGrids() )
    {
-return
-   m_i0<m_ew->m_iStartActGlobal[m_grid0] ||
-   m_ew->m_iEndActGlobal[m_grid0] < m_i0  ||
-   m_j0<m_ew->m_jStartActGlobal[m_grid0] || 
-   m_ew->m_jEndActGlobal[m_grid0] < m_j0  ||
-  (m_grid0==0 && m_ew->m_kEndActGlobal[m_grid0] < m_k0);
-   }
-   else
+      // Not this rank's station, or no grid point resolved for it: report
+      // nothing rather than a stale cache or an out-of-range grid index.
+      if( depth_m  != NULL ) *depth_m  = 0;
+      if( depth_gp != NULL ) *depth_gp = 0;
       return false;
+   }
+   int face;
+   float_sw4 d[6];
+   float_sw4 pen = m_ew->supergrid_penetration( mGPX, mGPY, mGPZ, m_grid0,
+                                                face, d );
+   // Clamped at zero: 0 means "in the interior", never a signed clearance.
+   m_sg_depth = pen > 0 ? pen : 0;
+   m_sg_depth_gp = 0;
+   if( pen > 0 )
+   {
+      // Rounded up, so any penetration at all is at least one grid point - but
+      // with a relative tolerance first, or an exact 5.0 computed in float32
+      // reads as 5.0000001 and reports 6.
+      double gp = double(pen) / double(m_ew->mGridSize[m_grid0]);
+      m_sg_depth_gp = static_cast<int>( ceil( gp - 1e-6*(1.0+gp) ) );
+      if( m_sg_depth_gp < 1 )
+         m_sg_depth_gp = 1;
+   }
+   if( depth_m  != NULL ) *depth_m  = m_sg_depth;
+   if( depth_gp != NULL ) *depth_gp = m_sg_depth_gp;
+   return pen > 0;
+}
+
+//-----------------------------------------------------------------------
+// The run's absorbing-layer width, in metres and in grid points on the
+// coarsest grid. Written file-level beside DELTA so a station file describes
+// its own sponge: the natural severity axis downstream is
+// supergrid_depth / width, and reconstructing the width from the run's config
+// would couple the data file to a file that may have been edited since.
+bool TimeSeries::getSupergridWidth( double& width_m, double& width_gp ) const
+{
+   width_m = width_gp = 0;
+   if( m_ew == NULL || !m_ew->usingSupergrid() )
+      return false;
+   width_m  = double( m_ew->supergrid_width(0) );
+   width_gp = width_m / double( m_ew->mGridSize[0] );
+   return true;
 }
 
 //-----------------------------------------------------------------------
 void TimeSeries::writeFile(FILE *fid )
 {
   if (!m_myPoint) return;
-  fwrite(&mX, sizeof(float_sw4), 1, fid);
-  fwrite(&mY, sizeof(float_sw4), 1, fid);
+  float_sw4 xy[2] = { (float_sw4)mX, (float_sw4)mY };
+  fwrite(xy, sizeof(float_sw4), 2, fid);
   fwrite(mRecordedSol[0], sizeof(float_sw4), mLastTimeStep+1, fid);  // X component
 }
 
@@ -4031,10 +4109,70 @@ int TimeSeries::closeHDF5File()
 //-----------------------------------------------------------------------
 void TimeSeries::resetHDF5file()
 {
-  m_nptsWritten = 0;
-  m_isMetaWritten = m_isIncAzWritten = false;
+  m_nptsWritten = mIsRestart ? m_nptsKeptOnRestart : 0;
+  m_isIncAzWritten = false;
   closeHDF5File();
   return;
+}
+
+//-----------------------------------------------------------------------
+std::string TimeSeries::hdf5FileName(std::string suffix)
+{
+  std::string filename;
+
+  if( m_path != "." )
+    filename = m_path;
+
+  filename.append(m_hdf5Name);
+  filename.append(suffix);
+
+  if (m_hdf5Name.find(".hdf5") == string::npos && m_hdf5Name.find(".h5") == string::npos)
+    filename.append(".hdf5");
+
+  return filename;
+}
+
+//-----------------------------------------------------------------------
+// Pack the small scalars this station contributes to the single-writer
+// metadata pass. The layout matches the on-disk dataset order used by
+// writeStationMetadataHDF5().
+void TimeSeries::packHDF5Metadata(int& npts, double* meta)
+{
+  npts = m_nptsWritten;
+
+  meta[0]  = double(m_rec_lat);      // STLA,STLO,STDP
+  meta[1]  = double(m_rec_lon);
+  meta[2]  = double(m_sta_z);
+
+  meta[3]  = double(mX);             // STX,STY,STZ
+  meta[4]  = double(mY);
+  meta[5]  = double(m_sta_z);
+
+  meta[6]  = double(m_rec_gp_lat);   // ACTUALSTLA,STLO,STDP
+  meta[7]  = double(m_rec_gp_lon);
+  meta[8]  = double(m_sta_z);
+
+  meta[9]  = sqrt( (mX-mGPX)*(mX-mGPX)+(mY-mGPY)*(mY-mGPY) ); // DISTFROMACTUAL
+
+  meta[10] = double(mGPX);           // ACTUALSTX,STY,STZ
+  meta[11] = double(mGPY);
+  meta[12] = double(mGPZ);
+
+  // ORIGINTIME is file-level, but it is derived per station so that stations
+  // belonging to different events resolve their own origin time, as the
+  // previous per-owner write did.
+  float_sw4 epiLat, epiLon, epiDepth, earliestTime;
+  m_ew->get_epicenter( epiLat, epiLon, epiDepth, earliestTime, m_event );
+  meta[13] = double(earliestTime);
+
+  // How far this station is inside the supergrid absorbing layer. Doubles so
+  // they ride the existing MPI_DOUBLE reduction with no second collective.
+  // 0 means the interior, which is a positive statement, not a missing value.
+  // Recomputed rather than read from the cache, because the inversion drivers
+  // run the receiver check over the observations only.
+  is_in_supergrid_layer();
+  meta[14] = double(m_sg_depth);        // SGDEPTH   (metres)
+  meta[15] = double(m_sg_depth_gp);     // SGDEPTHGP (grid points)
 }
 
 //-----------------------------------------------------------------------
@@ -4044,22 +4182,12 @@ hid_t TimeSeries::openHDF5File(std::string suffix)
   bool is_debug = false;
   /* is_debug = true; */
 
-  std::string filename;
-
   if (NULL == m_fid_ptr) {
-    printf("%s Error! No HDF5 fid allocated!\n", __func__); 
+    printf("%s Error! No HDF5 fid allocated!\n", __func__);
     return 0;
   }
 
-  // Build the file name
-  if( m_path != "." )
-    filename = m_path;
-
-  filename.append(m_hdf5Name);
-  filename.append(suffix);
-
-  if (m_hdf5Name.find(".hdf5") == string::npos && m_hdf5Name.find(".h5") == string::npos) 
-    filename.append(".hdf5");
+  std::string filename = hdf5FileName(suffix);
 
   if (*m_fid_ptr >=0 && this->m_ts0Ptr && filename.compare(this->m_ts0Ptr->m_fidName) == 0) {
     // If file is alread open, no need to open it again

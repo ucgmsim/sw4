@@ -150,12 +150,13 @@ void MaterialRfile::set_material_properties(std::vector<Sarray> & rho,
 		   // cubic Hermite intp.
                    if( intp_cubic )
 		   {
+		   const float_sw4 half = 0.5;
 		   float_sw4 r = (x-( (i0-1)*m_hh[gr]+m_x0) )/m_hh[gr];
-		   float_sw4 wghx[4] = {0.5*r*(-r*r+2*r-1),0.5*(3*r*r*r-5*r*r+2),0.5*r*(-3*r*r+4*r+1),0.5*r*r*(r-1)};
+		   float_sw4 wghx[4] = {half*r*(-r*r+2*r-1),half*(3*r*r*r-5*r*r+2),half*r*(-3*r*r+4*r+1),half*r*r*(r-1)};
 		   float_sw4 s = (y-( (j0-1)*m_hh[gr]+m_y0) )/m_hh[gr];
-		   float_sw4 wghy[4] = {0.5*s*(-s*s+2*s-1),0.5*(3*s*s*s-5*s*s+2),0.5*s*(-3*s*s+4*s+1),0.5*s*s*(s-1)};
+		   float_sw4 wghy[4] = {half*s*(-s*s+2*s-1),half*(3*s*s*s-5*s*s+2),half*s*(-3*s*s+4*s+1),half*s*s*(s-1)};
                    float_sw4 t=  (z-( (k0-1)*m_hv[gr]+m_z0[gr]) )/m_hv[gr];
-		   float_sw4 wghz[4] = {0.5*t*(-t*t+2*t-1),0.5*(3*t*t*t-5*t*t+2),0.5*t*(-3*t*t+4*t+1),0.5*t*t*(t-1)};
+		   float_sw4 wghz[4] = {half*t*(-t*t+2*t-1),half*(3*t*t*t-5*t*t+2),half*t*(-3*t*t+4*t+1),half*t*t*(t-1)};
                    rhop[ind]=cpp[ind]=csp[ind]=0;
 		   if( use_q )
 		      qp[ind]=qs[ind]=0;

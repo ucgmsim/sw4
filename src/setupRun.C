@@ -33,6 +33,8 @@
 #include "CurvilinearInterface2.h"
 #include "GridGenerator.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 // making directories
@@ -146,6 +148,13 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
 // check if there are any supergrid boundaries. If so, setup the supergrid tapering functions using
 // the parameters m_sg_thickness, m_sg_transition, m_supergrid_damping_coefficient
   setup_supergrid( );
+
+// Refuse to run a source inside the absorbing layer. This is the earliest
+// point at which the question can be answered: mbcGlobalType[] is only final
+// once default_bcs() above has run, and the Source objects have existed with
+// globally consistent grid indices since parsing. Aborting here is before
+// material setup, rfile/sfile reads and computeDT.
+  check_sources_in_supergrid( a_GlobalUniqueSources );
 
 // assign m_bcType and m_onesided based on the global boundary conditions and parallel overlap boundaries. 
   assign_local_bcs(); 
@@ -374,6 +383,10 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
 
   assign_supergrid_damping_arrays();
 
+// multiply slip sources (rupture files) by the shear modulus of the material model.
+// Must precede setup_viscoelastic(), which overwrites mMu with the unrelaxed modulus.
+  scale_sources_by_shear_modulus( a_GlobalUniqueSources );
+
 // convert Qp and Qs to muVE, lambdaVE, and compute unrelaxed lambda, mu
   if( m_use_attenuation )
   {
@@ -451,6 +464,7 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
 //     printf("You can try to increase zmax or decrease order in the topography command\n");
 //     MPI_Abort(MPI_COMM_WORLD, 1);
 //   }
+// TODO: curvilinear4sgwind.C divides by the Jacobian every step with no live safety margin check (this one is disabled, and m_minJacobian is otherwise only computed inside EW::grid_information(), which nothing calls) -- that safety margin shrinks a lot in float_sw4/single precision near steep topography; wire grid_information() into setup (after mJ[g] is populated) to actually compute m_minJacobian, then re-enable this check.
 
 // // Allocate work space for one sided operators in time stepping loop
 //   int wksize=0;
@@ -471,7 +485,7 @@ void EW::setupRun( vector<vector<Source*> > & a_GlobalUniqueSources )
 // if we got this far, the object should be ready for time-stepping
   mIsInitialized = true;
 
-// do source specific initialization such as prefiltering, scaling by mu, compute epicenter, etc (see below)
+// do source specific initialization such as prefiltering, compute epicenter, etc (see below)
   preprocessSources( a_GlobalUniqueSources );
   
   double time_start_solve = MPI_Wtime();
@@ -545,7 +559,7 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
 
 // For non-testing modes, this routine performs the following tasks:
 // 1: computes the epicenter, i.e. the location of the source with the earliest start time
-// 2: if any source returns get_ShearModulusFactor() == true, it multiplies Mij by the shear modulus
+// 2: (scaling Mij by the shear modulus is done earlier, in scale_sources_by_shear_modulus())
 // 3: evaluate the min and max z-coordinate of all sources
 // 4: sets freq=1/dt in all sources with iDirac time-function
 // 5: modifies the time function if pre-filtering is enabled *** MOVED TO Source:prepareTimeFunc() ***
@@ -640,83 +654,6 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
       
 // Set up 'normal' sources for point_source_test, lamb_test, or standard seismic case.
 
-// if the sources were defined by a rupture file, we need to multiply the Mij coefficients by mu (shear modulus)
-	  bool need_mu_corr=false;
-#pragma omp parallel for reduction(||:need_mu_corr)
-	  for( int i=0 ; i < a_GlobalUniqueSources[e].size() ; i++ )
-	     need_mu_corr = (need_mu_corr || a_GlobalUniqueSources[e][i]->get_CorrectForMu( ));
-
-// must communicate need_mu_corr
-	  int mu_corr_global=0, mu_corr_loc= need_mu_corr? 1:0;
-      
-// take max over all procs to communicate 
-	  MPI_Allreduce( &mu_corr_loc, &mu_corr_global, 1, MPI_INT, MPI_MAX, m_cartesian_communicator);
-	  need_mu_corr=(bool) mu_corr_global;
-
-// tmp
-//      printf(" Proc #%i, sources needs correction for shear modulus: %s\n", getRank(), need_mu_corr? "TRUE":"FALSE");
-
-	  if (!mQuiet && mVerbose >= 3 && proc_zero() )
-	     printf(" Some sources needs correction for shear modulus: %s\n", need_mu_corr? "TRUE":"FALSE");
-
-	  if (need_mu_corr)
-	  {
-	     int nSources=a_GlobalUniqueSources[e].size();
-	// if (proc_zero())
-	//   printf("Number of sources: %i\n", nSources);
-
-// allocate a temp array for the mu value at all source locations
-             float_sw4 *mu_source_loc = new float_sw4[nSources];
-             float_sw4 *mu_source_global = new float_sw4[nSources];
-// initialize
-
-#pragma omp parallel for
-             for (int s=0; s<nSources; s++)
-             {
-                mu_source_loc[s]=-1.0;
-                mu_source_global[s]=-1.0;
-             }
-	
-// fill in the values that are known to this processor
-#pragma omp parallel for
-             for (int s=0; s<nSources; s++)
-                if (a_GlobalUniqueSources[e][s]->myPoint())
-                {
-                   int is=a_GlobalUniqueSources[e][s]->m_i0;
-                   int js=a_GlobalUniqueSources[e][s]->m_j0;
-                   int ks=a_GlobalUniqueSources[e][s]->m_k0;
-                   int gs=a_GlobalUniqueSources[e][s]->m_grid;
-	    
-// tmp
-                   mu_source_loc[s] = mMu[gs](is,js,ks); 
-// printf("Proc #%i, source#%i, i=%i, j=%i, k=%i, g=%i, mu=%e\n", getRank(), s, is, js, ks, gs, mu_source_loc[s]);
-                }
-// take max over all procs: communicate 
-             MPI_Allreduce( mu_source_loc, mu_source_global, nSources, m_mpifloat, MPI_MAX, m_cartesian_communicator);
-
-             if (!mQuiet && mVerbose >= 3 && proc_zero() )
-                printf(" Done communicating shear modulus to all procs\n");
-// tmp
-	// for (s=0; s<nSources; s++)
-	//   printf("Proc #%i, source#%i, mu=%e\n", getRank(), s, mu_source_global[s]);
-
-// scale all moments components
-#pragma omp parallel for
-             for (int s=0; s<nSources; s++)
-                if (a_GlobalUniqueSources[e][s]->get_CorrectForMu())
-                {
-                   float_sw4 mu, mxx, mxy, mxz, myy, myz, mzz;
-                   mu = mu_source_global[s];
-                   a_GlobalUniqueSources[e][s]->getMoments( mxx, mxy, mxz, myy, myz, mzz);
-                   a_GlobalUniqueSources[e][s]->setMoments( mu*mxx, mu*mxy, mu*mxz, mu*myy, mu*myz, mu*mzz);
-// lower the flag
-                   a_GlobalUniqueSources[e][s]->set_CorrectForMu(false);
-                }
-// cleanup
-             delete[] mu_source_loc;
-             delete[] mu_source_global;
-          } // end if need_mu_corr
-      
       
 // limit max freq parameter (right now the raw freq parameter in the time function) Either rad/s or Hz depending on the time fcn
       // if (m_limit_source_freq)
@@ -821,6 +758,134 @@ void EW::preprocessSources( vector<vector<Source*> > & a_GlobalUniqueSources )
    
   mSourcesOK = true;
 } // end preprocessSources
+
+//-----------------------------------------------------------------------
+void EW::scale_sources_by_shear_modulus( vector<vector<Source*> > & a_GlobalUniqueSources )
+{
+// Sources given as slip (rupture files) carry area*slip and are multiplied here
+// by the shear modulus at the source. Must be called before setup_viscoelastic(),
+// which replaces mMu by the unrelaxed modulus mu/|M(phasefreq)|: the moment of a
+// prescribed slip is defined with the modulus of the material model, mu=rho*Vs^2
+// at the reference frequency, and must not depend on Q or on how the attenuation
+// model is fitted (number of mechanisms, maxfreq).
+   if( m_testing )
+      return;
+   for( int e=0 ; e < a_GlobalUniqueSources.size() ; e++ )
+   {
+// if the sources were defined by a rupture file, we need to multiply the Mij coefficients by mu (shear modulus)
+	  bool need_mu_corr=false;
+#pragma omp parallel for reduction(||:need_mu_corr)
+	  for( int i=0 ; i < a_GlobalUniqueSources[e].size() ; i++ )
+	     need_mu_corr = (need_mu_corr || a_GlobalUniqueSources[e][i]->get_CorrectForMu( ));
+
+// must communicate need_mu_corr
+	  int mu_corr_global=0, mu_corr_loc= need_mu_corr? 1:0;
+      
+// take max over all procs to communicate 
+	  MPI_Allreduce( &mu_corr_loc, &mu_corr_global, 1, MPI_INT, MPI_MAX, m_cartesian_communicator);
+	  need_mu_corr=(bool) mu_corr_global;
+
+// tmp
+//      printf(" Proc #%i, sources needs correction for shear modulus: %s\n", getRank(), need_mu_corr? "TRUE":"FALSE");
+
+	  if (!mQuiet && mVerbose >= 3 && proc_zero() )
+	     printf(" Some sources needs correction for shear modulus: %s\n", need_mu_corr? "TRUE":"FALSE");
+
+	  if (need_mu_corr)
+	  {
+	     int nSources=a_GlobalUniqueSources[e].size();
+	// if (proc_zero())
+	//   printf("Number of sources: %i\n", nSources);
+
+// allocate a temp array for the mu value at all source locations
+             float_sw4 *mu_source_loc = new float_sw4[nSources];
+             float_sw4 *mu_source_global = new float_sw4[nSources];
+// initialize
+
+#pragma omp parallel for
+             for (int s=0; s<nSources; s++)
+             {
+                mu_source_loc[s]=-1.0;
+                mu_source_global[s]=-1.0;
+             }
+	
+// fill in the values that are known to this processor
+             for (int s=0; s<nSources; s++)
+                if (a_GlobalUniqueSources[e][s]->myPoint())
+                   mu_source_loc[s] = mu_at_point( a_GlobalUniqueSources[e][s]->getX0(),
+                                                   a_GlobalUniqueSources[e][s]->getY0(),
+                                                   a_GlobalUniqueSources[e][s]->getZ0(),
+                                                   a_GlobalUniqueSources[e][s]->m_grid );
+// take max over all procs: communicate 
+             MPI_Allreduce( mu_source_loc, mu_source_global, nSources, m_mpifloat, MPI_MAX, m_cartesian_communicator);
+
+             if (!mQuiet && mVerbose >= 3 && proc_zero() )
+                printf(" Done communicating shear modulus to all procs\n");
+// tmp
+	// for (s=0; s<nSources; s++)
+	//   printf("Proc #%i, source#%i, mu=%e\n", getRank(), s, mu_source_global[s]);
+
+// scale all moments components
+#pragma omp parallel for
+             for (int s=0; s<nSources; s++)
+                if (a_GlobalUniqueSources[e][s]->get_CorrectForMu())
+                {
+                   float_sw4 mu, mxx, mxy, mxz, myy, myz, mzz;
+                   mu = mu_source_global[s];
+                   a_GlobalUniqueSources[e][s]->getMoments( mxx, mxy, mxz, myy, myz, mzz);
+                   a_GlobalUniqueSources[e][s]->setMoments( mu*mxx, mu*mxy, mu*mxz, mu*myy, mu*myz, mu*mzz);
+// lower the flag
+                   a_GlobalUniqueSources[e][s]->set_CorrectForMu(false);
+                }
+// cleanup
+             delete[] mu_source_loc;
+             delete[] mu_source_global;
+          } // end if need_mu_corr
+   }
+}
+
+//-----------------------------------------------------------------------
+// Shear modulus at (x,y,z) in grid g, trilinear in the grid's index space
+// (q,r,s). Must be called on a processor that owns (x,y) in grid g.
+//
+// Rupture-file sources are scaled by mu at the source. Sampling mu at a single
+// node (as SW4 did) makes the moment a step function of the source position:
+// a source halfway between two nodes picks one or the other depending on the
+// last bit of its depth, so float and double builds (or two SRF depths 1e-7 km
+// apart) gave moments differing by the mu contrast across one cell, ~20% per
+// source in a gradient model. Interpolation is continuous in the position.
+float_sw4 EW::mu_at_point( float_sw4 x, float_sw4 y, float_sw4 z, int g )
+{
+   float_sw4 q, r, s;
+   if( g < mNumberOfCartesianGrids )
+   {
+      q = x/mGridSize[g]+1;
+      r = y/mGridSize[g]+1;
+      s = (z-m_zmin[g])/mGridSize[g]+1;
+   }
+   else if( !m_gridGenerator->inverse_grid_mapping( this, x, y, z, g, q, r, s ) )
+   {
+      printf("ERROR: EW::mu_at_point could not invert the grid mapping at x=%e y=%e z=%e g=%d\n",
+             x, y, z, g);
+      MPI_Abort(MPI_COMM_WORLD,1);
+   }
+   // Lower node of the cell holding index coordinate t, clamped so the cell
+   // [n, n+1] lies within [lo, hi], and t's fractional position in that cell.
+   auto cell = []( float_sw4 t, int lo, int hi, int& n ) {
+      n = std::clamp( static_cast<int>(floor(t)), lo, hi-1 );
+      return std::clamp( t-n, static_cast<float_sw4>(0), static_cast<float_sw4>(1) );
+   };
+   auto lerp = []( float_sw4 w, float_sw4 v0, float_sw4 v1 ) { return (1-w)*v0 + w*v1; };
+
+   Sarray& mu = mMu[g];
+   int i, j, k;
+   const float_sw4 a = cell( q, mu.m_ib, mu.m_ie, i );
+   const float_sw4 b = cell( r, mu.m_jb, mu.m_je, j );
+   const float_sw4 c = cell( s, 1, m_global_nz[g], k );
+   auto along_x = [&]( int jj, int kk ) { return lerp( a, mu(i,jj,kk), mu(i+1,jj,kk) ); };
+   auto along_xy = [&]( int kk ) { return lerp( b, along_x(j,kk), along_x(j+1,kk) ); };
+   return lerp( c, along_xy(k), along_xy(k+1) );
+}
 
 //-----------------------------------------------------------------------
 void EW::compute_epicenter( vector<Source*> & a_GlobalUniqueSources, int e ) 
@@ -1206,7 +1271,7 @@ void EW::set_materials()
     if (m_useVelocityThresholds)
     {
       for (g=0; g<mNumberOfGrids; g++)
-#pragma omp parallel for
+#pragma omp parallel for collapse(2)
 	for (int k = m_kStart[g]; k <= m_kEnd[g]; k++)
 	    for (int j = m_jStart[g]; j <= m_jEnd[g]; j++)
 	      for (int i = m_iStart[g]; i <= m_iEnd[g]; i++)
@@ -1344,10 +1409,12 @@ void EW::set_materials()
   {
      float_sw4 cpocs = m_energy_test->m_cpcsratio;
      float_sw4 amp = m_energy_test->m_stochastic_amp;
+     float_sw4 rhobase = m_energy_test->m_rhobase, mubase = m_energy_test->m_mubase;
+     float_sw4 rhoamp = m_energy_test->m_rhoamp, muamp = m_energy_test->m_muamp;
 // tmp
      if (proc_zero())
-        printf("\n ENERGY TEST material amplitude: %e\n", amp);
-        
+        printf("\n ENERGY TEST material amplitude: %e rhobase: %e mubase: %e\n", amp, rhobase, mubase);
+
      for (g=0; g<mNumberOfGrids; g++)
      {
 	float_sw4* rho_ptr    = mRho[g].c_ptr();
@@ -1356,14 +1423,42 @@ void EW::set_materials()
         // setting all points in the grid to constant + random perturb: No need to extrapolate ghost points!
 	for( int i=0 ; i < (m_iEnd[g]-m_iStart[g]+1)*(m_jEnd[g]-m_jStart[g]+1)*(m_kEnd[g]-m_kStart[g]+1); i++ )
 	{
-	   rho_ptr[i]    = amp*drand48()+2;
-	   mu_ptr[i]    = amp*drand48()+2;
-           lambda_ptr[i] = mu_ptr[i]*(cpocs*cpocs-2)+amp*drand48();
+	   rho_ptr[i]    = rhoamp*drand48()+rhobase;
+	   mu_ptr[i]    = muamp*drand48()+mubase;
+           lambda_ptr[i] = mu_ptr[i]*(cpocs*cpocs-2)+muamp*drand48();
 // hard-coded loh1 test (only works for 2 grids)
 	   // rho_ptr[i]    = rho0[g] + amp*drand48();
 	   // mu_ptr[i]    = rho0[g]*vs0[g]*vs0[g] + amp*drand48();
            // lambda_ptr[i] = rho0[g]*(vp0[g]*vp0[g] - 2*vs0[g]*vs0[g]) + amp*drand48();
 	}
+     }
+     if( m_energy_test->m_basement_z < 1e37 )
+     {
+	// Layered "basement" below z=basementz: velocities scaled by
+	// basementvfact, density by basementrhofact, and lambda reset to
+	// lambda=mu (Poisson solid). Models a sharp sediment/basement
+	// contact under a high-Vp/Vs wedge (one-cell coherent impedance
+	// jump), which the pointwise random material above cannot express.
+	// Applied as a deterministic post-pass so the drand48 sequence --
+	// and therefore the wedge material for a given seed -- is unchanged
+	// from runs without a basement.
+	float_sw4 zb = m_energy_test->m_basement_z;
+	float_sw4 rf = m_energy_test->m_basement_rhofact;
+	float_sw4 mf = rf*m_energy_test->m_basement_vfact*m_energy_test->m_basement_vfact;
+	for (g=0; g<mNumberOfGrids; g++)
+	   for( int k=m_kStart[g] ; k <= m_kEnd[g]; k++ )
+	      for( int j=m_jStart[g] ; j <= m_jEnd[g]; j++ )
+		 for( int i=m_iStart[g] ; i <= m_iEnd[g]; i++ )
+		 {
+		    float_sw4 z = (g < mNumberOfCartesianGrids) ?
+		       m_zmin[g]+(k-1)*mGridSize[g] : mZ[g](i,j,k);
+		    if( z >= zb )
+		    {
+		       mRho[g](i,j,k) *= rf;
+		       mMu[g](i,j,k)  *= mf;
+		       mLambda[g](i,j,k) = mMu[g](i,j,k); // Poisson basement
+		    }
+		 }
      }
      material_ic( mRho );
      material_ic( mMu );
@@ -1376,6 +1471,33 @@ void EW::set_materials()
 	communicate_array( mRho[g], g );
 	communicate_array( mMu[g], g );
 	communicate_array( mLambda[g], g );
+     }
+     if( m_use_attenuation )
+     {
+	// Randomized Q model for the energy test: Qs = qsamp*drand48()+qsbase
+	// (default Qs in [20,40)); Qp = qpamp*drand48()+qpbase, or 1.5*Qs when
+	// qpbase is not given. Qs, Qp must stay positive (check_materials aborts
+	// otherwise) and comfortably above the point where setup_viscoelastic's
+	// least-squares fit fails its sum(beta)<1 stability requirement.
+	float_sw4 qsbase = m_energy_test->m_qsbase, qpbase = m_energy_test->m_qpbase;
+	float_sw4 qsamp = m_energy_test->m_qsamp, qpamp = m_energy_test->m_qpamp;
+	for (g=0; g<mNumberOfGrids; g++)
+	{
+	   float_sw4* qs_ptr = mQs[g].c_ptr();
+	   float_sw4* qp_ptr = mQp[g].c_ptr();
+	   for( int i=0 ; i < (m_iEnd[g]-m_iStart[g]+1)*(m_jEnd[g]-m_jStart[g]+1)*(m_kEnd[g]-m_kStart[g]+1); i++ )
+	   {
+	      qs_ptr[i] = qsamp*drand48()+qsbase;
+	      qp_ptr[i] = qpbase < 0 ? 1.5*qs_ptr[i] : qpamp*drand48()+qpbase;
+	   }
+	}
+	material_ic( mQs );
+	material_ic( mQp );
+	for (g=0; g<mNumberOfGrids; g++)
+	{
+	   communicate_array( mQs[g], g );
+	   communicate_array( mQp[g], g );
+	}
      }
   }
 
@@ -2563,7 +2685,7 @@ void EW::getDtFromRestartFile()
 void EW::initial_tw_test( vector<Sarray>& U, vector<Sarray>& Up, vector<Sarray>& F,
 			  vector<Sarray>& Mu, vector<Sarray>& Lambda, vector<Sarray>& Lu,
 			  vector<Sarray>& Uacc, vector<Sarray*> AlphaVE,
-			  vector<GridPointSource*> point_sources, vector<int> identsources,
+			  const vector<GridPointSource*>& point_sources, const vector<int>& identsources,
 			  float_sw4 t )
 {
    if (m_twilight_forcing && getVerbosity() >= 3) // only do these tests if verbose>=3

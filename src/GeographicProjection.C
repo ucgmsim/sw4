@@ -31,17 +31,27 @@
 // # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA 
 #include <mpi.h>
 
+#include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
 #include "GeographicProjection.h"
 #include "Require.h"
 
 using namespace std;
 
+static const char* sw4_geographic_crs()
+{
+   return "+proj=latlong +datum=NAD83";
+}
+
 //-----------------------------------------------------------------------
 GeographicProjection::GeographicProjection( double lon_origin, double lat_origin,
 					    string projection, double az )
 {
+   m_geographic_crs = sw4_geographic_crs();
+   m_gmg_crs_from_cache.clear();
+   m_gmg_crs_to_cache.clear();
 /* #ifdef ENABLE_PROJ4 */
 /*    m_projection = pj_init_plus(projection.c_str()); */
 /*    CHECK_INPUT( m_projection != 0, "ERRROR: Init of cartographic projection failed with message: " << pj_strerrno(pj_errno) ); */
@@ -64,12 +74,19 @@ GeographicProjection::GeographicProjection( double lon_origin, double lat_origin
 
 #ifdef ENABLE_PROJ
    PJ_COORD c, c_out;
-   const char *crs_from = "+proj=latlong +datum=NAD83";
+   const char *crs_from = m_geographic_crs.c_str();
    const char *crs_to = projection.c_str();
 
    m_P = proj_create_crs_to_crs(PJ_DEFAULT_CTX, crs_from, crs_to, NULL);
    /* printf("projection: [%s]\n", crs_to); */
-   ASSERT(m_P);
+#if PROJ_VERSION_MAJOR >= 8
+   const char* projErr = proj_context_errno_string(PJ_DEFAULT_CTX, proj_context_errno(PJ_DEFAULT_CTX));
+#else
+   const char* projErr = proj_errno_string(proj_context_errno(PJ_DEFAULT_CTX));
+#endif
+   CHECK_INPUT( m_P, "grid: PROJ rejected the projection '" << projection << "': "
+                << (projErr ? projErr : "unknown error")
+                << ". Check the grid command's proj=, ellps=, datum=, lon_p=, lat_p= and scale= options." );
 
    c = proj_coord(lon_origin, lat_origin, 0.0, 0.0);
    c_out = proj_trans(m_P, PJ_FWD, c);
@@ -83,6 +100,31 @@ GeographicProjection::GeographicProjection( double lon_origin, double lat_origin
    m_Pgmg = NULL;
 #endif
    /* printf("GeographicProjection origin: %f %f -> %f %f\n", lon_origin, lat_origin, m_xoffset, m_yoffset); */
+}
+
+//-----------------------------------------------------------------------
+bool GeographicProjection::scaleFactorHasEffect( const string& projection, double lon, double lat )
+{
+#ifdef ENABLE_PROJ
+// Project a point near (lon,lat) with two very different scale factors. PROJ
+// silently ignores +k_0 for projections without a scale factor, so the only
+// reliable test is whether the result changes.
+   double xy[2][2];
+   const char* k0[2] = {" +k_0=0.5", " +k_0=0.25"};
+   for( int i=0 ; i < 2 ; i++ )
+   {
+      string crs_to = projection + k0[i];
+      PJ* P = proj_create_crs_to_crs(PJ_DEFAULT_CTX, sw4_geographic_crs(), crs_to.c_str(), NULL);
+      CHECK_INPUT( P != NULL, "ERROR: Init of cartographic projection failed for '" << crs_to << "'" );
+      PJ_COORD c = proj_trans(P, PJ_FWD, proj_coord(lon+0.1, lat > 0 ? lat-0.1 : lat+0.1, 0.0, 0.0));
+      xy[i][0] = c.xyzt.x;
+      xy[i][1] = c.xyzt.y;
+      proj_destroy(P);
+   }
+   return fabs(xy[0][0]-xy[1][0]) + fabs(xy[0][1]-xy[1][1]) > 1.0;
+#else
+   return false;
+#endif
 }
 
 //-----------------------------------------------------------------------
@@ -173,28 +215,59 @@ void GeographicProjection::computeCartesianCoord(double &x, double &y,
 }
 
 //-----------------------------------------------------------------------
+double GeographicProjection::computeMeridianConvergence( double lon, double lat )
+{
+   // Measured directly from the forward projection: map a short stretch of
+   // the meridian through (lon,lat) and take its bearing in the projected
+   // (easting, northing) plane. This works for any projection string, needs
+   // no assumption about the sign convention of proj_factors(), and includes
+   // any datum shift in the crs_to_crs pipeline. A central difference over
+   // +-1e-4 degrees (~11 m) has an O(1e-8) relative error.
+   double gamma = 0.0;
+#ifdef ENABLE_PROJ
+   ASSERT(m_P);
+   const double dlat = 1e-4;
+   PJ_COORD cs = proj_trans(m_P, PJ_FWD, proj_coord(lon, lat-dlat, 0.0, 0.0));
+   PJ_COORD cn = proj_trans(m_P, PJ_FWD, proj_coord(lon, lat+dlat, 0.0, 0.0));
+   double de = cn.xyzt.x - cs.xyzt.x;
+   double dn = cn.xyzt.y - cs.xyzt.y;
+   // atan2(de,dn) = bearing of true north measured from grid north; grid
+   // north is rotated by the opposite angle from true north.
+   gamma = -atan2(de, dn)/m_deg2rad;
+#endif
+   return gamma;
+}
+
+//-----------------------------------------------------------------------
 void GeographicProjection::computeCartesianCoordGMG(double &x, double &y,
 						 double lon, double lat, char* crs_to )
 {
   x = 0.0, y = 0.0;
 #ifdef ENABLE_PROJ
   PJ_COORD c, c_out;
+  const char *crs_from = m_geographic_crs.c_str();
+  const string gmg_crs_to = crs_to ? string(crs_to) : string();
 
-  const char *crs_from = "EPSG:4326";
+  CHECK_INPUT(!gmg_crs_to.empty(), "ERROR: empty GMG target coordinate reference system");
 
   /* printf("computeCartesianCoordGMG: crs_to %s\n", crs_to); */
 
-  if (m_Pgmg == NULL)
-    m_Pgmg  = proj_create_crs_to_crs(PJ_DEFAULT_CTX, crs_from, crs_to, NULL);
+  if (m_Pgmg == NULL || m_gmg_crs_from_cache != m_geographic_crs ||
+      m_gmg_crs_to_cache != gmg_crs_to) {
+    if (m_Pgmg)
+      proj_destroy(m_Pgmg);
+    m_Pgmg = proj_create_crs_to_crs(PJ_DEFAULT_CTX, crs_from, gmg_crs_to.c_str(), NULL);
+    m_gmg_crs_from_cache = m_geographic_crs;
+    m_gmg_crs_to_cache = gmg_crs_to;
+  }
 
   ASSERT(m_Pgmg);
 
-  // lat lon is switched in GMG CRS
-  c = proj_coord(lat, lon, 0.0, 0.0);
+  c = proj_coord(lon, lat, 0.0, 0.0);
   c_out = proj_trans(m_Pgmg, PJ_FWD, c);
 
-  x = c_out.xyzt.y;
-  y = c_out.xyzt.x;
+  x = c_out.xyzt.x;
+  y = c_out.xyzt.y;
 
 #else
   printf("GMG format only works with proj 6+, abort!\n");

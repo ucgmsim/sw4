@@ -1,0 +1,9 @@
+# EN-05: random-data energy test in the configuration that exposed the
+# attenuation instability (slow high-Vp/Vs wedge over a Poisson basement,
+# Qs=50 Qp=100 by default here via qsbase/qpbase, nmech=3).
+grid x=3000 y=3000 z=2833 h=100
+attenuation maxfreq=10.0 phasefreq=2.5 nmech=3
+time t={{t}}
+fileio verbose=1
+testenergy seed=34983249 cpcsratio=3.6 rhobase=1816 mubase=4.54e8 rhoamp=100 muamp=5e7 qsbase=50 qsamp=0 qpbase=100 basementz=500 basementvfact=2.7 basementrhofact=1.28 bchorizontal=dirichlet
+developer cfl={{cfl}}

@@ -1,0 +1,12 @@
+# Supergrid guard, stencil margin: the source is OUTSIDE the 1000 m layer but
+# only W + 2h = 1200 m from the boundary. The moment-tensor stencil (3 points)
+# plus the dissipation stencil (2 points at 4th order) need 5, so this must
+# abort. Pairs with sg-margin-2, which sits at W + 6h and must pass; together
+# they pin margin_pts at 5.
+fileio path=sg-margin-1
+grid x=6000 y=6000 z=4000 h=100
+time steps=2
+supergrid gp=10
+block vp=6000 vs=3464 rho=2700
+source x=1200 y=3000 z=1500 mxy=1e18 t0=0.1 freq=5 type=Gaussian
+rec x=3000 y=3000 z=0 sta=interior file=interior usgsformat=1 sacformat=0

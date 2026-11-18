@@ -1,0 +1,88 @@
+# Runs the A/B performance harness on GitHub's runners.
+#
+# Free on public repos. Runners are commonly Ice Lake (AVX-512) or EPYC Milan,
+# so this is enough to confirm the vectorisation work pays on a real AVX-512
+# part -- which no development laptop can show. It is NOT enough for the
+# thread-scaling or bandwidth-saturation questions: runners have 4 vCPUs, where
+# the deployment targets have 112-168 cores. For those, see
+# performance/ab-bench/README.md.
+#
+# Manual dispatch by default, so it never burns minutes unasked.
+name: ab-bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "baseline commit"
+        default: "23a3410"
+      head:
+        description: "commit under test"
+        default: "HEAD"
+      size:
+        description: "case size (S/M/L)"
+        default: "S"
+      precision:
+        description: "single | double | both"
+        default: "double"
+      strict_fp:
+        description: "build both sides with SW4_STRICT_FP=ON"
+        type: boolean
+        default: false
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # the harness needs both commits
+
+      - name: Record the CPU we landed on
+        run: |
+          lscpu | grep -iE 'model name|^cpu\(s\)|flags' | cut -c1-400
+          echo "--- AVX-512 present? ---"
+          grep -o 'avx512[a-z]*' /proc/cpuinfo | sort -u | tr '\n' ' ' || echo "none"
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            build-essential gfortran cmake libopenmpi-dev openmpi-bin \
+            libopenblas-dev liblapack-dev
+
+      - name: Run ab-bench
+        run: |
+          ARGS=""
+          [ "${{ inputs.strict_fp }}" = "true" ] && ARGS="--strict-fp"
+          ./performance/ab-bench/ab-bench.sh \
+            --base "${{ inputs.base }}" --head "${{ inputs.head }}" \
+            --size "${{ inputs.size }}" --precision "${{ inputs.precision }}" \
+            --target native --reps 3 --threads 4 \
+            --outdir "$GITHUB_WORKSPACE/ab-results" $ARGS
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## ab-bench'
+            echo '```'
+            cat ab-results/summary.txt 2>/dev/null || echo "(no summary produced)"
+            echo '```'
+            echo '<details><summary>platform</summary>'
+            echo '```'
+            head -40 ab-results/platform.txt 2>/dev/null
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ab-bench-results
+          path: |
+            ab-results/summary.txt
+            ab-results/results.csv
+            ab-results/platform.txt
+            ab-results/logs/

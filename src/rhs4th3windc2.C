@@ -43,7 +43,7 @@ void update_unext( int ib, int ie, int jb, int je, int kb, int ke,
 #pragma omp for
     for(j=jb+2; j <= je-2 ; j++ )
     {
-#pragma ivdep
+#pragma omp simd
       for(i=ib+2; i <= ie-2 ; i++ )
       {
 	Unext(c,i,j,kic) = up(c,i,j,kic) + cof*(Lutt(c,i,j,kic)+force(c,i,j,kic))/rho(i,j,kic);
@@ -91,10 +91,18 @@ void dpdmt_wind( int ib, int ie, int jb, int je, int kb_tt, int ke_tt, int kb_u,
       for(j=jb; j <= je ; j++ )
       {
 	 //#pragma simd
-#pragma ivdep
+#pragma omp simd
 	for(i=ib; i <= ie ; i++ )
 	{
-	  u_tt(c,i,j,k) = dt2i*( up(c,i,j,k)-2*u(c,i,j,k)+um(c,i,j,k) );
+	  // up-2u+um recovers an O(dt^2) second time-derivative from
+	  // O(1) field values, then gets divided by dt^2 (dt2i): in
+	  // float32 this subtraction loses ~2 significant digits to
+	  // cancellation before the amplifying divide, at the Cartesian
+	  // mesh-refinement interface predictor/corrector every step.
+	  // Do the cancellation-prone part in double; storage stays
+	  // float_sw4.
+	  double difft = (double)up(c,i,j,k) - 2.0*(double)u(c,i,j,k) + (double)um(c,i,j,k);
+	  u_tt(c,i,j,k) = (float_sw4)( (double)dt2i * difft );
 	}
       }
     }

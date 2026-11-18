@@ -1,0 +1,53 @@
+description = "PI-04: binary checkpoint written and read back through the chunked read()/write() path of Parallel_IO. SW4 splits a block into several calls only above ~2 GB, so SW4_IO_MAX_BYTES_PER_CALL lowers the limit to 4 KB. In float builds the chunked write used to pass the unallocated double buffer (write_array aborted) and the chunked read asked for 4x the elements (read_array overran its buffer)."
+labels = ["parallel", "restart", "io", "hdf5"]
+input = "../equivalence/eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[env]
+SW4_IO_MAX_BYTES_PER_CALL = 4096
+
+[params]
+L = 12000.0
+Z = 8000.0
+h = 200.0
+az = 0.0
+t = 4.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500\n{{chk}}"
+source = "source x={{src_x}} y={{src_y}} z=2500 m0=1e15 strike=30 dip=70 rake=45 t0=1.0 freq=5.0 type=Gaussian"
+recvars = ""
+rec = ""
+station_mode = "xy"
+stations = [["A", 2000, 0], ["B", 0, 2500]]
+
+[[run]]
+name = "straight"
+params = { chk = "checkpoint cycle=60 file=chk hdf5=no" }
+
+[[run]]
+name = "restarted"
+after = ["straight"]
+copy_from = { run = "straight", files = ["out.h5"] }
+params = { chk = "checkpoint restartpath=../straight restartfile=chk.cycle=60.sw4checkpoint hdf5=no" }
+
+[[check]]
+name = "agree"
+kind = "restart_agree"
+runs = ["straight", "restarted"]
+# Not bitwise: on restart the pre-checkpoint station samples are read back,
+# rotated and rewritten, which can change a stored float32 sample by 1 ulp
+# (here A/NS sample 40 in double, a relative misfit of ~8e-10). Station output
+# is float32 in both precisions, so double gets the float tolerance. #27 makes
+# the round trip exact; this check can then become bitwise.
+bitwise = false
+rtol = { double = 1e-6, float = 1e-6 }
+
+[[check]]
+name = "no-io-errors"
+kind = "stdout_absent"
+patterns = ["Error in read_array", "Error in write_array", "ERROR in read_with_limit", "ERROR in write_with_limit"]

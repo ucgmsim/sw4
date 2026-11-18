@@ -1,0 +1,33 @@
+description = "EQ-05: a curvilinear grid over flat topography (Gaussian of amplitude 0) gives the same seismograms as the Cartesian grid: checks the curvilinear operators and metric reduce to the Cartesian ones."
+labels = ["equivalence", "curvi"]
+input = "eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 0.0
+t = 5.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "rupturehdf5 file=src.srf.h5"
+recvars = ""
+rec = ""
+
+[[run]]
+name = "cartesian"
+
+[[run]]
+name = "curvilinear"
+params = { topo = "topography input=gaussian zmax=1600 order=3 gaussianAmp=0.0 gaussianXc=6000 gaussianYc=6000 gaussianLx=2000 gaussianLy=2000" }
+
+[[check]]
+name = "agree"
+kind = "traces_agree"
+rtol = { double = 1e-8, float = 1e-4 }

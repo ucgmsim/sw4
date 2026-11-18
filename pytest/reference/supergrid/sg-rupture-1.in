@@ -1,0 +1,13 @@
+# The check must see SRF-expanded sources, not just 'source' commands: the
+# rupture path builds its Source objects in a different place (readhdf5.C /
+# parseInputFile.C) and the guard runs on the assembled global list so that one
+# check covers all three construction sites. The single subfault in gauss2.srf
+# lands inside the x=0/y=0 absorbing layers for this grid origin.
+fileio path=sg-rupture-1
+grid x=6000 y=6000 z=4000 h=100 lat=37.0224 lon=118.0281 az=0.0
+time steps=2
+supergrid gp=10
+block vp=6000 vs=3464 rho=2700
+# Relative to the run directory (pytest/supergrid), where test_sw4.py chdirs.
+rupture file=../reference/supergrid/gauss2.srf
+rec x=3000 y=3000 z=0 sta=interior file=interior usgsformat=1 sacformat=0

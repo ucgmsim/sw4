@@ -45,7 +45,6 @@ int EW::metric_ci( int ib, int ie, int jb, int je, int kb, int ke, float_sw4* __
 #pragma omp parallel for reduction(+:ecode)
    for( int k = kb; k <= ke ; k++ )
       for( int j = jb; j <= je ; j++ )
-#pragma ivdep
 #pragma omp simd
 	 for( int i = ib; i <= ie ; i++ )
 	 {
@@ -183,7 +182,6 @@ void EW::metricexgh_ci( int ib, int ie, int jb, int je, int kb, int ke,
 #pragma omp parallel for
    for( int k = kb; k <= ke ; k++ )
       for( int j = jb; j <= je ; j++ )
-#pragma ivdep
 #pragma omp simd
 	 for( int i = ib; i <= ie ; i++ )
 	 {
@@ -284,7 +282,6 @@ void EW::freesurfcurvi_ci( int ib, int ie, int jb, int je, int kb, int ke,
 #pragma omp parallel for
    for( int j= jb+2; j<=je-2 ; j++ )
    {
-#pragma ivdep
 #pragma omp simd
       for( int i= ib+2; i<=ie-2 ; i++ )
       {
@@ -401,7 +398,6 @@ void EW::getsurfforcing_ci( int ifirst, int ilast, int jfirst, int jlast,
 
 #pragma omp parallel for
    for( int j=jfirst ; j <= jlast ; j++ )
-#pragma ivdep
 #pragma omp simd
       for( int i=ifirst ; i <=ilast ; i++ )
       {
@@ -557,7 +553,6 @@ void EW::addbstressc_ci( int ifirst, int ilast, int jfirst, int jlast,
    {
       float_sw4 sgy  = usesg ? sgstry(j) : 1 ;
       float_sw4 isgy = 1/sgy;
-#pragma ivdep
 #pragma omp simd
       for( int i= ifirst+2; i<=ilast-2 ; i++ )
       {

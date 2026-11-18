@@ -411,7 +411,10 @@ void MaterialPfile::read_pfile( )
 
    // Line 2
    CHECK_INPUT( fgets(buf,bufsize,fd) != NULL, "Error line 2 in pfile header not found\n");
-   nread = sscanf(buf,"%le", &m_h);
+   // "%le" fills a double; m_h etc. are float_sw4 (float in single precision builds).
+   double dtmp1, dtmp2;
+   nread = sscanf(buf,"%le", &dtmp1);
+   m_h = dtmp1;
    CHECK_INPUT(nread==1, "Error reading 2nd line of header, nread= " << nread << " but expected 1\n" );
 
    // Line 3
@@ -426,7 +429,9 @@ void MaterialPfile::read_pfile( )
 
    // Line 5
    CHECK_INPUT( fgets(buf,bufsize,fd) != NULL, "Error line 5 in pfile header not found\n");
-   nread = sscanf(buf,"%i %le %le", &m_nmaxdepth, &m_depthmin, &m_depthmax);
+   nread = sscanf(buf,"%i %le %le", &m_nmaxdepth, &dtmp1, &dtmp2);
+   m_depthmin = dtmp1;
+   m_depthmax = dtmp2;
    CHECK_INPUT(nread==3, "Error reading 5th line of header, nread= " << nread << " but expected 3\n" );
 
    // Line 6
@@ -544,7 +549,7 @@ void MaterialPfile::read_pfile( )
    
    int kk, ndepth, line=7;
 
-   float_sw4 zc, vp, vs, rho, qp, qs;
+   double zc, vp, vs, rho, qp, qs; // double: read with "%le"
 	          
    if( !m_coords_geographic ) // cartesian
    {
@@ -552,9 +557,12 @@ void MaterialPfile::read_pfile( )
      for(int jy=0; jy < m_ny; jy++ )
        for(int ix=0; ix < m_nx; ix++ )
        {
-            CHECK_INPUT( fgets(buf,bufsize,fd) != NULL, "Error in pfile profile header at coordinate " 
+            CHECK_INPUT( fgets(buf,bufsize,fd) != NULL, "Error in pfile profile header at coordinate "
 			                              << ix << " " << jy << "\n" );
-	    nread = sscanf(buf,"%le %le %i", &m_x[ix], &m_y[jy], &ndepth);
+	    double xtmp, ytmp; // "%le" fills a double; m_x/m_y are float_sw4
+	    nread = sscanf(buf,"%le %le %i", &xtmp, &ytmp, &ndepth);
+	    m_x[ix] = xtmp;
+	    m_y[jy] = ytmp;
 	    CHECK_INPUT(nread==3, "Error reading 1st line of profile at " << ix << " " << jy 
 			<< " nread= " << nread << " but expected 3\n" );
 	    line++;

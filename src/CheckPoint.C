@@ -42,6 +42,13 @@ CheckPoint::CheckPoint( EW* a_ew ) :
 #endif
    m_kji_order(true)
 {
+   // Deterministic defaults: the precision follows the build, and the
+   // checkpoint format/compression are set by set_checkpoint_file or
+   // set_restart_file (they were left uninitialised before).
+   m_double = sizeof(float_sw4)==sizeof(double);
+   mUseHDF5 = false;
+   mCompMode = 0;
+   mCompPar = 0.0;
 
 }
 
@@ -71,7 +78,13 @@ CheckPoint::CheckPoint( EW* a_ew,
 #endif
    m_kji_order(true)
 {
+   // Deterministic defaults: the precision follows the build, and the
+   // checkpoint format/compression are set by set_checkpoint_file or
+   // set_restart_file (they were left uninitialised before).
    m_double = sizeof(float_sw4)==sizeof(double);
+   mUseHDF5 = false;
+   mCompMode = 0;
+   mCompPar = 0.0;
 }
 
 //-----------------------------------------------------------------------
@@ -95,7 +108,13 @@ CheckPoint::CheckPoint( EW* a_ew, string fname, size_t bufsize ) :
 #endif
    mDoRestart(true)
 {
+   // Deterministic defaults: the precision follows the build, and the
+   // checkpoint format/compression are set by set_checkpoint_file or
+   // set_restart_file (they were left uninitialised before).
    m_double = sizeof(float_sw4)==sizeof(double);
+   mUseHDF5 = false;
+   mCompMode = 0;
+   mCompPar = 0.0;
 }
 
 //-----------------------------------------------------------------------
@@ -801,11 +820,15 @@ void CheckPoint::cycle_checkpoints( string CheckPointFile )
 }
 
 //-----------------------------------------------------------------------
-void CheckPoint::set_restart_file( string fname, size_t bufsize )
+void CheckPoint::set_restart_file( string fname, size_t bufsize, bool useHDF5 )
 {
    mRestartFile = fname;
    m_bufsize    = bufsize;
    mDoRestart = true;
+   // The restart file's format: a checkpoint line that only restarts
+   // (restartfile=... hdf5=yes, no cycle/cycleInterval) must still select
+   // the HDF5 reader.
+   mUseHDF5   = useHDF5;
 
 }
 

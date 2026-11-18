@@ -1,0 +1,31 @@
+description = "MMS-01: twilight (manufactured solution) on a single Cartesian grid. Asserts 4th order."
+labels = ["mms", "twilight"]
+input = "flat.in"
+ranks = 4
+[params]
+t = 0.8
+cfl = 0.9
+[[run]]
+name = "h1"
+params = { nx = 31, h = 0.0333333333333 }
+[[run]]
+name = "h2"
+params = { nx = 61, h = 0.0166666666667 }
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { nx = 121, h = 0.00833333333333 }
+
+[[check]]
+name = "golden"
+kind = "twilight_golden"
+runs = ["h1", "h2"]
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+expect = 4.0
+[[check]]
+name = "rate3"
+kind = "rate"
+expect = 4.0

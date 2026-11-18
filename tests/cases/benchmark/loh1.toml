@@ -1,0 +1,26 @@
+description = "BM-01: LOH.1 station 10 against the bundled PROSE frequency-wavenumber reference (tools/LOH.1_prose3, post-processed as tools/loh1exact.m). Gaussian of spread 0.2 s so h=100 m in the layer resolves it; the layer interface uses the harmonic-average block of examples/scec (without it the misfit is 23-34%). Measured 2026-10-08 (double): radial 11%, transverse 8.6%, vertical 2.9%, peaks within 5%. Guard 15%. Nightly."
+labels = ["benchmark", "loh"]
+input = "loh.in"
+ranks = 4
+timeout = 2400
+
+[params]
+h = 200.0
+t = 9.0
+t0 = 1.2
+freq = 5.0
+atten = ""
+q_half = ""
+q_iface = ""
+q_layer = ""
+
+[[run]]
+name = "h100"
+tier = "nightly"
+
+[[check]]
+name = "prose"
+kind = "loh_reference"
+reference = "LOH.1_prose3"
+sigma = 0.2
+rtol = 0.15

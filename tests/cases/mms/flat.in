@@ -1,0 +1,6 @@
+# MMS-01: twilight forcing on a Cartesian grid, free surface on top.
+fileio verbose=1
+grid nx={{nx}} x=1.0 y=1.0 z=1.0
+time t={{t}}
+developer cfl={{cfl}}
+twilight omega=6.28 phase=0.8 momega=6.28 errorlog=1

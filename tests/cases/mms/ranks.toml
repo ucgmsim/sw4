@@ -1,0 +1,43 @@
+description = "MMS-12: the MMS-06 workflow grid stack (curvilinear + 2 refinement interfaces) at 1, 2, 3 and 4 MPI ranks. Error norms must agree to round-off: the domain decomposition (including odd and uneven splits across interfaces) must not change the answer."
+labels = ["mms", "twilight", "curvi", "mr", "mpi"]
+input = "curvi-mr.in"
+
+[params]
+t = 0.3
+cfl = 0.9
+nref = 2
+refinements = "refinement zmax=2.1\nrefinement zmax=3.5"
+amp = 0.5
+topozmax = 1.5
+x = 4.0
+y = 3.0
+z = 6.0
+xc = 2.0
+yc = 1.5
+lx = 0.8
+ly = 0.7
+twextra = ""
+extra = ""
+nx = 21
+h = 0.2
+
+[[run]]
+name = "r1"
+ranks = 1
+
+[[run]]
+name = "r2"
+ranks = 2
+
+[[run]]
+name = "r3"
+ranks = 3
+
+[[run]]
+name = "r4"
+ranks = 4
+
+[[check]]
+name = "agree"
+kind = "twilight_agree"
+rtol = { double = 1e-10, float = 1e-4 }

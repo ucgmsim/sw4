@@ -1,0 +1,33 @@
+description = "EQ-09: an explosion at the centre of a square, homogeneous half-space: the four stations 3 km N, S, E and W of it record mirror-image motion (radial components opposite, vertical equal; N/S and E/W pairs and x/y swap). Centred on the projection's central meridian (lon_p=173): NS/EW are rotated to true north/east by the meridian convergence at each station, which is antisymmetric E-W about lon_p, so the mirror relations are exact there (at 172.6E the convergence of 0.27 deg varies by 0.026 deg between stations 3 km apart and breaks them by ~4e-6)."
+labels = ["equivalence", "symmetry"]
+input = "eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 0.0
+t = 5.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "source x={{src_x}} y={{src_y}} z=2000 mxx=1e15 myy=1e15 mzz=1e15 t0=1.5 freq=3.3333333333 type=Gaussian"
+station_mode = "xy"
+clon = 173.0
+stations = [["N", 0, 3000], ["S", 0, -3000], ["E", 3000, 0], ["W", -3000, 0]]
+recvars = ""
+rec = ""
+
+[[run]]
+name = "explosion"
+
+[[check]]
+name = "mirror"
+kind = "station_relations"
+relations = [["N", "UP", "S", "UP", 1], ["E", "UP", "W", "UP", 1], ["N", "UP", "E", "UP", 1], ["N", "NS", "S", "NS", -1], ["E", "EW", "W", "EW", -1], ["N", "NS", "E", "EW", 1]]
+rtol = { double = 2e-6, float = 1e-4 }

@@ -114,6 +114,12 @@ int local_to_global_event( int e ) const;
 
 void setupRun( vector<vector<Source*> > & a_GlobalUniqueSources );
 
+int preroll_steps( vector<Source*> & a_Sources, bool save_sides, bool predict=false );
+// Plain forward runs (sw4, not sw4mopt) evaluate each prefiltered SRF/rupture
+// time function only at solve()'s time steps, so solve() tabulates it there
+// and frees its spline (see SourceTimeTable). Only for a single solve() with
+// sources that are not reused afterwards.
+void set_tabulate_source_time_functions( bool on ) { m_tabulate_source_timefuncs = on; }
 void solve( vector<Source*> & a_GlobalSources, vector<TimeSeries*> & a_GlobalTimeSeries,
 	    vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda, vector<Sarray>& a_Rho,
 	    vector<Sarray>& U, vector<Sarray>& Um,
@@ -156,6 +162,9 @@ void extractRecordData(TimeSeries::receiverMode mode, int i0, int j0, int k0, in
 // some (all?) of these functions are called from parseInputFile() and should be made private
 void badOption(string name, char* option) const;
 bool startswith(const char begin[], char *line);
+// Read one line of any length from an input file into buf (NUL terminated, writable
+// for strtok). Returns false at end of file.
+static bool readInputLine(std::istream& in, std::vector<char>& buf);
 void processGrid(char* buffer);
 void processRefinement(char* buffer);
 void deprecatedOption(const string& command, 
@@ -217,7 +226,8 @@ void setDebugIO(bool onoff) { mDebugIO = onoff; }
   
 //void setDampingCFL(float_sw4 d4_cfl) { m_d4_cfl = d4_cfl; }
 
-void printTime(int cycle, float_sw4 t, bool force=false ) const;
+void printTime(int cycle, float_sw4 t, double wallclock=-1, bool force=false,
+               int cycleFirst=-1, int cycleLast=-1, float_sw4 maxabs=-1 ) const;
 void printPreamble(vector<Source*> & a_Sources,int event) const;
 void switch_on_checkfornan();
 void switch_on_error_log();
@@ -237,8 +247,14 @@ void initialData(float_sw4 a_t, vector<Sarray> & a_U, vector<Sarray*> & a_AlphaV
 bool exactSol(float_sw4 a_t, vector<Sarray> & a_U, vector<Sarray*> & a_AlphaVE, vector<Source*>& source );
 void exactRhsTwilight(float_sw4 a_t, vector<Sarray> & a_F);
 void exactAccTwilight(float_sw4 a_t, vector<Sarray> & a_Uacc);
-void Force(float_sw4 a_t, vector<Sarray> & a_F, vector<GridPointSource*> point_sources, vector<int> identsources );
-void Force_tt(float_sw4 a_t, vector<Sarray> & a_F, vector<GridPointSource*> point_sources, vector<int> identsources );
+void Force(float_sw4 a_t, vector<Sarray> & a_F, const vector<GridPointSource*>& point_sources, const vector<int>& identsources );
+void Force_tt(float_sw4 a_t, vector<Sarray> & a_F, const vector<GridPointSource*>& point_sources, const vector<int>& identsources );
+// Cache of the distinct time functions used by the grid point sources (many grid point
+// sources, e.g. all those spread from one rupture subfault, share a time function).
+// Force/Force_tt then evaluate each time function once per call instead of once per
+// grid point source. Only used for the point_sources vector it was built for.
+void buildSourceTimeFuncCache( const vector<GridPointSource*>& point_sources );
+void clearSourceTimeFuncCache();
 void sort_grid_point_sources( vector<GridPointSource*>& point_sources, vector<int>& identsources );
 
 void normOfDifference( vector<Sarray> & a_Uex,  vector<Sarray> & a_U, float_sw4 &diffInf, float_sw4 &diffL2, float_sw4 &xInf,
@@ -338,7 +354,7 @@ void update_images( int Nsteps, float_sw4 time, vector<Sarray> & a_Up, vector<Sa
 void initialize_SAC_files(); // going away
 void update_SACs( int Nsteps ); // going away
 
-void print_execution_times( double times[10] );
+void print_execution_times( double times[12] );
 void print_execution_time( double t1, double t2, string msg );
 
 void finalizeIO();
@@ -414,6 +430,9 @@ void communicate_array( Sarray& u, int grid );
 void communicate_arrays( vector<Sarray>& u );
 void communicate_array_2dfinest( Sarray& u );
 void communicate_array_2d( Sarray& u, int g, int k );
+// double-precision 3-component k-plane exchange (see parallelStuff.C),
+// used by the mesh-refinement interface solve in consintp.C
+void communicate_plane_2d_d( double* u, int g );
 void communicate_array_2d_asym( Sarray& u, int g, int k );
 void communicate_array_2d_ext( Sarray& u );
 void communicate_array_2d_isurf( Sarray& u, int iSurf );
@@ -461,6 +480,7 @@ void extractSurfaceFromCartesianFile(string a_surfaceFileName);
 void computeCartesianCoord(double &x, double &y, double lon, double lat);
 void computeCartesianCoordGMG(double &x, double &y, double lon, double lat, char *crs_to);
 void computeGeographicCoord(double x, double y, double & longitude, double & latitude);
+double computeMeridianConvergence(double lon, double lat);
 
 void initializeSystemTime();
 void compute_epicenter( vector<Source*> & a_GlobalUniqueSources, int event=0 );
@@ -505,6 +525,19 @@ int computeNearestGridPoint2(int & a_i,
 			     float_sw4 a_x, 
 			     float_sw4 a_y, 
 			     float_sw4 a_z);
+
+// Receivers: the grid node nearest to (a_x,a_y,a_z) in all three directions
+// (computeNearestGridPoint2 returns the low corner in i and j, which sources
+// need as a stencil base). Returns true on the single rank that owns that node
+// as an interior point. Coordinates are double regardless of float_sw4 so that
+// float and double builds pick the same node.
+int computeReceiverGridPoint(int & a_i,
+			     int & a_j,
+			     int & a_k,
+			     int & a_g,
+			     double a_x,
+			     double a_y,
+			     double a_z);
 
 int computeInvGridMap( float_sw4& a_i, float_sw4& a_j, float_sw4& a_k, int& a_g,
                        float_sw4 a_x, float_sw4 a_y, float_sw4 a_z );
@@ -738,9 +771,65 @@ void smooth_grid( int maxIter );
 void enforceDirichlet5( vector<Sarray> & a_U );
 
 bool check_for_nan( vector<Sarray>& a_U, int verbose, string name );
+bool solution_health( vector<Sarray>& a_U, float_sw4& maxabs ) const;
 
 bool check_for_nan( vector<Sarray*>& a_U, int nmech, int verbose, string name );
-   
+
+// Verify the supergrid absorbing layer fits inside every grid that uses it.
+void check_supergrid_thickness() const;
+
+// ---------------------------------------------------------------------------
+// Supergrid geometry, in physical units.
+//
+// One shared definition, used by the receiver flag, the source guard and the
+// absorption metric. All three need the same question answered - "how far
+// inside the sponge is this point?" - and answering it three times invites
+// three different answers.
+//
+// Everything here is derived from what setup_supergrid() actually built, so
+// the predicate cannot drift from the tapers the solver uses:
+//   * a face is only a sponge if mbcGlobalType[side] == bSuperGrid. NOT
+//     m_bcType[g][side], which assign_local_bcs() overwrites with bProcessor
+//     on any rank that is not on the global boundary (EW.C:1023-1041).
+//   * the lateral tapers are defined on every grid; the z=0 taper only on the
+//     topmost grid and only when there is no topography; the z=zmax taper only
+//     on grid 0 (setupRun.C:2109-2137, and the matching per-grid gating of the
+//     vertical damping arrays in assign_supergrid_damping_arrays()).
+//   * the layer occupies width W measured inwards from the boundary, matching
+//     SuperGrid::PsiAux.
+// ---------------------------------------------------------------------------
+
+// Physical width of the absorbing layer on grid g, in metres.
+float_sw4 supergrid_width( int g ) const;
+
+// Which of the six faces of grid g carry a supergrid taper.
+// Side order is the usual SW4 one: 0:x=0 1:x=xmax 2:y=0 3:y=ymax 4:z=0 5:z=zmax
+void supergrid_faces( int g, bool face[6] ) const;
+
+// Signed penetration into the layer, in metres, per face: positive inside the
+// sponge, negative in the interior (magnitude = clearance from the layer
+// edge). Faces with no sponge get -1e38 so they never win a maximum.
+// Returns the largest entry - i.e. > 0 iff (x,y,z) is inside the layer - and
+// sets 'face' to the governing side.
+float_sw4 supergrid_penetration( float_sw4 x, float_sw4 y, float_sw4 z, int g,
+                                 int& face, float_sw4 d[6] ) const;
+
+// Human-readable name of a side index, for diagnostics.
+static const char* supergrid_face_name( int side );
+
+// Flag every receiver that sits inside the absorbing layer. Collective on
+// m_1d_communicator; prints from rank 0 in input order.
+void check_receivers_in_supergrid( std::vector<TimeSeries*>& a_TimeSeries );
+
+// Abort (or warn, under 'developer allowsourceinsupergrid=1') if any source
+// lies inside the absorbing layer or within the stencil margin of it.
+void check_sources_in_supergrid( std::vector<std::vector<Source*> >& a_GlobalUniqueSources );
+
+// Report the longest period the absorbing layer can absorb, and warn when the
+// source band asks for longer. Printed once per run.
+void report_supergrid_absorption( std::vector<Source*>& a_Sources,
+                                  int event ) const;
+
 void define_parallel_io( vector<Parallel_IO*>& parallel_io );
 
 void read_volimage( std::string &path, std::string &fname, vector<Sarray>& data );
@@ -1263,11 +1352,11 @@ void velsum_ci( int is, int ie, int js, int je, int ks, int ke,
 
    void enforceIC( std::vector<Sarray> & a_Up, std::vector<Sarray> & a_U, std::vector<Sarray> & a_Um,
                    vector<Sarray*>& a_AlphaVEp, vector<Sarray*>& a_AlphaVE, vector<Sarray*>& a_AlphaVEm,
-                   float_sw4 t, bool predictor, vector<Sarray> &F, std::vector<GridPointSource*> point_sources,
+                   float_sw4 t, bool predictor, vector<Sarray> &F, const std::vector<GridPointSource*>& point_sources,
                    vector<Sarray>& a_Rho, vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda, bool backward=false );
    void enforceIC2( std::vector<Sarray> & a_Up, std::vector<Sarray> & a_U, std::vector<Sarray> & a_Um,
                     vector<Sarray*>& a_AlphaVEp, float_sw4 t, 
-                    vector<Sarray> &F, std::vector<GridPointSource*> point_sources,
+                    vector<Sarray> &F, const std::vector<GridPointSource*>& point_sources,
                     vector<Sarray>& a_Rho, vector<Sarray>& a_Mu, vector<Sarray>& a_Lambda );
 
    void CurviCartIC( int gcart, vector<Sarray> &a_U, vector<Sarray>& a_Rho, vector<Sarray>& a_Mu, 
@@ -1285,7 +1374,7 @@ void velsum_ci( int is, int ie, int js, int je, int ks, int ke,
                                        Sarray* a_AlphaVEp, Sarray* a_AlphaVE, Sarray* a_AlphaVEm, 
                                        Sarray& Utt, Sarray& Unext,
                                        int g, int kic, float_sw4 t, Sarray &Ftt, 
-                                       std::vector<GridPointSource*> point_sources, 
+                                       const std::vector<GridPointSource*>& point_sources, 
                                        Sarray& a_Rho, Sarray& a_Mu, Sarray& a_Lambda );
 
    // void compute_preliminary_corrector( Sarray& a_Up, Sarray& a_U, Sarray& a_Um,
@@ -1294,7 +1383,7 @@ void velsum_ci( int is, int ie, int js, int je, int ks, int ke,
 
    void compute_preliminary_predictor( Sarray& a_Up, Sarray& a_U, Sarray* a_AlphaVEp, Sarray& Unext,
                                        int g, int kic, float_sw4 t, Sarray &F, 
-                                       vector<GridPointSource*> point_sources,
+                                       const vector<GridPointSource*>& point_sources,
                                        Sarray& a_Rho, Sarray& a_Mu, Sarray& a_Lambda );
    
    void compute_icstresses( Sarray& a_Up, Sarray& B, int g, int kic, float_sw4* a_str_x, float_sw4* a_str_y, 
@@ -1324,7 +1413,7 @@ void velsum_ci( int is, int ie, int js, int je, int ks, int ke,
    void initial_tw_test( vector<Sarray>& U, vector<Sarray>& Up, vector<Sarray>& F,
 			 vector<Sarray>& Mu, vector<Sarray>& Lambda, vector<Sarray>& Lu,
 			 vector<Sarray>& Uacc, vector<Sarray*> AlphaVE,
-			 vector<GridPointSource*> point_sources, vector<int> identsources,
+			 const vector<GridPointSource*>& point_sources, const vector<int>& identsources,
 			 float_sw4 t );
    void checkpoint_twilight_test( vector<Sarray>& Um, vector<Sarray>& U, vector<Sarray>& Up,
 				  vector<Sarray*> AlphaVEm, vector<Sarray*> AlphaVE,
@@ -1430,6 +1519,22 @@ vector<Sarray*> mMuVE, mLambdaVE;// Attenuation material
 vector<Sarray> mC; // Anisotropic material parameters
 Sarray mCcurv; // Anisotropic material with metric (on curvilinear grid).
 
+struct SourceTimeFuncCache {
+   const GridPointSource* const* key = nullptr; // point_sources.data() it was built for
+   size_t n = 0;                                 // point_sources.size() it was built for
+   std::vector<int> tf;                          // time function index of each source
+   std::vector<const GridPointSource*> rep;      // one representative source per time function
+   std::vector<float_sw4> forces;                // 3 force components per source
+   std::vector<float_sw4> val;                   // time function values at the current time
+   bool tabulated = false;                       // every time function is tabulated in m_srcTimes
+} m_srcTFcache;
+bool useSourceTimeFuncCache( const vector<GridPointSource*>& point_sources ) const;
+void evalSourceTimeFuncs( float_sw4 a_t, bool tt );
+bool m_tabulate_source_timefuncs = false;
+// Sorted, distinct times of the Force (0) and Force_tt (1) calls in solve()
+std::vector<float_sw4> m_srcTimes[2];
+void source_evaluation_times( float_sw4 tbegin, int npre, int nsteps );
+
 // Store coefficeints needed for Mesh refinement
 vector<Sarray> m_Morf, m_Mlrf, m_Mufs, m_Mlfs, m_Morc, m_Mlrc, m_Mucs, m_Mlcs;
 
@@ -1438,6 +1543,8 @@ vector<float_sw4> m_curviRefLev;
 
 private:
 void preprocessSources( vector<vector<Source*> >& a_GlobalSources );
+void scale_sources_by_shear_modulus( vector<vector<Source*> > & a_GlobalUniqueSources );
+float_sw4 mu_at_point( float_sw4 x, float_sw4 y, float_sw4 z, int g );
 void revvector( int npts, float_sw4* v );
 
 int m_nevent; // Number of events, needed for multiple event material optimization.
@@ -1532,6 +1639,8 @@ vector<int *> m_BndryWindow;
 bool m_use_attenuation, m_att_use_max_frequency;
 int m_number_mechanisms;
 float_sw4 m_velo_omega, m_min_omega, m_max_omega, m_att_max_frequency, m_att_ppw;
+// ratio max/min of the frequency band where Q is fitted (default 100 = two decades)
+float_sw4 m_att_bandwidth;
 float_sw4 m_qmultiplier;
 
 vector<Sarray> mQp, mQs;
@@ -1652,7 +1761,22 @@ bool m_output_load;
 int m_projection_cycle;
 
 bool m_checkfornan;
-  
+bool m_failonnan;   // when set, MPI_Abort as soon as a NaN or Inf is detected
+// The run is declared diverged, and aborted, once max|U| exceeds this (on the
+// printing cadence, see solve.C). <= 0 disables. Default 1e30, see EW.C.
+float_sw4 m_divergence_limit;
+// 'developer allowsourceinsupergrid=1': downgrade the source-in-the-sponge
+// abort to a warning. The diagnostic is still printed in full.
+bool m_allow_source_in_supergrid;
+// printPreamble() is re-entered per event and per inversion iteration, and
+// pytest-sw4mopt parses inversion stdout at a fixed line offset from the end,
+// so the absorption block must appear exactly once.
+mutable bool m_supergrid_absorption_reported;
+// Global min and max Vs over every grid, in m/s, persisted from the reductions
+// check_materials() already performs and used to throw away. -1 means "not
+// scanned" (the anisotropic path never calls check_materials).
+float_sw4 m_min_vs, m_max_vs;
+
 // testing
 float_sw4 m_max_error[3], m_l2_error[3];
 
@@ -1745,6 +1869,10 @@ vector<CurvilinearInterface2*> m_cli2;
 
 vector<MPI_Datatype> m_send_type1;
 vector<MPI_Datatype> m_send_type3;
+// Contiguous staging buffers for the x-direction halo exchange; see
+// EW::communicate_array in parallelStuff.C for why that direction is packed
+// by hand while the y-direction still uses a derived datatype.
+vector<float_sw4> m_xpack_send;   // send side only; MPI scatters the receive
 vector<MPI_Datatype> m_send_type4; // metric
 vector<MPI_Datatype> m_send_type21; // anisotropic
 MPI_Datatype m_send_type_2dfinest[2];

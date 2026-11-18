@@ -32,14 +32,124 @@
 #include "Sarray.h"
 
 #include <iostream>
+#include <cmath>
 #include <cstdlib>
+#include <new>
+#include <atomic>
 #include <fcntl.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/mman.h>
+#endif
 
 using namespace std;
 
 // Default value 
-bool Sarray::m_corder = true;
+
+//-----------------------------------------------------------------------
+// Opt-out switch, read once: SW4_HUGEPAGES=0 (or n/N) forces every allocation
+// back to the 64-byte path. On by default so the A/B against the production
+// base measures this along with everything else; the paired P-full-nohp row in
+// run-all.sh sets it to 0 on both sides, and the difference between the two
+// rows is the huge-page effect on its own. Whether it stays the default is for
+// that measurement to decide -- the reasoning below is a cache/TLB model, and
+// the last change in this series shipped on a model of the same kind and
+// measured backwards on every layout.
+static bool sarray_hugepages_enabled()
+{
+   static const bool on = []() {
+      const char* e = getenv( "SW4_HUGEPAGES" );
+      return !( e != NULL && ( e[0] == '0' || e[0] == 'n' || e[0] == 'N' ) );
+   }();
+   return on;
+}
+
+//-----------------------------------------------------------------------
+// Why 2 MB alignment plus MADV_HUGEPAGE, and not just the 64-byte alignment
+// the vector loads need:
+//
+// One curvilinear k-plane at the production decomposition is 29.7K points x
+// 4 B = 1.19 MB, i.e. ~290 pages at the 4 KB default, and the RHS kernel's
+// stencil window spans 5 planes over 10 distinct arrays -- ~14,500 pages live
+// at once. Zen 4's L2 DTLB holds ~3,000 entries, so the kernel cannot keep its
+// own working set mapped and every stencil sweep pays page-walks on top of the
+// cache traffic. The Updates phase is worse: it streams the whole subdomain,
+// 596 B/point/step, and touches nothing twice.
+//
+// A 2 MB page covers 512 of those 4 KB pages, which brings the same window
+// down to ~29 TLB entries. Transparent huge pages only back a region that is
+// 2 MB-aligned, and glibc's operator new is not, so the alignment is the part
+// that actually does the work; the madvise call matters when the system is set
+// to THP=madvise rather than THP=always (see
+// /sys/kernel/mm/transparent_hugepage/enabled).
+//
+// The size is not rounded up to a whole huge page, so the tail past the last
+// one simply stays on 4 KB pages; the only overhead is the 64-byte header plus
+// the colour below, at most ~64 KB on an array of several MB. The threshold
+// keeps small arrays -- 2D planes, coefficient tables -- on the ordinary path,
+// where that overhead and a 2 MB alignment would cost more than they return.
+//
+// The colour offset is not optional. Aligning every array to 2 MB is what lets
+// THP back it, but it also lines all of them up on the same cache sets: the RHS
+// kernel streams ten arrays at once and if their k-planes start at the same
+// offset modulo the L2 index range, all ten compete for one set. Measured on an
+// i7-9700 (256 KB 4-way L2), plain 2 MB alignment cost 15-18% -- on Div-stress
+// AND on Updates, and Updates never touches the loop schedule the rest of this
+// series changes, which is how the allocator was identified as the cause. So
+// the mapping stays 2 MB-aligned (that is what THP requires) while the pointer
+// handed back is displaced into it by a per-allocation colour, restoring the
+// spread that glibc's arbitrary mmap offsets used to provide by accident.
+// The colour is a multiple of 1 KB, so the 64-byte vector alignment survives,
+// and it cycles over 64 values, i.e. the low 64 KB of the set index.
+//
+// First-touch NUMA placement still works, at 2 MB granularity instead of 4 KB.
+// That is harmless here because an Sarray belongs to one rank and a rank's
+// threads sit inside one NUMA domain; it would matter if a single array were
+// shared across sockets, which none is.
+float_sw4* Sarray::allocate( size_t n )
+{
+   if( n == 0 )
+      return NULL;
+   const size_t bytes = n*sizeof(float_sw4);
+   const bool huge = bytes >= s_hugepage_threshold && sarray_hugepages_enabled();
+   const size_t align = huge ? s_hugepage : s_alignment;
+
+// The header keeps the base pointer so deallocate can free the real allocation
+// whatever the colour was; 64 bytes of it preserves the vector alignment.
+   const size_t hdr = s_alignment;
+   size_t colour = 0;
+   if( huge )
+   {
+      static std::atomic<size_t> next( 0 );
+      colour = s_colour_step*( next++ % s_colour_count );
+   }
+   const size_t total = bytes + hdr + colour;
+
+   void* raw = NULL;
+// posix_memalign, not operator new[], because deallocate must be able to free
+// both paths with one call -- see the pairing note in Sarray.h.
+   if( posix_memalign( &raw, align, total ) != 0 || raw == NULL )
+      throw std::bad_alloc();
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+   if( huge )
+      madvise( raw, total, MADV_HUGEPAGE ); // advisory: failure is not an error
+#endif
+   char* p = static_cast<char*>(raw) + hdr + colour;
+   reinterpret_cast<void**>(p)[-1] = raw;
+   return reinterpret_cast<float_sw4*>(p);
+}
+
+//-----------------------------------------------------------------------
+void Sarray::deallocate( float_sw4*& p )
+{
+   if( p != NULL )
+   {
+// Never free p itself: allocate displaces it into the mapping by the colour
+// offset and stashes the real base in the word just below it.
+      free( reinterpret_cast<void**>(p)[-1] );
+      p = NULL;
+   }
+}
 
 //-----------------------------------------------------------------------
 Sarray::Sarray( int nc, int ibeg, int iend, int jbeg, int jend, int kbeg, int kend )
@@ -55,7 +165,7 @@ Sarray::Sarray( int nc, int ibeg, int iend, int jbeg, int jend, int kbeg, int ke
    m_nj = m_je-m_jb+1;
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
    else
       m_data = NULL;
 //   m_mpi_datatype_initialized = false;
@@ -77,7 +187,7 @@ Sarray::Sarray( int ibeg, int iend, int jbeg, int jend, int kbeg, int kend )
    m_nj = m_je-m_jb+1;
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
    else
       m_data = NULL;
 //   m_mpi_datatype_initialized = false;
@@ -99,7 +209,7 @@ Sarray::Sarray( int nc, int iend, int jend, int kend )
    m_nj = m_je-m_jb+1;
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
    else
       m_data = NULL;
 //   m_mpi_datatype_initialized = false;
@@ -121,7 +231,7 @@ Sarray::Sarray( int iend, int jend, int kend )
    m_nj = m_je-m_jb+1;
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
    else
       m_data = NULL;
 //   m_mpi_datatype_initialized = false;
@@ -152,7 +262,7 @@ Sarray::Sarray( const Sarray& u )
    m_nj = m_je-m_jb+1;
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
    else
       m_data = NULL;
    dev_data = NULL;
@@ -176,7 +286,7 @@ Sarray::Sarray( Sarray& u, int nc )
    m_nj = m_je-m_jb+1;
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
    else
       m_data = NULL;
 //   m_mpi_datatype_initialized = false;
@@ -188,7 +298,7 @@ Sarray::Sarray( Sarray& u, int nc )
 // void Sarray::define( CartesianProcessGrid* cartcomm, int nc )
 // {
 //   if( m_data != NULL )
-//      delete[] m_data;
+//      deallocate( m_data );
 //    m_nc = nc;
 
 //    // global index ranges:
@@ -220,14 +330,14 @@ Sarray::Sarray( Sarray& u, int nc )
 //    m_nk = m_ke-m_kb+1;
 //    //   std::cout << "Sarray dims " << m_nc << " " << m_ni << " " 
 //    //	     << m_nj << " " << m_nk << std::endl;
-//    m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+//    m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
 // }
 
 //-----------------------------------------------------------------------
 void Sarray::define( int nc, int iend, int jend, int kend )
 {
    if( m_data != NULL )
-      delete[] m_data;
+      deallocate( m_data );
 
    m_nc = nc;
    m_ib = 1;
@@ -240,7 +350,7 @@ void Sarray::define( int nc, int iend, int jend, int kend )
    m_nj = m_je-m_jb+1;
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
    else
       m_data = NULL;
 //   m_mpi_datatype_initialized = false;
@@ -252,7 +362,7 @@ void Sarray::define( int nc, int iend, int jend, int kend )
 void Sarray::define( int iend, int jend, int kend )
 {
    if( m_data != NULL )
-      delete[] m_data;
+      deallocate( m_data );
 
    m_nc = 1;
    m_ib = 1;
@@ -265,7 +375,7 @@ void Sarray::define( int iend, int jend, int kend )
    m_nj = m_je-m_jb+1;
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
    else
       m_data = NULL;
 //   m_mpi_datatype_initialized = false;
@@ -278,7 +388,7 @@ void Sarray::define( int nc, int ibeg, int iend, int jbeg, int jend, int kbeg,
 		     int kend )
 {
    if( m_data != NULL )
-      delete[] m_data;
+      deallocate( m_data );
    m_nc = nc;
    m_ib = ibeg;
    m_ie = iend;
@@ -290,7 +400,7 @@ void Sarray::define( int nc, int ibeg, int iend, int jbeg, int jend, int kbeg,
    m_nj = m_je-m_jb+1;
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
    else
       m_data = NULL;
    dev_data = NULL;
@@ -302,7 +412,7 @@ void Sarray::define( int ibeg, int iend, int jbeg, int jend, int kbeg,
 		     int kend )
 {
    if( m_data != NULL )
-      delete[] m_data;
+      deallocate( m_data );
    m_nc = 1;
    m_ib = ibeg;
    m_ie = iend;
@@ -314,7 +424,7 @@ void Sarray::define( int ibeg, int iend, int jbeg, int jend, int kbeg,
    m_nj = m_je-m_jb+1;
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
    else
       m_data = NULL;
    dev_data = NULL;
@@ -325,7 +435,7 @@ void Sarray::define( int ibeg, int iend, int jbeg, int jend, int kbeg,
 void Sarray::define( const Sarray& u ) 
 {
    if( m_data != NULL )
-      delete[] m_data;
+      deallocate( m_data );
    m_nc = u.m_nc;
    m_ib = u.m_ib;
    m_ie = u.m_ie;
@@ -337,7 +447,7 @@ void Sarray::define( const Sarray& u )
    m_nj = m_je-m_jb+1;
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
    else
       m_data = NULL;
    dev_data = NULL;
@@ -418,25 +528,53 @@ void Sarray::side_plane_fortran( int side, int wind[6], int nGhost )
 //-----------------------------------------------------------------------
 void Sarray::set_to_zero()
 {
-#pragma omp parallel for
-   for( size_t i=0 ; i < m_npts ; i++ )
-      m_data[i] = 0;
+// The `for c` loop is OUTSIDE the pragma deliberately. Folding it in with
+// collapse(3) to save two fork/joins was tried in 0736e42 and MEASURED as a
+// regression: the forcing phase, which is essentially just two set_to_zero
+// calls on F per timestep, went 0.1997s -> 0.2427s (21% slower, +/-4% spread)
+// on a production case at 16 ranks x 4 threads on HPC3.
+//
+// The reason is first-touch alignment, and my collapse(3) commit message
+// claimed the opposite. This function is the first touch for every solution
+// array (solve.C:130). With c outside, thread t touches the SAME (k,j) range in
+// all m_nc components -- which is exactly the mapping the compute kernels use,
+// since they write all three components at each (i,j,k). collapse(3) instead
+// gives thread t one contiguous 1/T slice of the linearised (c,k,j) space, so
+// it touches one component region and the pages end up placed for a traversal
+// order nothing else uses. That undoes the alignment 1697295 established on
+// purpose ("align array access and initialisation routines to the core compute
+// kernels").
+   for( int c=1 ; c <= m_nc ; c++ )
+#pragma omp parallel for collapse(2)
+      for( int k=m_kb ; k <= m_ke ; k++ )
+	 for( int j=m_jb ; j <= m_je ; j++ )
+#pragma omp simd
+	    for( int i=m_ib ; i <= m_ie ; i++ )
+	       m_data[m_base+m_offc*c+i+m_offj*j+m_offk*k] = 0;
 }
 
 //-----------------------------------------------------------------------
 void Sarray::set_to_minusOne()
 {
-#pragma omp parallel for
-   for( size_t i=0 ; i < m_npts ; i++ )
-      m_data[i] = -1.;
+   for( int c=1 ; c <= m_nc ; c++ )
+#pragma omp parallel for collapse(2)
+      for( int k=m_kb ; k <= m_ke ; k++ )
+	 for( int j=m_jb ; j <= m_je ; j++ )
+#pragma omp simd
+	    for( int i=m_ib ; i <= m_ie ; i++ )
+	       m_data[m_base+m_offc*c+i+m_offj*j+m_offk*k] = -1.;
 }
 
 //-----------------------------------------------------------------------
 void Sarray::set_value( float_sw4 scalar )
 {
-#pragma omp parallel for
-   for( size_t i=0 ; i < m_npts ; i++ )
-      m_data[i] = scalar;
+   for( int c=1 ; c <= m_nc ; c++ )
+#pragma omp parallel for collapse(2)
+      for( int k=m_kb ; k <= m_ke ; k++ )
+	 for( int j=m_jb ; j <= m_je ; j++ )
+#pragma omp simd
+	    for( int i=m_ib ; i <= m_ie ; i++ )
+	       m_data[m_base+m_offc*c+i+m_offj*j+m_offk*k] = scalar;
 }
 
 //-----------------------------------------------------------------------
@@ -569,13 +707,57 @@ float_sw4 Sarray::sum( int c )
 }
 
 //-----------------------------------------------------------------------
+// Largest |value| across every component, and whether the array is free of
+// NaN and Inf. Both come out of one pass: the caller wants both, and on the
+// monitoring cadence the data is only worth touching once.
+//
+// The non-finite test cannot be folded into the max. Every comparison
+// against NaN is false, so the usual 'mx > a ? mx : a' adopts a NaN and then
+// discards it again at the next element -- Sarray::maximum and absmax both
+// have that property, which is why neither can be reused here. Inf matters
+// as much as NaN: a diverging single precision run overflows to +-Inf first
+// and only produces NaN once an Inf meets an Inf, so testing isnan alone
+// sees the blow-up later than it needs to (count_nans tests both for that
+// reason).
+bool Sarray::max_abs( float_sw4& mx ) const
+{
+   size_t npts = m_nc*static_cast<size_t>(m_ni)*m_nj*m_nk;
+   float_sw4 mxl = 0;
+   int bad = 0;
+// Written for clarity rather than for the vectoriser, on measurement. A
+// branchless variant -- fabs first, then 'bad |= (a!=a) | (a>FLT_MAX)' so the
+// loop has no isfinite() call in it -- was tried and came out at 21.9 ms per
+// call against 16.8 ms for this one (min of 3, 201^3 grid, 4 ranks). The two
+// are really indistinguishable: that gap is smaller than the run-to-run spread
+// on the same deck. With nothing to win, the version that is obviously correct
+// wins.
+#pragma omp parallel for reduction(max:mxl) reduction(|:bad)
+   for( size_t ind = 0 ; ind < npts ; ind++ )
+   {
+      float_sw4 a = m_data[ind];
+      if( !std::isfinite(a) )
+	 bad = 1;
+      else
+      {
+	 a = std::fabs(a);
+	 mxl = mxl > a ? mxl : a;
+      }
+   }
+   mx = mxl;
+   return bad == 0;
+}
+
+//-----------------------------------------------------------------------
+// Number of non-finite values (NaN *or* +-Inf). The name is historical: it
+// used to count NaN only, which let a run that overflowed to Inf slip past
+// failonnan until an Inf happened to meet an Inf.
 size_t Sarray::count_nans()
 {
    size_t retval = 0;
    size_t npts = m_nc*m_ni*static_cast<size_t>(m_nj)*m_nk;
 #pragma omp parallel for reduction(+:retval)
    for( size_t ind = 0; ind < npts ; ind++)
-      if( std::isnan(m_data[ind]) )
+      if( !std::isfinite(m_data[ind]) )
 	 retval++;
    return retval;
 }
@@ -594,7 +776,7 @@ size_t Sarray::count_nans( int& cfirst, int& ifirst, int& jfirst, int& kfirst )
 	    for( int j=m_jb ; j<=m_je ; j++ )
 	       for( int i=m_ib ; i <= m_ie ; i++ )
 	       {
-		  if( std::isnan(m_data[ind]) )
+		  if( !std::isfinite(m_data[ind]) )
 		  {
 		     if( retval == 0 )
 		     {
@@ -615,7 +797,7 @@ size_t Sarray::count_nans( int& cfirst, int& ifirst, int& jfirst, int& kfirst )
 	    for( int i=m_ib ; i <= m_ie ; i++ )
 	       for( int c=1 ; c <= m_nc ; c++ )
 	       {
-		  if( std::isnan(m_data[ind]) )
+		  if( !std::isfinite(m_data[ind]) )
 		  {
 		     if( retval == 0 )
 		     {
@@ -636,7 +818,7 @@ size_t Sarray::count_nans( int& cfirst, int& ifirst, int& jfirst, int& kfirst )
 void Sarray::copy( const Sarray& u )
 {
    if( m_data != NULL )
-      delete[] m_data;
+      deallocate( m_data );
 
    m_nc = u.m_nc;
    m_ib = u.m_ib;
@@ -650,7 +832,7 @@ void Sarray::copy( const Sarray& u )
    m_nk = m_ke-m_kb+1;
    if( m_nc*m_ni*m_nj*m_nk > 0 )
    {
-      m_data = new float_sw4[m_nc*m_ni*m_nj*m_nk];
+      m_data = allocate( static_cast<size_t>(m_nc)*m_ni*m_nj*m_nk );
 #pragma omp parallel for 
       for( int i=0 ; i < m_nc*m_ni*m_nj*m_nk ; i++ )
 	 m_data[i] = u.m_data[i];
@@ -1008,13 +1190,22 @@ void Sarray::assign( const float* ar, int corder )
    }
    else if( m_corder )
    {
-      // Class array in corder, input array in fortran order, 
-#pragma omp parallel for
-      for( int i=0 ; i <m_ni ; i++ )
+      // Class array in corder, input array in fortran order.
+      // (k,j) are split over the threads as in set_to_zero (the first touch) and i is
+      // innermost, so the writes are contiguous and the reads have stride m_nc. The old
+      // i-outer order had strides of whole planes in the inner loops, and with AVX-512
+      // icpc turned it into gathers: at 305^3 x 3 per rank (lamb-3) it took 0.5-1.0 s per
+      // call against 0.03 s now (tools/bench_sarray_assign).
+      const size_t offc = ((size_t) m_ni)*m_nj*m_nk;
+#pragma omp parallel for collapse(2)
+      for( int k=0 ; k <m_nk ; k++ )
 	 for( int j=0 ; j <m_nj ; j++ )
-	    for( int k=0 ; k <m_nk ; k++ )
-	       for( int c=0 ; c < m_nc ; c++ )
-		  m_data[i+m_ni*j+m_ni*m_nj*k+m_ni*m_nj*m_nk*c] = ar[c+m_nc*i+m_nc*m_ni*j+m_nc*m_ni*m_nj*k];
+	 {
+	    const size_t line = ((size_t) m_ni)*j + ((size_t) m_ni)*m_nj*k;
+	    for( int c=0 ; c < m_nc ; c++ )
+	       for( int i=0 ; i <m_ni ; i++ )
+		  m_data[line+offc*c+i] = ar[c+m_nc*(line+i)];
+	 }
    }
    else
    {
@@ -1040,13 +1231,22 @@ void Sarray::assign( const double* ar, int corder )
    }
    else if( m_corder )
    {
-      // Class array in corder, input array in fortran order, 
-#pragma omp parallel for
-      for( int i=0 ; i <m_ni ; i++ )
+      // Class array in corder, input array in fortran order.
+      // (k,j) are split over the threads as in set_to_zero (the first touch) and i is
+      // innermost, so the writes are contiguous and the reads have stride m_nc. The old
+      // i-outer order had strides of whole planes in the inner loops, and with AVX-512
+      // icpc turned it into gathers: at 305^3 x 3 per rank (lamb-3) it took 0.5-1.0 s per
+      // call against 0.03 s now (tools/bench_sarray_assign).
+      const size_t offc = ((size_t) m_ni)*m_nj*m_nk;
+#pragma omp parallel for collapse(2)
+      for( int k=0 ; k <m_nk ; k++ )
 	 for( int j=0 ; j <m_nj ; j++ )
-	    for( int k=0 ; k <m_nk ; k++ )
-	       for( int c=0 ; c < m_nc ; c++ )
-		  m_data[i+m_ni*j+m_ni*m_nj*k+m_ni*m_nj*m_nk*c] = ar[c+m_nc*i+m_nc*m_ni*j+m_nc*m_ni*m_nj*k];
+	 {
+	    const size_t line = ((size_t) m_ni)*j + ((size_t) m_ni)*m_nj*k;
+	    for( int c=0 ; c < m_nc ; c++ )
+	       for( int i=0 ; i <m_ni ; i++ )
+		  m_data[line+offc*c+i] = ar[c+m_nc*(line+i)];
+	 }
    }
    else
    {

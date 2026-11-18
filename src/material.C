@@ -39,7 +39,7 @@ void EW::convert_material_to_mulambda( )
       // On input, we have stored cs in MU, cp in Lambda
       // use mu = rho*cs*cs and lambda = rho*cp*cp  - 2*mu
       
-#pragma omp parallel for     
+#pragma omp parallel for collapse(2)
       for( int k = m_kStart[g] ; k <= m_kEnd[g]; k++ )
       {
           for( int j = m_jStart[g] ; j <= m_jEnd[g]; j++ )
@@ -58,6 +58,39 @@ void EW::convert_material_to_mulambda( )
 } // end convert_material_to_mulambda
 
 //-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
+// Locate the first point on this rank where 'bad' holds, scanning the grids in
+// order. Only ever reached on an error path: the callers test a global min, so
+// on ranks whose subdomain is clean nothing is found and the collective
+// CHECK_INPUTs further down report the failure instead.
+//
+// Serial and early-exit by design. These searches used to be '#pragma omp
+// parallel for' with CHECK_INPUT called from inside the loop, so every thread
+// that landed on a bad point wrote a chained-<< message to cout and called
+// MPI_Abort concurrently. The messages interleaved into unreadable fragments
+// and the racing aborts added a spurious "double free or corruption" and a
+// flex scanner abort on top of the real diagnostic. One point is all the
+// message needs, and finding it is not worth threading on the way to exit.
+template <typename F>
+static bool first_bad_point(int ngrids, const std::vector<int>& istart,
+                            const std::vector<int>& iend,
+                            const std::vector<int>& jstart,
+                            const std::vector<int>& jend,
+                            const std::vector<int>& kstart,
+                            const std::vector<int>& kend, F bad, int& gb,
+                            int& ib, int& jb, int& kb) {
+  for (int g = 0; g < ngrids; g++)
+    for (int k = kstart[g]; k <= kend[g]; k++)
+      for (int j = jstart[g]; j <= jend[g]; j++)
+        for (int i = istart[g]; i <= iend[g]; i++)
+          if (bad(g, i, j, k)) {
+            gb = g; ib = i; jb = j; kb = k;
+            return true;
+          }
+  return false;
+}
+
+
 void EW::check_materials()
 {
 
@@ -74,6 +107,48 @@ void EW::check_materials()
   const float_sw4 la_min_fact = mincpcsratio*mincpcsratio-2;
   
   float_sw4 mins[8],maxs[8];
+
+  //---------------------------------------------------------------
+  // Exit early if the material contains any non-finite (NaN/Inf)
+  // values. The min/max reductions below do NOT catch these: every
+  // comparison against a NaN is false, so a NaN never becomes the
+  // running min or max and would silently pass the range checks.
+  // Scan explicitly and abort, reporting the first bad location.
+  //---------------------------------------------------------------
+  {
+    long long local_invalid = 0;
+    int gbad = -1, ibad = 0, jbad = 0, kbad = 0;
+    const char* fieldbad = "";
+    for( int g = 0 ; g < mNumberOfGrids ; g++ )
+      for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
+	for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
+	  for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
+	  {
+	    bool rbad = !std::isfinite(mRho[g](i,j,k));
+	    bool mbad = !std::isfinite(mMu[g](i,j,k));
+	    bool lbad = !std::isfinite(mLambda[g](i,j,k));
+	    if( rbad || mbad || lbad )
+	    {
+	      if( local_invalid == 0 )
+	      {
+		gbad = g; ibad = i; jbad = j; kbad = k;
+		fieldbad = rbad ? "rho" : (mbad ? "mu" : "lambda");
+	      }
+	      local_invalid++;
+	    }
+	  }
+    long long global_invalid = 0;
+    MPI_Allreduce(&local_invalid,&global_invalid,1,MPI_LONG_LONG,MPI_SUM,m_cartesian_communicator);
+    if( global_invalid > 0 )
+    {
+      if( local_invalid > 0 )
+	std::cout << "check_materials: rank " << m_myRank << " found " << local_invalid
+		  << " non-finite material value(s); first is " << fieldbad << " in grid " << gbad
+		  << " at (" << ibad << "," << jbad << "," << kbad << ")" << std::endl;
+      CHECK_INPUT( false, "check_materials found " << global_invalid
+		   << " non-finite (NaN/Inf) material value(s). Aborting." );
+    }
+  }
 
   float_sw4 lmin = localMin(mRho);
   MPI_Allreduce(&lmin,&mins[0],1,m_mpifloat,MPI_MIN,m_cartesian_communicator);
@@ -104,6 +179,11 @@ void EW::check_materials()
   MPI_Allreduce(&lmax,&maxs[4],1,m_mpifloat,MPI_MAX,m_cartesian_communicator);
   lmax = localMaxVpOverVs();  
   MPI_Allreduce(&lmax,&maxs[5],1,m_mpifloat,MPI_MAX,m_cartesian_communicator);
+
+// Keep the Vs range rather than only printing it: report_supergrid_absorption()
+// needs it and would otherwise have to reduce it a third time.
+  m_min_vs = mins[2];
+  m_max_vs = maxs[2];
 
   if( usingAttenuation() && !m_twilight_forcing)
   {
@@ -143,68 +223,56 @@ void EW::check_materials()
   }
    
 
+// Report the first offending point, once, from outside any parallel region.
+// See first_bad_point above.
+  int gb, ib, jb, kb;
+
   if( mins[0] <= 0.0 )
   {
-    for (int g = 0; g < mNumberOfGrids; g++)
-#pragma omp parallel for
-      for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-	for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	  for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	  {
-	    CHECK_INPUT( mRho[g](i,j,k) > 0., "Density= " << mRho[g](i,j,k)<< " in grid g= " << g << " at point " 
-			  << " (" << i <<","<<j<<","<<k<<") ");
-	  }
+     if( first_bad_point( mNumberOfGrids, m_iStart, m_iEnd, m_jStart, m_jEnd, m_kStart, m_kEnd,
+			  [&]( int g, int i, int j, int k ){ return !(mRho[g](i,j,k) > 0.); },
+			  gb, ib, jb, kb ) )
+	CHECK_INPUT( mRho[gb](ib,jb,kb) > 0., "Density= " << mRho[gb](ib,jb,kb) << " in grid g= " << gb
+		     << " at point " << " (" << ib <<","<<jb<<","<<kb<<") " );
   }
-   
+
   if( mins[3] < 0.0 )
   {
-    for (int g = 0; g < mNumberOfGrids; g++)
-#pragma omp parallel for
-      for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-	for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	  for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	  {
-	    CHECK_INPUT( mMu[g](i,j,k) >= 0., "mu= " << mMu[g](i,j,k)<< " in grid g= " << g << " at point " 
-			  << " (" << i <<","<<j<<","<<k<<") ");
-	  }
+     if( first_bad_point( mNumberOfGrids, m_iStart, m_iEnd, m_jStart, m_jEnd, m_kStart, m_kEnd,
+			  [&]( int g, int i, int j, int k ){ return !(mMu[g](i,j,k) >= 0.); },
+			  gb, ib, jb, kb ) )
+	CHECK_INPUT( mMu[gb](ib,jb,kb) >= 0., "mu= " << mMu[gb](ib,jb,kb) << " in grid g= " << gb
+		     << " at point " << " (" << ib <<","<<jb<<","<<kb<<") " );
   }
+
   if( mins[4] <= 0.0 )
   {
-    for (int g = 0; g < mNumberOfGrids; g++)
-#pragma omp parallel for
-      for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-	for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-	  for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-	  {
-	     CHECK_INPUT( mLambda[g](i,j,k) >= la_min_fact*mMu[g](i,j,k), "lambda= " << mLambda[g](i,j,k)<< " in grid g= " << g << " at point " 
-			 << " (" << i <<","<<j<<","<<k<<") "<<"mMu="<<mMu[g](i,j,k) );
-	  }
+     if( first_bad_point( mNumberOfGrids, m_iStart, m_iEnd, m_jStart, m_jEnd, m_kStart, m_kEnd,
+			  [&]( int g, int i, int j, int k ){
+			     return !(mLambda[g](i,j,k) >= la_min_fact*mMu[g](i,j,k)); },
+			  gb, ib, jb, kb ) )
+	CHECK_INPUT( mLambda[gb](ib,jb,kb) >= la_min_fact*mMu[gb](ib,jb,kb),
+		     "lambda= " << mLambda[gb](ib,jb,kb) << " in grid g= " << gb
+		     << " at point " << " (" << ib <<","<<jb<<","<<kb<<") " << "mMu=" << mMu[gb](ib,jb,kb) );
   }
+
   if( m_use_attenuation && !m_twilight_forcing)
   {
      if( mins[6] <= 0.0 )
      {
-	for (int g = 0; g < mNumberOfGrids; g++)
-#pragma omp parallel for
-	   for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-	      for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-		 for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-		 {
-		    CHECK_INPUT( mQs[g](i,j,k) >= 0., "Qs= " << mQs[g](i,j,k)<< " in grid g= " << g << " at point " 
-				 << " (" << i <<","<<j<<","<<k<<") ");
-		 }
+	if( first_bad_point( mNumberOfGrids, m_iStart, m_iEnd, m_jStart, m_jEnd, m_kStart, m_kEnd,
+			     [&]( int g, int i, int j, int k ){ return !(mQs[g](i,j,k) >= 0.); },
+			     gb, ib, jb, kb ) )
+	   CHECK_INPUT( mQs[gb](ib,jb,kb) >= 0., "Qs= " << mQs[gb](ib,jb,kb) << " in grid g= " << gb
+			<< " at point " << " (" << ib <<","<<jb<<","<<kb<<") " );
      }
      if( mins[7] <= 0.0 )
      {
-	for (int g = 0; g < mNumberOfGrids; g++)
-#pragma omp parallel for
-	   for( int k=m_kStart[g] ; k <= m_kEnd[g] ; k++ )
-	      for( int j=m_jStart[g] ; j <= m_jEnd[g] ; j++ )
-		 for( int i=m_iStart[g] ; i <= m_iEnd[g] ; i++ )
-		 {
-		    CHECK_INPUT( mQp[g](i,j,k) >= 0., "Qp= " << mQp[g](i,j,k)<< " in grid g= " << g << " at point " 
-				 << " (" << i <<","<<j<<","<<k<<") ");
-		 }
+	if( first_bad_point( mNumberOfGrids, m_iStart, m_iEnd, m_jStart, m_jEnd, m_kStart, m_kEnd,
+			     [&]( int g, int i, int j, int k ){ return !(mQp[g](i,j,k) >= 0.); },
+			     gb, ib, jb, kb ) )
+	   CHECK_INPUT( mQp[gb](ib,jb,kb) >= 0., "Qp= " << mQp[gb](ib,jb,kb) << " in grid g= " << gb
+			<< " at point " << " (" << ib <<","<<jb<<","<<kb<<") " );
      }
   }
 
@@ -290,15 +358,19 @@ void EW::check_materials()
        maxC_hat = sqrt(maxC_hat);
        
 // communicate min & max
-       MPI_Allreduce(&minCs,&mins[0],1,MPI_DOUBLE,MPI_MIN,m_cartesian_communicator);
-       MPI_Allreduce(&maxCs,&maxs[0],1,MPI_DOUBLE,MPI_MAX,m_cartesian_communicator);
-       MPI_Allreduce(&minC_hat,&mins[1],1,MPI_DOUBLE,MPI_MIN,m_cartesian_communicator);
-       MPI_Allreduce(&maxC_hat,&maxs[1],1,MPI_DOUBLE,MPI_MAX,m_cartesian_communicator);
+// Use double buffers here: minCs/minC_hat are double, but mins[]/maxs[] are
+// float_sw4. Reducing with MPI_DOUBLE straight into them writes 8 bytes into
+// 4-byte slots in single precision, printing garbage (and corrupting neighbors).
+       double dmins[2], dmaxs[2];
+       MPI_Allreduce(&minCs,   &dmins[0],1,MPI_DOUBLE,MPI_MIN,m_cartesian_communicator);
+       MPI_Allreduce(&maxCs,   &dmaxs[0],1,MPI_DOUBLE,MPI_MAX,m_cartesian_communicator);
+       MPI_Allreduce(&minC_hat,&dmins[1],1,MPI_DOUBLE,MPI_MIN,m_cartesian_communicator);
+       MPI_Allreduce(&maxC_hat,&dmaxs[1],1,MPI_DOUBLE,MPI_MAX,m_cartesian_communicator);
 // printout results
        if (mVerbose >=2 && proc_zero())
        {
 	 printf("Material model info, Grid g=%i: %e <= Cs <= %e, %e <= C-hat <= %e, h[g]/max(C-hat) = %e\n",
-		g, mins[0], maxs[0], mins[1], maxs[1], mGridSize[g]/maxs[1]);
+		g, dmins[0], dmaxs[0], dmins[1], dmaxs[1], mGridSize[g]/dmaxs[1]);
        }
      } // end for all grids
    }

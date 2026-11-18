@@ -50,16 +50,16 @@ endif
 
 ifeq ($(optlevel),DEBUG)
    FFLAGS    = -g -O0
-   CXXFLAGS  = -g -I../src -DBZ_DEBUG -O0 -std=c++11
+   CXXFLAGS  = -g -I../src -DBZ_DEBUG -O0 -std=c++17
    CFLAGS    = -g -O0
 else ifeq ($(optlevel),PROFILE)
    FFLAGS   = -g -O3
-   CXXFLAGS = -g -O3 -I../src -std=c++11
+   CXXFLAGS = -g -O3 -I../src -std=c++17
    CFLAGS   = -g -O3 
 else
    FFLAGS   = -O3
 # AP (160419) Note that cmake uses -O3 instead of -O for CXX and C
-   CXXFLAGS = -O3 -I../src -std=c++11
+   CXXFLAGS = -O3 -I../src -std=c++17
    CFLAGS   = -O3 
 endif
 
@@ -253,7 +253,7 @@ OBJ  = EW.o Sarray.o version.o parseInputFile.o ForcingTwilight.o \
        MaterialVolimagefile.o MaterialRfile.o MaterialSfile.o AnisotropicMaterialBlock.o sacutils.o \
        DataPatches.o addmemvarforcing2.o consintp.o oddIoddJinterp.o evenIoddJinterp.o oddIevenJinterp.o \
        evenIevenJinterp.o CheckPoint.o geodyn.o AllDims.o Patch.o RandomizedMaterial.o \
-       MaterialInvtest.o sw4-prof.o sachdf5.o readhdf5.o TestTwilight.o TestPointSource.o \
+       MaterialInvtest.o sw4-prof.o sw4timer.o sw4mpiprof.o sw4ompt.o sachdf5.o readhdf5.o TestTwilight.o TestPointSource.o \
        curvilinear4sgwind.o TestEcons.o GridGenerator.o GridGeneratorGeneral.o  \
        GridGeneratorGaussianHill.o CurvilinearInterface2.o SfileOutput.o pseudohess.o \
        fastmarching.o solveTT.o rhs4th3point.o MaterialGMG.o
@@ -358,7 +358,7 @@ $(builddir)/%.o:src/%.C
 
 $(builddir)/RandomizedMaterial.o:src/RandomizedMaterial.C
 	/bin/mkdir -p $(builddir)
-	 cd $(builddir); $(CXX) $(CXXFLAGS) -std=c++11 -c ../$< 
+	 cd $(builddir); $(CXX) $(CXXFLAGS) -std=c++17 -c ../$< 
 
 clean:
 	/bin/mkdir -p $(optdir)

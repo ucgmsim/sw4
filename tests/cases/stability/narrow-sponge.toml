@@ -1,0 +1,25 @@
+description = "ST-02: with two mesh refinement interfaces, a supergrid sponge of 6 coarse cells diverges within the first steps (the refinement interface iteration stops converging and the run fills with NaN); 10 cells is stable but marginal (interface non-convergence warnings) and 12 is clean. The workflow uses 15-30 cells. SW4 accepts the narrow sponge without complaint, so this pins the boundary: gp=12 must run clean, gp=6 must not silently succeed."
+labels = ["stability", "supergrid", "mr"]
+input = "narrow-sponge.in"
+ranks = 4
+
+[params]
+L = 40000.0
+c = 20000.0
+h = 800.0
+t = 1.0
+
+[[run]]
+name = "gp12"
+params = { gp = 12 }
+
+[[run]]
+name = "gp6"
+params = { gp = 6 }
+expect = "failure"
+
+[[check]]
+name = "gp12-clean"
+kind = "stdout_absent"
+runs = ["gp12"]
+patterns = ["no convergence", "nan"]

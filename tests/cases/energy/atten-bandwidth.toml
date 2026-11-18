@@ -1,0 +1,29 @@
+description = "EN-06: the attenuation bandwidth= option (ratio of max to min frequency of the band where Q is fitted). Without it the band stays two decades (min_freq = maxfreq/100, as before the option existed); nmech=2 bandwidth=10 puts min_freq at maxfreq/10 and the energy still decays; bandwidth must be > 1."
+labels = ["energy", "atten"]
+input = "atten-bandwidth.in"
+ranks = 4
+
+[params]
+t = 40.0
+
+[[run]]
+name = "default"
+params = { atten = "attenuation maxfreq=10.0 phasefreq=2.5 nmech=3" }
+stdout_regex = "max freq=1\\.000000e\\+01 \\[Hz\\], min_freq=1\\.000000e-01 \\[Hz\\]"
+
+[[run]]
+name = "nmech2-bw10"
+params = { atten = "attenuation maxfreq=10.0 phasefreq=2.5 nmech=2 bandwidth=10" }
+stdout_regex = "calculated for 2 mechanisms,\\s+max freq=1\\.000000e\\+01 \\[Hz\\], min_freq=1\\.000000e\\+00 \\[Hz\\]"
+
+[[run]]
+name = "bandwidth-not-above-1"
+params = { atten = "attenuation maxfreq=10.0 nmech=2 bandwidth=1" }
+expect = "failure"
+stdout_regex = "bandwidth .* must be > 1"
+
+[[check]]
+name = "decay"
+kind = "energy"
+mode = "decay"
+runs = ["default", "nmech2-bw10"]

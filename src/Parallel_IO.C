@@ -42,6 +42,25 @@ using namespace std;
 #ifdef USE_HDF5
 #include "hdf5.h"
 #endif
+
+//-----------------------------------------------------------------------
+// Maximum number of elements of size `elemsize' passed to one read() or
+// write() call. Linux transfers at most 0x7ffff000 bytes per call, so larger
+// blocks go through read_with_limit/write_with_limit. The environment
+// variable SW4_IO_MAX_BYTES_PER_CALL lowers the limit, so that tests can
+// exercise the chunked path with small arrays.
+static size_t max_elements_per_call( size_t elemsize )
+{
+   static const size_t maxbytes = []() {
+      size_t lim = 2147479552; // 268434944 doubles
+      const char* env = getenv("SW4_IO_MAX_BYTES_PER_CALL");
+      if( env != NULL && atol(env) > 0 && (size_t)atol(env) < lim )
+         lim = (size_t)atol(env);
+      return lim;
+   }();
+   return maxbytes >= elemsize ? maxbytes/elemsize : 1;
+}
+
 //-----------------------------------------------------------------------
 Comminfo::Comminfo()
 {
@@ -1870,9 +1889,9 @@ void Parallel_IO::write_array( int* fid, int nc, void* array, off_t pos0,
 
 // Write to disk
 	    begin_sequential( m_write_comm );
-	    size_t linux_lim=268434944;
 	    if( flt == 0 )
 	    {
+	       size_t linux_lim = max_elements_per_call( sizeof(double) );
 	       if( nc*((size_t)niblock)*njblock*nkblock > linux_lim )
 		  sizew = write_with_limit( fid, rbuf, ((off_t)nc)*niblock*njblock*nkblock, linux_lim );
 	       else
@@ -1888,8 +1907,9 @@ void Parallel_IO::write_array( int* fid, int nc, void* array, off_t pos0,
 	    else
 	    {
 
-	       if( nc*((size_t)niblock)*njblock*nkblock > linux_lim*2 )
-		  sizew = write_with_limit( fid, rbuf, ((off_t)nc)*niblock*njblock*nkblock, linux_lim*2 );
+	       size_t linux_lim = max_elements_per_call( sizeof(float) );
+	       if( nc*((size_t)niblock)*njblock*nkblock > linux_lim )
+		  sizew = write_with_limit( fid, rfbuf, ((off_t)nc)*niblock*njblock*nkblock, linux_lim );
 	       else
 		  sizew = write( *fid, rfbuf, sizeof(float)*((off_t)nc)*niblock*njblock*nkblock );
 	       if( sizew != sizeof(float)*((off_t)nc)*niblock*njblock*nkblock )
@@ -2107,9 +2127,9 @@ void Parallel_IO::read_array( int* fid, int nc, float_sw4* array, off_t pos0,
 	    begin_sequential( m_write_comm );
 	    if( m_irecv.m_ncomm[b] > 0 )
 	    {
-	       size_t linux_lim=268434944;//max no of doubles in one call to read/write, limited by Linux kernel.
 	       if( flt == 0 ) 
 	       {
+		  size_t linux_lim = max_elements_per_call( sizeof(double) );
 		  if( nc*((size_t)niblock)*njblock*nkblock > linux_lim )
 		     //		     sizew = read_dble_wlim( fid, rbuf, nc*((size_t)niblock)*njblock*nkblock,linux_lim);
 		     sizew = read_with_limit( fid, rbuf, nc*((size_t)niblock)*njblock*nkblock,linux_lim);
@@ -2126,8 +2146,9 @@ void Parallel_IO::read_array( int* fid, int nc, float_sw4* array, off_t pos0,
 	       }
 	       else
 	       {
-		  if( nc*((size_t)niblock)*njblock*nkblock > linux_lim*2 )
-		     sizew = read_with_limit( fid, rfbuf, sizeof(float)*nc*((size_t)niblock)*njblock*nkblock,linux_lim*2 );
+		  size_t linux_lim = max_elements_per_call( sizeof(float) );
+		  if( nc*((size_t)niblock)*njblock*nkblock > linux_lim )
+		     sizew = read_with_limit( fid, rfbuf, nc*((size_t)niblock)*njblock*nkblock, linux_lim );
 		  else
 		     sizew = read( *fid, rfbuf, sizeof(float)*nc*((size_t)niblock)*njblock*nkblock );
 		  if( sizew != sizeof(float)*nc*((size_t)niblock)*njblock*nkblock )

@@ -32,6 +32,7 @@
 //#include "mpi.h"
 
 #include "EW.h"
+#include "sw4timer.h"
 
 #include <cstring>
 #include <string>
@@ -44,6 +45,9 @@
 #include <omp.h>
 #endif
 #include "version.h"
+#ifdef USE_HDF5
+#include "sachdf5.h"
+#endif
 
 #ifdef USE_ZFP
 #include "H5Zzfp_lib.h"
@@ -162,7 +166,9 @@ main(int argc, char **argv)
 #endif
 
 // make a new simulation object by reading the input file 'fileName'
+  SW4_TIMER_START("parse_input");
   EW simulation(fileName, GlobalSources, GlobalTimeSeries );
+  SW4_TIMER_STOP("parse_input");
 
   if (!simulation.wasParsingSuccessful())
   {
@@ -175,7 +181,9 @@ main(int argc, char **argv)
   else
   {
 // get the simulation object ready for time-stepping
+    SW4_TIMER_START("setupRun");
     simulation.setupRun( GlobalSources );
+    SW4_TIMER_STOP("setupRun");
 
     if (!simulation.isInitialized())
     { 
@@ -187,6 +195,13 @@ main(int argc, char **argv)
     }
     else
     {
+// Flag any receiver sitting in the supergrid absorbing layer. Here rather than
+// in solve(), which is re-entered once per L-BFGS function evaluation: the
+// TimeSeries objects exist from parsing but the geometry is only valid after
+// setupRun()'s setup_supergrid().
+      if( GlobalTimeSeries.size() > 0 )
+         simulation.check_receivers_in_supergrid( GlobalTimeSeries[0] );
+
       if (myRank == 0)
       {
 	 int nth=1;
@@ -226,27 +241,43 @@ main(int argc, char **argv)
       int ng=simulation.mNumberOfGrids;
       vector<DataPatches*> upred_saved(ng), ucorr_saved(ng);
       vector<Sarray> U(ng), Um(ng), ph(ng);
+      // one solve, and the sources are not used again: see SourceTimeTable
+      simulation.set_tabulate_source_time_functions( true );
+      SW4_TIMER_START("solve");
       simulation.solve( GlobalSources[0], GlobalTimeSeries[0], simulation.mMu, 
 			simulation.mLambda, simulation.mRho, U, Um, upred_saved, 
 			ucorr_saved, false, 0, 0, 0, ph );
+      SW4_TIMER_STOP("solve");
 
 // save all time series
       
+      SW4_TIMER_START("write_timeseries");
       double myWriteTime = 0.0, allWriteTime;
       for (int ts=0; ts<GlobalTimeSeries[0].size(); ts++)
       {
 	GlobalTimeSeries[0][ts]->writeFile();
 #ifdef USE_HDF5
         myWriteTime += GlobalTimeSeries[0][ts]->getWriteTime();
-        if( ts == GlobalTimeSeries[0].size()-1) {
-	  GlobalTimeSeries[0][ts]->closeHDF5File();
-
-          MPI_Reduce(&myWriteTime, &allWriteTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-          if( myRank == 0 )
-            cout << "  ==> Max wallclock time to write time-series data is " << allWriteTime << " seconds." << endl;
-        }
 #endif
       }
+
+#ifdef USE_HDF5
+      if( GlobalTimeSeries[0].size() > 0 )
+      {
+        // Every rank has finished its waveform writes, so the small per-station
+        // scalars can now be gathered and written by a single rank. This also
+        // closes the shared file handles on every rank.
+        writeStationMetadataHDF5( GlobalTimeSeries[0], &simulation, "" );
+
+        MPI_Reduce(&myWriteTime, &allWriteTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        if( myRank == 0 )
+          cout << "  ==> Max wallclock time to write time-series data is " << allWriteTime << " seconds." << endl;
+      }
+#endif
+      SW4_TIMER_STOP("write_timeseries");
+
+// Collective: every rank reaches this point.
+      SW4_TIMER_REPORT( MPI_COMM_WORLD, cout );
 
       if( myRank == 0 )
       {

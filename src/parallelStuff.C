@@ -424,99 +424,115 @@ void EW::setupMPICommunications()
 
 
 //-----------------------------------------------------------------------
+// Pack / unpack one x-direction halo strip of width p starting at column i0
+// into a contiguous buffer. Layout is (c,k,j,i) so the buffer is filled in a
+// single monotonic sweep and both sides agree without any metadata.
+static void pack_x( Sarray& u, int i0, int p, float_sw4* __restrict__ buf )
+{
+   const int jb=u.m_jb, je=u.m_je, kb=u.m_kb, ke=u.m_ke, nc=u.m_nc;
+   const int nj = je-jb+1, nk = ke-kb+1;
+#pragma omp parallel for collapse(2)
+   for( int c=1 ; c <= nc ; c++ )
+      for( int k=kb ; k <= ke ; k++ )
+      {
+	 size_t q = ((size_t)(c-1)*nk + (k-kb))*(size_t)nj*p;
+	 for( int j=jb ; j <= je ; j++ )
+	    for( int i=0 ; i < p ; i++ )
+	       buf[q++] = u(c,i0+i,j,k);
+      }
+}
+
+//-----------------------------------------------------------------------
 void EW::communicate_array( Sarray& u, int grid )
 {
-  // REQUIRE2( 0 <= grid && grid < mU.size() , 
-  // 	    " Error in communicate_array, grid = " << grid );
-   
-   REQUIRE2( u.m_nc == 21 || u.m_nc == 4 || u.m_nc == 3 || u.m_nc == 1, "Communicate array, only implemented for one-, three-, four-, and 21-component arrays"
-	     << " nc = " << u.m_nc );
-   int ie = u.m_ie, ib=u.m_ib, je=u.m_je, jb=u.m_jb, ke=u.m_ke, kb=u.m_kb;
+   REQUIRE2( u.m_nc == 21 || u.m_nc == 4 || u.m_nc == 3 || u.m_nc == 1,
+	     "Communicate array, only implemented for one-, three-, four-, and "
+	     "21-component arrays" << " nc = " << u.m_nc );
+
+   const int ib=u.m_ib, ie=u.m_ie, jb=u.m_jb, je=u.m_je, kb=u.m_kb, ke=u.m_ke;
+   const int nc = u.m_nc, p = m_ppadding;
+   const size_t strip = (size_t)nc * (ke-kb+1) * (je-jb+1) * p;
+   const int xtag1 = 345, xtag2 = 346, ytag1 = 347, ytag2 = 348;
    MPI_Status status;
-   if( u.m_nc == 1 )
+
+// The x- and y-phases MUST stay in this order. The y-direction datatype has
+// blocklength p*ni, spanning the full i-extent including the i-halos, so it is
+// the y-exchange that fills the corner ghost points -- and it can only carry
+// correct corners once the x-exchange has landed.
+
+// ---- x-direction: pack the send, let MPI scatter the receive ------------
+// The derived type for this direction is MPI_Type_vector(nc*nj*nk, p, ni):
+// nc*nj*nk blocks of just p=2 elements, which for a realistic per-rank grid is
+// 30,000-60,000 eight-byte blocks -- 60-200x more fragmented than the
+// y-direction type for exactly the same data volume, walked on every one of the
+// ~20 exchanges per timestep per grid.
+//
+// This is asymmetric on purpose, and the reason is measured. Packing BOTH sides
+// (6a29d4b) gained 2.02-2.28x on Comm. on genoa and lost a consistent 0.752x on
+// milan, at two rank counts and on both the plain and refined cases. Counting
+// passes over the halo explains it:
+//
+//   derived type both sides : MPI packs strided->buf, transfers, unpacks
+//                             buf->strided                          = 2 passes
+//   packing both sides      : we pack, MPI memcpys buf->buf, we unpack
+//                                                                   = 3 passes
+//
+// So packing trades memory bandwidth for a shorter descriptor walk. Genoa has
+// ~460 GB/s per socket (12x DDR5-4800) and the trade pays; milan has ~204
+// (8x DDR4-3200), where Comm. is already 30-39% of runtime against genoa's 8%,
+// and the extra pass costs more than the walk saves.
+//
+// Sending from a contiguous buffer while RECEIVING with the derived type gets
+// both: MPI scatters straight from the message into the strided destination, so
+// we are back to 2 passes, and only the receive side walks the block list. MPI
+// permits the mismatch -- send and recv datatypes need matching type
+// signatures, not matching layouts, and `strip` floats is `strip` floats either
+// way.
+   if( m_neighbor[0] != MPI_PROC_NULL || m_neighbor[1] != MPI_PROC_NULL )
    {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(ie-(2*m_ppadding-1),jb,kb), 1, m_send_type1[2*grid], m_neighbor[1], xtag1,
-		    &u(ib,jb,kb), 1, m_send_type1[2*grid], m_neighbor[0], xtag1,
+      if( m_xpack_send.size() < strip )
+	 m_xpack_send.resize(strip);
+      float_sw4* sbuf = &m_xpack_send[0];
+
+      MPI_Datatype xtype;
+      if(      nc == 1 ) xtype = m_send_type1[2*grid];
+      else if( nc == 3 ) xtype = m_send_type3[2*grid];
+      else if( nc == 4 ) xtype = m_send_type4[2*grid];
+      else               xtype = m_send_type21[2*grid];
+
+      // high-i interior -> neighbour 1; MPI scatters into the low-i halo
+      if( m_neighbor[1] != MPI_PROC_NULL ) pack_x( u, ie-(2*p-1), p, sbuf );
+      MPI_Sendrecv( sbuf, (int)strip, m_mpifloat, m_neighbor[1], xtag1,
+		    &u(1,ib,jb,kb), 1, xtype, m_neighbor[0], xtag1,
 		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(ib+m_ppadding,jb,kb), 1, m_send_type1[2*grid], m_neighbor[0], xtag2,
-		    &u(ie-(m_ppadding-1),jb,kb), 1, m_send_type1[2*grid], m_neighbor[1], xtag2,
+
+      // low-i interior -> neighbour 0; MPI scatters into the high-i halo
+      if( m_neighbor[0] != MPI_PROC_NULL ) pack_x( u, ib+p, p, sbuf );
+      MPI_Sendrecv( sbuf, (int)strip, m_mpifloat, m_neighbor[0], xtag2,
+		    &u(1,ie-(p-1),jb,kb), 1, xtype, m_neighbor[1], xtag2,
 		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(ib,je-(2*m_ppadding-1),kb), 1, m_send_type1[2*grid+1], m_neighbor[3], ytag1,
-		    &u(ib,jb,kb), 1, m_send_type1[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(ib,jb+m_ppadding,kb), 1, m_send_type1[2*grid+1], m_neighbor[2], ytag2,
-		    &u(ib,je-(m_ppadding-1),kb), 1, m_send_type1[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
+      // No unpack, so no MPI_PROC_NULL guard is needed on the receive side:
+      // against PROC_NULL the receive is a no-op and MPI writes nothing, which
+      // is exactly the old derived-type behaviour.
    }
-   else if( u.m_nc == 3 )
-   {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(1,ie-(2*m_ppadding-1),jb,kb), 1, m_send_type3[2*grid], m_neighbor[1], xtag1,
-		    &u(1,ib,jb,kb), 1, m_send_type3[2*grid], m_neighbor[0], xtag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib+m_ppadding,jb,kb), 1, m_send_type3[2*grid], m_neighbor[0], xtag2,
-		    &u(1,ie-(m_ppadding-1),jb,kb), 1, m_send_type3[2*grid], m_neighbor[1], xtag2,
-		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(1,ib,je-(2*m_ppadding-1),kb), 1, m_send_type3[2*grid+1], m_neighbor[3], ytag1,
-		    &u(1,ib,jb,kb), 1, m_send_type3[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib,jb+m_ppadding,kb), 1, m_send_type3[2*grid+1], m_neighbor[2], ytag2,
-		    &u(1,ib,je-(m_ppadding-1),kb), 1, m_send_type3[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
-   }
-   else if( u.m_nc == 4 )
-   {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(1,ie-(2*m_ppadding-1),jb,kb), 1, m_send_type4[2*grid], m_neighbor[1], xtag1,
-		    &u(1,ib,jb,kb), 1, m_send_type4[2*grid], m_neighbor[0], xtag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib+m_ppadding,jb,kb), 1, m_send_type4[2*grid], m_neighbor[0], xtag2,
-		    &u(1,ie-(m_ppadding-1),jb,kb), 1, m_send_type4[2*grid], m_neighbor[1], xtag2,
-		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(1,ib,je-(2*m_ppadding-1),kb), 1, m_send_type4[2*grid+1], m_neighbor[3], ytag1,
-		    &u(1,ib,jb,kb), 1, m_send_type4[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib,jb+m_ppadding,kb), 1, m_send_type4[2*grid+1], m_neighbor[2], ytag2,
-		    &u(1,ib,je-(m_ppadding-1),kb), 1, m_send_type4[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
-   }
-   else if( u.m_nc == 21 )
-   {
-      int xtag1 = 345;
-      int xtag2 = 346;
-      int ytag1 = 347;
-      int ytag2 = 348;
-      // X-direction communication
-      MPI_Sendrecv( &u(1,ie-(2*m_ppadding-1),jb,kb), 1, m_send_type21[2*grid], m_neighbor[1], xtag1,
-		    &u(1,ib,jb,kb), 1, m_send_type21[2*grid], m_neighbor[0], xtag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib+m_ppadding,jb,kb), 1, m_send_type21[2*grid], m_neighbor[0], xtag2,
-		    &u(1,ie-(m_ppadding-1),jb,kb), 1, m_send_type21[2*grid], m_neighbor[1], xtag2,
-		    m_cartesian_communicator, &status );
-      // Y-direction communication
-      MPI_Sendrecv( &u(1,ib,je-(2*m_ppadding-1),kb), 1, m_send_type21[2*grid+1], m_neighbor[3], ytag1,
-		    &u(1,ib,jb,kb), 1, m_send_type21[2*grid+1], m_neighbor[2], ytag1,
-		    m_cartesian_communicator, &status );
-      MPI_Sendrecv( &u(1,ib,jb+m_ppadding,kb), 1, m_send_type21[2*grid+1], m_neighbor[2], ytag2,
-		    &u(1,ib,je-(m_ppadding-1),kb), 1, m_send_type21[2*grid+1], m_neighbor[3], ytag2,
-		    m_cartesian_communicator, &status );
-   }
+
+// ---- y-direction: keep the derived datatype ----------------------------
+// Here the type is MPI_Type_vector(nc*nk, p*ni, ni*nj) -- a few hundred blocks
+// of p*ni contiguous elements. That is well within what MPI handles
+// efficiently, so it is deliberately left alone rather than churned for
+// uniformity.
+   MPI_Datatype ytype;
+   if(      nc == 1 ) ytype = m_send_type1[2*grid+1];
+   else if( nc == 3 ) ytype = m_send_type3[2*grid+1];
+   else if( nc == 4 ) ytype = m_send_type4[2*grid+1];
+   else               ytype = m_send_type21[2*grid+1];
+
+   MPI_Sendrecv( &u(1,ib,je-(2*p-1),kb), 1, ytype, m_neighbor[3], ytag1,
+		 &u(1,ib,jb,kb),         1, ytype, m_neighbor[2], ytag1,
+		 m_cartesian_communicator, &status );
+   MPI_Sendrecv( &u(1,ib,jb+p,kb),       1, ytype, m_neighbor[2], ytag2,
+		 &u(1,ib,je-(p-1),kb),   1, ytype, m_neighbor[3], ytag2,
+		 m_cartesian_communicator, &status );
 }
 
 //-----------------------------------------------------------------------
@@ -560,6 +576,105 @@ void EW::communicate_array_2d( Sarray& u, int g, int k )
                  m_cartesian_communicator, &status );
    u.copy_kplane(u2d,k);
 
+}
+
+//-----------------------------------------------------------------------
+void EW::communicate_plane_2d_d( double* u, int g )
+{
+   // Ghost-point exchange for a 3-component double-precision k-plane laid
+   // out as u[(i-ib) + ni*(j-jb) + ni*nj*(c-1)] over this rank's full local
+   // (i,j) extent of grid g. Double-precision analog of communicate_array_2d
+   // (whose MPI datatypes are typed on float_sw4); used by the
+   // mesh-refinement interface solve in EW::consintp, which iterates the
+   // interface ghost planes in double precision.
+   int ib = m_iStart[g], ie = m_iEnd[g];
+   int jb = m_jStart[g], je = m_jEnd[g];
+   int ni = ie-ib+1, nj = je-jb+1;
+   const int nc = 3;
+   int pp = m_ppadding;
+
+   MPI_Status status;
+   int xtag1 = 345;
+   int xtag2 = 346;
+   int ytag1 = 347;
+   int ytag2 = 348;
+#define uplane(c,i,j) u[(i)-ib + ((size_t)ni)*((j)-jb) + ((size_t)ni)*nj*((c)-1)]
+   // X-direction communication, strips of pp columns over the full j-extent
+   {
+      size_t n = (size_t)pp*nj*nc;
+      std::vector<double> sbuf1(n), rbuf1(n), sbuf2(n), rbuf2(n);
+      size_t ind = 0;
+      for( int c=1 ; c <= nc ; c++ )
+	 for( int j=jb ; j <= je ; j++ )
+	    for( int i=ie-2*pp+1 ; i <= ie-pp ; i++ )
+	       sbuf1[ind++] = uplane(c,i,j);
+      ind = 0;
+      for( int c=1 ; c <= nc ; c++ )
+	 for( int j=jb ; j <= je ; j++ )
+	    for( int i=ib+pp ; i <= ib+2*pp-1 ; i++ )
+	       sbuf2[ind++] = uplane(c,i,j);
+      MPI_Sendrecv( sbuf1.data(), n, MPI_DOUBLE, m_neighbor[1], xtag1,
+		    rbuf1.data(), n, MPI_DOUBLE, m_neighbor[0], xtag1,
+		    m_cartesian_communicator, &status );
+      MPI_Sendrecv( sbuf2.data(), n, MPI_DOUBLE, m_neighbor[0], xtag2,
+		    rbuf2.data(), n, MPI_DOUBLE, m_neighbor[1], xtag2,
+		    m_cartesian_communicator, &status );
+      if( m_neighbor[0] != MPI_PROC_NULL )
+      {
+	 ind = 0;
+	 for( int c=1 ; c <= nc ; c++ )
+	    for( int j=jb ; j <= je ; j++ )
+	       for( int i=ib ; i <= ib+pp-1 ; i++ )
+		  uplane(c,i,j) = rbuf1[ind++];
+      }
+      if( m_neighbor[1] != MPI_PROC_NULL )
+      {
+	 ind = 0;
+	 for( int c=1 ; c <= nc ; c++ )
+	    for( int j=jb ; j <= je ; j++ )
+	       for( int i=ie-pp+1 ; i <= ie ; i++ )
+		  uplane(c,i,j) = rbuf2[ind++];
+      }
+   }
+   // Y-direction communication, strips of pp rows over the full i-extent
+   // (after the X-exchange, so corner ghost points get correct values)
+   {
+      size_t n = (size_t)ni*pp*nc;
+      std::vector<double> sbuf1(n), rbuf1(n), sbuf2(n), rbuf2(n);
+      size_t ind = 0;
+      for( int c=1 ; c <= nc ; c++ )
+	 for( int j=je-2*pp+1 ; j <= je-pp ; j++ )
+	    for( int i=ib ; i <= ie ; i++ )
+	       sbuf1[ind++] = uplane(c,i,j);
+      ind = 0;
+      for( int c=1 ; c <= nc ; c++ )
+	 for( int j=jb+pp ; j <= jb+2*pp-1 ; j++ )
+	    for( int i=ib ; i <= ie ; i++ )
+	       sbuf2[ind++] = uplane(c,i,j);
+      MPI_Sendrecv( sbuf1.data(), n, MPI_DOUBLE, m_neighbor[3], ytag1,
+		    rbuf1.data(), n, MPI_DOUBLE, m_neighbor[2], ytag1,
+		    m_cartesian_communicator, &status );
+      MPI_Sendrecv( sbuf2.data(), n, MPI_DOUBLE, m_neighbor[2], ytag2,
+		    rbuf2.data(), n, MPI_DOUBLE, m_neighbor[3], ytag2,
+		    m_cartesian_communicator, &status );
+      if( m_neighbor[2] != MPI_PROC_NULL )
+      {
+	 ind = 0;
+	 for( int c=1 ; c <= nc ; c++ )
+	    for( int j=jb ; j <= jb+pp-1 ; j++ )
+	       for( int i=ib ; i <= ie ; i++ )
+		  uplane(c,i,j) = rbuf1[ind++];
+      }
+      if( m_neighbor[3] != MPI_PROC_NULL )
+      {
+	 ind = 0;
+	 for( int c=1 ; c <= nc ; c++ )
+	    for( int j=je-pp+1 ; j <= je ; j++ )
+	       for( int i=ib ; i <= ie ; i++ )
+		  uplane(c,i,j) = rbuf2[ind++];
+      }
+   }
+#undef uplane
 }
 
 //-----------------------------------------------------------------------

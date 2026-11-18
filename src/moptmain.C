@@ -585,6 +585,10 @@ void compute_f_and_df( EW& simulation, int nspar, int nmpars, double* xs,
             TimeSeries *elem = GlobalTimeSeries[e][m]->copy( &simulation, "diffsrc" );
             diffs.push_back(elem);
          }
+#ifdef USE_HDF5
+         if( mopt->m_output_ts && it >= 0 )
+            writeStationMetadataHDF5( GlobalTimeSeries[e], &simulation, "" );
+#endif
 
 
 // 2. misfit function also updates diffs := this - observed
@@ -1661,6 +1665,10 @@ void misfit_curve( int i, int j, int k, int var, double pmin, double pmax,
 		     localmfout << " " << mf;
 		  }
 	       }
+#ifdef USE_HDF5
+	    for( int e=0 ; e < GlobalTimeSeries.size(); e++ )
+	       writeStationMetadataHDF5( GlobalTimeSeries[e], &simulation, "" );
+#endif
 	    localmfout << endl;
 	 }
       }
@@ -1873,6 +1881,10 @@ int main(int argc, char **argv)
 		    GlobalObservations[e][m]->writeFile( "_fi" );
 		 }
 	      }
+#ifdef USE_HDF5
+	      if( simulation.m_prefilter_sources && simulation.m_filter_observations )
+		 writeStationMetadataHDF5( GlobalObservations[e], &simulation, "_fi" );
+#endif
 
 
 //  First copy observations to GlobalTimeSeries, later, solve will insert 
@@ -1896,9 +1908,10 @@ int main(int argc, char **argv)
                  }
 #endif
 	      }
-	      for( int m = 0; m < GlobalObservations[e].size(); m++ )
-                 if( GlobalObservations[e][m]->is_in_supergrid_layer() )
-                    cout << "WARNING: station " << GlobalObservations[e][m]->getStationName() << " is inside the supergrid layer" << endl;
+// The unified check: physical, per-face, gated on mbcGlobalType so it cannot
+// fire in a run with no sponge at all, printed from rank 0 in input order, and
+// with a summary line so a clean station set is positively confirmed.
+	      simulation.check_receivers_in_supergrid( GlobalObservations[e] );
 	   }
 
 // Configure optimizer 
@@ -2101,6 +2114,9 @@ int main(int argc, char **argv)
 #endif
 		 for( int m=0 ; m < GlobalTimeSeries[e].size() ; m++ )
 		    GlobalTimeSeries[e][m]->writeFile( );
+#ifdef USE_HDF5
+		 writeStationMetadataHDF5( GlobalTimeSeries[e], &simulation, "" );
+#endif
               }
 	   }
 	   else if( mopt->m_opttest == 7 )
@@ -2313,6 +2329,10 @@ int main(int argc, char **argv)
                  for( int e=0; e < GlobalObservations.size(); e++ )
                     for( int s=0 ; s < GlobalObservations[e].size() ; s++)
                        GlobalObservations[e][s]->writeFile();
+#ifdef USE_HDF5
+                 for( int e=0; e < GlobalObservations.size(); e++ )
+                    writeStationMetadataHDF5( GlobalObservations[e], &simulation, "" );
+#endif
 
                  for( int e=0; e < GlobalObservations.size(); e++ )
                   {

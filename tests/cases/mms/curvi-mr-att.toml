@@ -1,0 +1,67 @@
+description = "MMS-07: MMS-06 plus attenuation (nmech=1: SW4's twilight forcing only supports one mechanism; nmech=3 is covered by the energy and mini-NZ tests). Asserts 4th order for displacement and memory variables."
+labels = ["mms", "twilight", "curvi", "mr", "atten"]
+input = "curvi-mr.in"
+ranks = 4
+
+[params]
+x = 4.0
+y = 3.0
+z = 6.0
+xc = 2.0
+yc = 1.5
+lx = 0.8
+ly = 0.7
+t = 0.15
+cfl = 0.9
+nref = 2
+refinements = "refinement zmax=2.1\nrefinement zmax=3.5"
+amp = 0.5
+topozmax = 1.5
+twextra = "mphase=0.1"
+extra = "attenuation nmech=1"
+
+[[run]]
+name = "h1"
+params = { nx = 21, h = 0.2 }
+
+[[run]]
+name = "h2"
+params = { nx = 41, h = 0.1 }
+
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { nx = 81, h = 0.05 }
+
+[[check]]
+name = "golden"
+kind = "twilight_golden"
+runs = ["h1", "h2"]
+
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+expect = 4.0
+band = 0.4
+band_errInf = 0.7
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+expect = 4.0
+band = 0.4
+
+[[check]]
+name = "interface-converged"
+kind = "stdout_absent"
+pattern = "no convergence"
+
+[[check]]
+name = "rate-atten"
+kind = "rate"
+runs = ["h1", "h2"]
+field = "atten"
+expect = 4.0
+band = 0.4
+band_errInf = 0.7

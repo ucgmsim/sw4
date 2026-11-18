@@ -51,6 +51,17 @@ class GeographicProjection
      void computeGeographicCoord(double x, double y, double & longitude, double & latitude );
      void computeCartesianCoord( double & x, double & y, double longitude, double latitude );
      void computeCartesianCoordGMG( double & x, double & y, double longitude, double latitude, char* crs_to );
+     // Meridian convergence at (longitude, latitude), in degrees: the true
+     // azimuth (clockwise from true north) of the projection's grid north,
+     // i.e. of the +northing axis. The SW4 grid x-axis then points at true
+     // azimuth az + convergence.
+     double computeMeridianConvergence( double longitude, double latitude );
+
+     // True if appending " +k_0=..." to the PROJ string `projection` changes the
+     // projected coordinates near (lon, lat), i.e. the projection honours a
+     // scale factor (tmerc, etmerc, stere, sterea, merc, omerc, ...). False for
+     // projections that ignore it or fix it internally (utm, lcc, aea, ...).
+     static bool scaleFactorHasEffect( const std::string& projection, double lon, double lat );
   private:
 /* #ifdef ENABLE_PROJ4 */
 /*      projPJ m_projection, m_latlong; */
@@ -59,6 +70,9 @@ class GeographicProjection
    PJ *m_P;
    PJ *m_Pgmg;
 #endif
+   std::string m_geographic_crs;
+   std::string m_gmg_crs_from_cache;
+   std::string m_gmg_crs_to_cache;
    double m_xoffset, m_yoffset, m_az, m_deg2rad;
 };
 

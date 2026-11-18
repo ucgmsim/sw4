@@ -1,15 +1,189 @@
 #include "sw4.h"
 #include <cstdlib>
+#include <unistd.h>
+#if defined(__APPLE__)
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#endif
 #include <cmath>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+//-----------------------------------------------------------------------
+// Chunk size for schedule(static,chunk) on the collapse(2) (k,j) loop nests
+// below. There are three ways to hand a collapsed (k,j) space to a team and
+// only one of them suits a 4th-order stencil:
+//
+//   schedule(static)    one contiguous k-RANGE per thread, so each thread
+//                       walks its own 5-plane stencil window and the team
+//                       holds nthreads of them at once. At the production
+//                       decomposition that is 24 MB against a 16 MB L3
+//                       share, so every k-plane is refetched from DRAM.
+//   schedule(static,1)  j-rows round-robin. The team shares one k-plane
+//                       window, but a thread's consecutive rows are j and
+//                       j+nthreads, whose 5-row j-windows overlap in ONE row
+//                       rather than four: it buys the shared plane by giving
+//                       up the row reuse. Measured 0.73-0.98x on Div-stress
+//                       in every A/B layout tried (ab-genoa 8649002, 8649007,
+//                       8649028, 8649029, 8649030 -- 4x1 through 40x4),
+//                       against a predicted 1.6-1.8x.
+//   schedule(static,C)  with C = ceil(nj/nthreads): thread t takes j-block t
+//                       of every k-plane. Contiguous in j, so the 4/5 row
+//                       reuse is back, and the team still advances through
+//                       the k-planes together, so the 5-plane window is
+//                       fetched once per team rather than once per thread.
+//                       Both properties at once, which is the point.
+//
+// C is a runtime value because nj and the team size both are. Chunks per
+// plane is ceil(nj/C) == nthreads whenever nj >= nthreads, so thread t owns
+// the same j-block on every plane and its rows stay hot in L2 from one plane
+// to the next; when nj < nthreads the loop is too thin for any of this to
+// matter. Numerically inert: this moves iterations between threads, changes
+// no arithmetic, and these loops carry no reductions.
+// j-tiles of the interior loops of the Cartesian RHS kernels. Each thread takes whole tiles and
+// sweeps k inside each, so that the planes k-2..k+2 of mu, la and u (5 arrays x 5 planes) for
+// one tile stay in L2 while k advances. Without tiling a thread swept k over its whole share
+// of the j-lines, e.g. ~150 lines and ~4.6 MB on lamb-3 (305 points per line, single precision,
+// 2 threads), which does not fit in Genoa's 1 MB L2. On lamb-3 (AVX-512 icpc build) 16-line
+// tiles made the stretched kernel 15-16% faster (tools/bench_rhs4) and the whole run 6.7%.
+//
+// Width: the lines whose 5 x 5 planes fill half of L2 (sysconf on Linux, sysctl on macOS, else
+// 1 MB), at least 4; SW4_RHS_JTILE overrides it.
+static int rhs4_jtile( int ni )
+{
+   static const int env = []{
+      const char* e = getenv("SW4_RHS_JTILE");
+      return e ? atoi(e) : 0;
+   }();
+   if( env > 0 )
+      return env;
+   static const long l2 = []{
+      long v = 0;
+#if defined(_SC_LEVEL2_CACHE_SIZE)
+      v = sysconf(_SC_LEVEL2_CACHE_SIZE);                // glibc
+#elif defined(__APPLE__)
+      int64_t s = 0;                                     // macOS
+      size_t len = sizeof(s);
+      if( sysctlbyname("hw.l2cachesize", &s, &len, nullptr, 0) == 0 )
+         v = static_cast<long>(s);
+#endif
+      return v > 0 ? v : 1048576L;                       // unknown: 1 MB
+   }();
+   const long w = (l2/2) / (25L*ni*static_cast<long>(sizeof(float_sw4)));
+   return w < 4 ? 4 : static_cast<int>(w);
+}
+
+// The j-lines jfirst+2..jlast-2 split into tiles of about rhs4_jtile(ni) lines. The number of
+// tiles is a multiple of the thread count and the widths differ by at most one line, so a
+// static schedule gives every thread the same number of lines. When a thread's share is no
+// wider than one tile, each thread gets one tile and the order is the untiled one.
+// Call inside the parallel region.
+struct Rhs4JTiles
+{
+   int jlo, nlines, njt;
+   int j0( int t ) const { return jlo + static_cast<int>( (static_cast<long>(t)*nlines)/njt ); }
+   int j1( int t ) const { return jlo + static_cast<int>( (static_cast<long>(t+1)*nlines)/njt ) - 1; }
+};
+static inline Rhs4JTiles rhs4_jtiles( int jfirst, int jlast, int ni )
+{
+   Rhs4JTiles t;
+   t.jlo = jfirst+2;
+   t.nlines = jlast-2 - t.jlo + 1;
+   int nthr = 1;
+#ifdef _OPENMP
+   nthr = omp_get_num_threads();
+#endif
+   const int jt = rhs4_jtile( ni );
+   const int per_thread = t.nlines > 0 ? (t.nlines + nthr*jt - 1)/(nthr*jt) : 0;
+   t.njt = nthr*per_thread;
+   return t;
+}
+
+static inline int sw4_jblock( int jbeg, int jend )
+{
+   int nj = jend - jbeg + 1;
+   int nthr = 1;
+#ifdef _OPENMP
+   nthr = omp_get_num_threads();
+#endif
+   if( nj < 1 )
+      nj = 1;
+   if( nthr < 1 )
+      nthr = 1;
+   return (nj + nthr - 1)/nthr;
+}
+
+// Zero the points of lu that the stencil loops of an OP=='=' kernel never assign: everything
+// outside the box [ifirst+2,ilast-2] x [jfirst+2,jlast-2] x [kw1,kw2] of the 3-component array
+// that spans exactly ifirst..ilast, jfirst..jlast, kfirst..klast (see EW::evalRHS). At 305^3
+// points per rank that is ~4% of the array, where the kernels used to zero all of it first.
+// Called inside the kernel's parallel region, with nowait: the stencil loops write only inside
+// the box, so the two never touch the same element.
+static inline void rhs4_zero_lu_halo( float_sw4* __restrict__ a_lu, int ifirst, int ilast,
+                                      int jfirst, int jlast, int kfirst, int klast, int kw1, int kw2 )
+{
+   const int ni = ilast-ifirst+1;
+   const size_t nij  = static_cast<size_t>(ni)*(jlast-jfirst+1);
+   const size_t nijk = nij*(klast-kfirst+1);
+   // with fewer than 5 points in i the stencil loops assign no i at all
+   const bool no_i_interior = ni < 5;
+#pragma omp for collapse(2) schedule(static) nowait
+   for( int k=kfirst ; k <= klast ; k++ )
+      for( int j=jfirst ; j <= jlast ; j++ )
+      {
+         float_sw4* line = a_lu + (j-jfirst)*static_cast<size_t>(ni) + (k-kfirst)*nij;
+         const bool whole = no_i_interior || k < kw1 || k > kw2 || j < jfirst+2 || j > jlast-2;
+         for( int c=0 ; c < 3 ; c++ )
+         {
+            float_sw4* l = line + c*nijk;
+            if( whole )
+            {
+#pragma omp simd
+               for( int i=0 ; i < ni ; i++ )
+                  l[i] = 0;
+            }
+            else
+            {
+               l[0] = l[1] = 0;
+               l[ni-2] = l[ni-1] = 0;
+            }
+         }
+      }
+}
+
+// The k-planes [kw1,kw2] that the stencil loops of the kernels below assign: [k1,k2] and,
+// with one-sided closures, k=1..6 (onesided[4]) and k=nk-5..nk (onesided[5]). The union is
+// one interval: with a closure the interior starts at 7 or ends at nk-6.
+static inline void rhs4_written_k( const int* onesided, int k1, int k2, int nk, int& kw1, int& kw2 )
+{
+   kw1 = onesided[4] == 1 ? 1  : k1;
+   kw2 = onesided[5] == 1 ? nk : k2;
+   if( onesided[5] == 1 && nk-5 < kw1 )
+      kw1 = nk-5;
+   if( onesided[4] == 1 && 6 > kw2 )
+      kw2 = 6;
+}
+
 
 //extern "C" {
 
-void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+// OP is a template parameter, so the dispatch below resolves at compile time.
+// That matters for more than the branch. With OP=='=' the store used to be
+// `lu = a1 * lu + cof * r` with a1 == 0, and the compiler cannot fold that
+// away: for floating point 0*x is not 0 (x may be NaN, Inf or -0.0), so the
+// kernel read the entire 3-component output array back purely to multiply it
+// by zero. SW4_LU_STORE below drops that read. The ghost points and the
+// k-range outside [k1,k2] that the stencil loops never assign are zeroed by
+// rhs4_zero_lu_halo.
+template<char OP>
+static void rhs4th3fort_ci_impl( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
 		     int nk, int* __restrict__ onesided, float_sw4* __restrict__ a_acof, 
 		     float_sw4 *__restrict__ a_bope, float_sw4* __restrict__ a_ghcof, 
 		     float_sw4* __restrict__ a_lu, float_sw4* __restrict__ a_u,
 		     float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda, 
-		     float_sw4 h, char op )
+		     float_sw4 h )
 {
  // Direct reuse of fortran code by these macro definitions:
 #define mu(i,j,k)     a_mu[base+i+ni*(j)+nij*(k)]
@@ -41,7 +215,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
    const int kfirst0 = kfirst;
 
    int k1, k2, kb;
-   int i, j, k, q, m, qb, mb, a1;
+   int i, j, k, q, m, qb, mb;
    float_sw4 mux1, mux2, mux3, mux4, muy1, muy2, muy3, muy4, muz1, muz2, muz3, muz4;
    float_sw4 r1, r2, r3, mucof, mu1zz, mu2zz, mu3zz;
    float_sw4 lap2mu, u3zip2, u3zip1, u3zim1, u3zim2, lau3zx, mu3xz, u3zjp2, u3zjp1, u3zjm1, u3zjm2;
@@ -50,19 +224,18 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 
    float_sw4 cof = 1.0/(h*h);
 
-   if( op == '=' )
-   {
-      a1 = 0;
-      for(size_t i=0 ; i < static_cast<size_t>((ilast-ifirst+1))*(jlast-jfirst+1)*(klast-kfirst+1)*3; i++)
-         a_lu[i]=0;
-   }
-   else if( op == '+' )
-      a1 = 1;
-   else if( op == '-' )
-   {
-      a1 = 1;
+   // With OP=='=' the points the stencil loops do not assign are zeroed inside the parallel
+   // region below (rhs4_zero_lu_halo). This used to be a separate parallel pass zeroing the
+   // whole 3-component array first -- an extra full write of lu on every call.
+   if constexpr( OP == '-' )
       cof = -cof;
-   }
+
+// Assign when OP=='=', accumulate otherwise. See the note above the function.
+#define SW4_LU_STORE(c,val)                                        \
+   do {                                                            \
+      if constexpr( OP == '=' ) lu(c,i,j,k) = (val);                \
+      else                      lu(c,i,j,k) = lu(c,i,j,k) + (val);  \
+   } while(0)
 
    k1 = kfirst+2;
    if( onesided[4] == 1 )
@@ -70,6 +243,8 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
    k2 = klast-2;
    if( onesided[5] == 1 )
       k2 = nk-6;
+   int kw1, kw2;
+   rhs4_written_k( onesided, k1, k2, nk, kw1, kw2 );
    
 #pragma omp parallel private(k,i,j,mux1,mux2,mux3,mux4,muy1,muy2,muy3,muy4,\
               r1,r2,r3,mucof,mu1zz,mu2zz,mu3zz,lap2mu,q,u3zip2,u3zip1,\
@@ -77,11 +252,37 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
               mu3yz,mu1zx,u1zip2,u1zip1,u1zim1,u1zim2,\
 	      u2zjp2,u2zjp1,u2zjm1,u2zjm2,mu2zy,lau1xz,lau2yz,kb,qb,mb,muz1,muz2,muz3,muz4)
    {
-#pragma omp for
+   const int jblk = sw4_jblock( jfirst+2, jlast-2 );
+   // A plain if, not if constexpr: with icpc 2021.5 a discarded `if constexpr` statement
+   // right before the `#pragma omp for` below made every thread run the whole loop in the
+   // OP=='-' instantiation (attenuation then subtracted L_a(alpha) once per thread).
+   if( OP == '=' )
+      rhs4_zero_lu_halo( a_lu, ifirst, ilast, jfirst, jlast, kfirst, klast, kw1, kw2 );
+// nowait on every omp for in this region. Each loop writes a disjoint slice
+// of lu -- the closures write k=1..6 and k=nk-5..nk while the interior writes
+// k1..k2 (k1=7 when the low closure runs, k2=nk-6 when the high one does), and
+// the fissioned curvilinear interior loops write one output component each --
+// and every loop reads only u/mu/la/met/jac, never another loop's output. So
+// the implicit barrier at the end of each omp for is redundant; the parallel
+// region's own closing barrier is sufficient. Nothing follows the last loop
+// inside the region but #undefs.
+//
+// This matters more than it looks. At equal core count, 16 ranks x 4 threads
+// beat 2 ranks x 32 threads by 1.42-2.34x on total runtime across every case
+// measured on HPC3, and the degradation tracked synchronisation density, not
+// bandwidth: the one phase that is a single long parallel loop was flat while
+// bc, which forks 42 times, degraded 6.5-8.0x. Div-stress carries 3 barriers
+// per Cartesian call and 5 per curvilinear call; this removes all but one.
+   // Interior, tiled in j (see rhs4_jtile). Every point is computed as before; only the
+   // order of the points changes.
+   const Rhs4JTiles tiles = rhs4_jtiles( jfirst, jlast, ni );
+#pragma omp for schedule(static) nowait
+   for( int jt=0 ; jt < tiles.njt ; jt++ )
+   {
+      const int j0 = tiles.j0(jt), j1 = tiles.j1(jt);
    for( k= k1; k <= k2 ; k++ )
-      for( j=jfirst+2; j <= jlast-2 ; j++ )
-//#pragma simd deprecated
-#pragma ivdep
+      for( j=j0; j <= j1 ; j++ )
+#pragma omp simd
 	 for( i=ifirst+2; i <= ilast-2 ; i++ )
 	 {
 
@@ -308,18 +509,19 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 				     8*(-u(2,i,j-1,k+2)+u(2,i,j+1,k+2))) )) ;
 
 /* 9 ops */
-	    lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-	    lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-	    lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+	    SW4_LU_STORE(1, cof*r1);
+	    SW4_LU_STORE(2, cof*r2);
+	    SW4_LU_STORE(3, cof*r3);
 	 }
+   }
       if( onesided[4]==1 )
       {
-#pragma omp for
+#pragma omp for collapse(2) schedule(static,jblk) nowait
 	 for( k=1 ; k<= 6 ; k++ )
 /* the centered stencil can be used in the x- and y-directions */
 	    for( j=jfirst+2; j<=jlast-2; j++ )
 	       //#pragma simd
-#pragma ivdep
+#pragma omp simd
 	       for( i=ifirst+2; i<=ilast-2; i++ )
 	       {
 /* from inner_loop_4a */
@@ -366,6 +568,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 		  mu1zz = 0;
 		  mu2zz = 0;
 		  mu3zz = 0;
+		  #pragma GCC unroll 8
 		  for( q=1; q <= 8; q ++ )
 		  {
 		     //		     lap2mu= 0;
@@ -447,6 +650,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
             u3zip1=0;
             u3zim1=0;
             u3zim2=0;
+	    #pragma GCC unroll 8
 	    for( q=1 ; q <=8 ; q++ )
 	    {
 	       u3zip2 += bope(k,q)*u(3,i+2,j,q);
@@ -459,6 +663,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
             r1 = r1 + strx(i)*lau3zx;
 	    /*   (mu*w_x)_z: NOT CENTERED */
             mu3xz=0;
+            #pragma GCC unroll 8
             for( q=1 ; q<=8 ; q++ )
               mu3xz += bope(k,q)*( mu(i,j,q)*i12*
                   (-u(3,i+2,j,q) + 8*u(3,i+1,j,q)
@@ -490,6 +695,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
             u3zjp1=0;
             u3zjm1=0;
             u3zjm2=0;
+	    #pragma GCC unroll 8
 	    for( q=1 ; q <=8 ; q++ )
 	    {
 	       u3zjp2 += bope(k,q)*u(3,i,j+2,q);
@@ -504,6 +710,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 
 /* (mu*w_y)_z: NOT CENTERED */
             mu3yz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	       mu3yz += bope(k,q)*( mu(i,j,q)*i12*
                   (-u(3,i,j+2,q) + 8*u(3,i,j+1,q)
@@ -517,6 +724,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
             u1zip1=0;
             u1zim1=0;
             u1zim2=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	    {
 	       u1zip2 += bope(k,q)*u(1,i+2,j,q);
@@ -533,6 +741,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
             u2zjp1=0;
             u2zjm1=0;
             u2zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	    {
 	       u2zjp2 += bope(k,q)*u(2,i,j+2,q);
@@ -546,6 +755,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 
 /*   (la*u_x)_z: NOT CENTERED */
             lau1xz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	       lau1xz += bope(k,q)*( la(i,j,q)*i12*
                   (-u(1,i+2,j,q) + 8*u(1,i+1,j,q)
@@ -554,24 +764,25 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 
 /* (la*v_y)_z: NOT CENTERED */
             lau2yz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
               lau2yz += bope(k,q)*( la(i,j,q)*i12*
                   (-u(2,i,j+2,q) + 8*u(2,i,j+1,q)
                    -8*u(2,i,j-1,q) + u(2,i,j-2,q)) );
             r3 = r3 + stry(j)*lau2yz;
 
-            lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-            lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-            lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+            SW4_LU_STORE(1, cof*r1);
+            SW4_LU_STORE(2, cof*r2);
+            SW4_LU_STORE(3, cof*r3);
 	       }
       }
       if( onesided[5] == 1 )
       {
-#pragma omp for
+#pragma omp for collapse(2) schedule(static,jblk) nowait
 	 for(  k = nk-5 ; k <= nk ; k++ )
 	    for(  j=jfirst+2; j<=jlast-2; j++ )
 	       //#pragma simd
-#pragma ivdep
+#pragma omp simd
 	       for(  i=ifirst+2; i<=ilast-2; i++ )
 	       {
 		  /* from inner_loop_4a */
@@ -624,10 +835,12 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 		  mu1zz = 0;
 		  mu2zz = 0;
 		  mu3zz = 0;
+		  #pragma GCC unroll 8
 		  for(  qb=1; qb <= 8 ; qb++ )
 		  {
 		     mucof = 0;
 		     lap2mu = 0;
+		     #pragma GCC unroll 8
 		     for(  mb=1; mb <= 8; mb++ )
 		     {
 			mucof  += acof(kb,qb,mb)*mu(i,j,nk-mb+1);
@@ -699,6 +912,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
             u3zip1=0;
             u3zim1=0;
             u3zim2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u3zip2 -= bope(kb,qb)*u(3,i+2,j,nk-qb+1);
@@ -712,6 +926,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 
     /*   (mu*w_x)_z: NOT CENTERED */
             mu3xz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               mu3xz -= bope(kb,qb)*( mu(i,j,nk-qb+1)*i12*
                   (-u(3,i+2,j,nk-qb+1) + 8*u(3,i+1,j,nk-qb+1)
@@ -744,6 +959,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
             u3zjp1=0;
             u3zjm1=0;
             u3zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u3zjp2 -= bope(kb,qb)*u(3,i,j+2,nk-qb+1);
@@ -757,6 +973,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 
 	    /* (mu*w_y)_z: NOT CENTERED */
             mu3yz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               mu3yz -= bope(kb,qb)*( mu(i,j,nk-qb+1)*i12*
                   (-u(3,i,j+2,nk-qb+1) + 8*u(3,i,j+1,nk-qb+1)
@@ -769,6 +986,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
             u1zip1=0;
             u1zim1=0;
             u1zim2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u1zip2 -= bope(kb,qb)*u(1,i+2,j,nk-qb+1);
@@ -785,6 +1003,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
             u2zjp1=0;
             u2zjm1=0;
             u2zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u2zjp2 -= bope(kb,qb)*u(2,i,j+2,nk-qb+1);
@@ -798,6 +1017,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 
 	    /*   (la*u_x)_z: NOT CENTERED */
             lau1xz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               lau1xz -= bope(kb,qb)*( la(i,j,nk-qb+1)*i12*
                  (-u(1,i+2,j,nk-qb+1) + 8*u(1,i+1,j,nk-qb+1)
@@ -806,6 +1026,7 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 
 	    /* (la*v_y)_z: NOT CENTERED */
             lau2yz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
               lau2yz -= bope(kb,qb)*( la(i,j,nk-qb+1)*i12*
@@ -814,9 +1035,9 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 	    }
             r3 = r3 + stry(j)*lau2yz;
 
-            lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-            lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-            lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+            SW4_LU_STORE(1, cof*r1);
+            SW4_LU_STORE(2, cof*r2);
+            SW4_LU_STORE(3, cof*r3);
 	       }
       }
    }
@@ -830,15 +1051,17 @@ void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, i
 #undef acof
 #undef bope
 #undef ghcof
+#undef SW4_LU_STORE
 }
 
 //-----------------------------------------------------------------------
-void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+template<char OP>
+static void rhs4th3fortsgstr_ci_impl( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
 		 int nk, int* __restrict__ onesided, float_sw4* __restrict__ a_acof, float_sw4 *__restrict__ a_bope,
 		 float_sw4* __restrict__ a_ghcof, float_sw4* __restrict__ a_lu, float_sw4* __restrict__ a_u,
 		 float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda, 
 		 float_sw4 h, float_sw4* __restrict__ a_strx, float_sw4* __restrict__ a_stry, 
-			  float_sw4* __restrict__ a_strz, char op )
+			  float_sw4* __restrict__ a_strz )
 {
    // This would work to create multi-dimensional C arrays:
    //   float_sw4** b_ar=(float_sw4*)malloc(ni*nj*sizeof(float_sw4*));
@@ -877,7 +1100,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
    const int kfirst0 = kfirst;
 
    int k1, k2, kb;
-   int i, j, k, q, m, qb, mb, a1;
+   int i, j, k, q, m, qb, mb;
    float_sw4 mux1, mux2, mux3, mux4, muy1, muy2, muy3, muy4, muz1, muz2, muz3, muz4;
    float_sw4 r1, r2, r3, mucof, mu1zz, mu2zz, mu3zz;
    float_sw4 lap2mu, u3zip2, u3zip1, u3zim1, u3zim2, lau3zx, mu3xz, u3zjp2, u3zjp1, u3zjm1, u3zjm2;
@@ -886,19 +1109,18 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 
    float_sw4 cof = 1.0/(h*h);
 
-   if( op == '=' )
-   {
-      a1 = 0;
-      for(size_t i=0 ; i < static_cast<size_t>((ilast-ifirst+1))*(jlast-jfirst+1)*(klast-kfirst+1)*3; i++)
-         a_lu[i]=0;
-   }
-   else if( op == '+' )
-      a1 = 1;
-   else if( op == '-' )
-   {
-      a1 = 1;
+   // With OP=='=' the points the stencil loops do not assign are zeroed inside the parallel
+   // region below (rhs4_zero_lu_halo). This used to be a separate parallel pass zeroing the
+   // whole 3-component array first -- an extra full write of lu on every call.
+   if constexpr( OP == '-' )
       cof = -cof;
-   }
+
+// Assign when OP=='=', accumulate otherwise. See the note above the function.
+#define SW4_LU_STORE(c,val)                                        \
+   do {                                                            \
+      if constexpr( OP == '=' ) lu(c,i,j,k) = (val);                \
+      else                      lu(c,i,j,k) = lu(c,i,j,k) + (val);  \
+   } while(0)
 
    k1 = kfirst+2;
    if( onesided[4] == 1 )
@@ -906,6 +1128,8 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
    k2 = klast-2;
    if( onesided[5] == 1 )
       k2 = nk-6;
+   int kw1, kw2;
+   rhs4_written_k( onesided, k1, k2, nk, kw1, kw2 );
    
 #pragma omp parallel private(k,i,j,mux1,mux2,mux3,mux4,muy1,muy2,muy3,muy4,\
               r1,r2,r3,mucof,mu1zz,mu2zz,mu3zz,lap2mu,q,u3zip2,u3zip1,\
@@ -913,11 +1137,22 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
               mu3yz,mu1zx,u1zip2,u1zip1,u1zim1,u1zim2,\
 	      u2zjp2,u2zjp1,u2zjm1,u2zjm2,mu2zy,lau1xz,lau2yz,kb,qb,mb,muz1,muz2,muz3,muz4)
    {
-#pragma omp for
+   const int jblk = sw4_jblock( jfirst+2, jlast-2 );
+   // A plain if, not if constexpr: with icpc 2021.5 a discarded `if constexpr` statement
+   // right before the `#pragma omp for` below made every thread run the whole loop in the
+   // OP=='-' instantiation (attenuation then subtracted L_a(alpha) once per thread).
+   if( OP == '=' )
+      rhs4_zero_lu_halo( a_lu, ifirst, ilast, jfirst, jlast, kfirst, klast, kw1, kw2 );
+   // Interior, tiled in j (see rhs4_jtile). Every point is computed as before; only the
+   // order of the points changes.
+   const Rhs4JTiles tiles = rhs4_jtiles( jfirst, jlast, ni );
+#pragma omp for schedule(static) nowait
+   for( int jt=0 ; jt < tiles.njt ; jt++ )
+   {
+      const int j0 = tiles.j0(jt), j1 = tiles.j1(jt);
    for( k= k1; k <= k2 ; k++ )
-      for( j=jfirst+2; j <= jlast-2 ; j++ )
-	 //#pragma simd
-#pragma ivdep
+      for( j=j0; j <= j1 ; j++ )
+#pragma omp simd
 	 for( i=ifirst+2; i <= ilast-2 ; i++ )
 	 {
 
@@ -1144,18 +1379,19 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 				     8*(-u(2,i,j-1,k+2)+u(2,i,j+1,k+2))) )) ;
 
 /* 9 ops */
-	    lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-	    lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-	    lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+	    SW4_LU_STORE(1, cof*r1);
+	    SW4_LU_STORE(2, cof*r2);
+	    SW4_LU_STORE(3, cof*r3);
 	 }
+   }
       if( onesided[4]==1 )
       {
-#pragma omp for
+#pragma omp for collapse(2) schedule(static,jblk) nowait
 	 for( k=1 ; k<= 6 ; k++ )
 /* the centered stencil can be used in the x- and y-directions */
 	    for( j=jfirst+2; j<=jlast-2; j++ )
 	       //#pragma simd
-#pragma ivdep
+#pragma omp simd
 	       for( i=ifirst+2; i<=ilast-2; i++ )
 	       {
 /* from inner_loop_4a */
@@ -1202,6 +1438,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 		  mu1zz = 0;
 		  mu2zz = 0;
 		  mu3zz = 0;
+		  #pragma GCC unroll 8
 		  for( q=1; q <= 8; q ++ )
 		  {
 		     //		     lap2mu= 0;
@@ -1283,6 +1520,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
             u3zip1=0;
             u3zim1=0;
             u3zim2=0;
+	    #pragma GCC unroll 8
 	    for( q=1 ; q <=8 ; q++ )
 	    {
 	       u3zip2 += bope(k,q)*u(3,i+2,j,q);
@@ -1295,6 +1533,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
             r1 = r1 + strx(i)*lau3zx;
 	    /*   (mu*w_x)_z: NOT CENTERED */
             mu3xz=0;
+            #pragma GCC unroll 8
             for( q=1 ; q<=8 ; q++ )
               mu3xz += bope(k,q)*( mu(i,j,q)*i12*
                   (-u(3,i+2,j,q) + 8*u(3,i+1,j,q)
@@ -1326,6 +1565,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
             u3zjp1=0;
             u3zjm1=0;
             u3zjm2=0;
+	    #pragma GCC unroll 8
 	    for( q=1 ; q <=8 ; q++ )
 	    {
 	       u3zjp2 += bope(k,q)*u(3,i,j+2,q);
@@ -1340,6 +1580,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 
 /* (mu*w_y)_z: NOT CENTERED */
             mu3yz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	       mu3yz += bope(k,q)*( mu(i,j,q)*i12*
                   (-u(3,i,j+2,q) + 8*u(3,i,j+1,q)
@@ -1353,6 +1594,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
             u1zip1=0;
             u1zim1=0;
             u1zim2=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	    {
 	       u1zip2 += bope(k,q)*u(1,i+2,j,q);
@@ -1369,6 +1611,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
             u2zjp1=0;
             u2zjm1=0;
             u2zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	    {
 	       u2zjp2 += bope(k,q)*u(2,i,j+2,q);
@@ -1382,6 +1625,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 
 /*   (la*u_x)_z: NOT CENTERED */
             lau1xz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
 	       lau1xz += bope(k,q)*( la(i,j,q)*i12*
                   (-u(1,i+2,j,q) + 8*u(1,i+1,j,q)
@@ -1390,24 +1634,25 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 
 /* (la*v_y)_z: NOT CENTERED */
             lau2yz=0;
+	    #pragma GCC unroll 8
 	    for(  q=1 ; q <=8 ; q++ )
               lau2yz += bope(k,q)*( la(i,j,q)*i12*
                   (-u(2,i,j+2,q) + 8*u(2,i,j+1,q)
                    -8*u(2,i,j-1,q) + u(2,i,j-2,q)) );
             r3 = r3 + stry(j)*lau2yz;
 
-            lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-            lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-            lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+            SW4_LU_STORE(1, cof*r1);
+            SW4_LU_STORE(2, cof*r2);
+            SW4_LU_STORE(3, cof*r3);
 	       }
       }
       if( onesided[5] == 1 )
       {
-#pragma omp for
+#pragma omp for collapse(2) schedule(static,jblk) nowait
 	 for(  k = nk-5 ; k <= nk ; k++ )
 	    for(  j=jfirst+2; j<=jlast-2; j++ )
 	       //#pragma simd
-#pragma ivdep
+#pragma omp simd
 	       for(  i=ifirst+2; i<=ilast-2; i++ )
 	       {
 		  /* from inner_loop_4a */
@@ -1460,10 +1705,12 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 		  mu1zz = 0;
 		  mu2zz = 0;
 		  mu3zz = 0;
+		  #pragma GCC unroll 8
 		  for(  qb=1; qb <= 8 ; qb++ )
 		  {
 		     mucof = 0;
 		     lap2mu = 0;
+		     #pragma GCC unroll 8
 		     for(  mb=1; mb <= 8; mb++ )
 		     {
 			mucof  += acof(kb,qb,mb)*mu(i,j,nk-mb+1);
@@ -1535,6 +1782,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
             u3zip1=0;
             u3zim1=0;
             u3zim2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u3zip2 -= bope(kb,qb)*u(3,i+2,j,nk-qb+1);
@@ -1548,6 +1796,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 
     /*   (mu*w_x)_z: NOT CENTERED */
             mu3xz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               mu3xz -= bope(kb,qb)*( mu(i,j,nk-qb+1)*i12*
                   (-u(3,i+2,j,nk-qb+1) + 8*u(3,i+1,j,nk-qb+1)
@@ -1580,6 +1829,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
             u3zjp1=0;
             u3zjm1=0;
             u3zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u3zjp2 -= bope(kb,qb)*u(3,i,j+2,nk-qb+1);
@@ -1593,6 +1843,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 
 	    /* (mu*w_y)_z: NOT CENTERED */
             mu3yz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               mu3yz -= bope(kb,qb)*( mu(i,j,nk-qb+1)*i12*
                   (-u(3,i,j+2,nk-qb+1) + 8*u(3,i,j+1,nk-qb+1)
@@ -1605,6 +1856,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
             u1zip1=0;
             u1zim1=0;
             u1zim2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u1zip2 -= bope(kb,qb)*u(1,i+2,j,nk-qb+1);
@@ -1621,6 +1873,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
             u2zjp1=0;
             u2zjm1=0;
             u2zjm2=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
 	       u2zjp2 -= bope(kb,qb)*u(2,i,j+2,nk-qb+1);
@@ -1634,6 +1887,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 
 	    /*   (la*u_x)_z: NOT CENTERED */
             lau1xz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
               lau1xz -= bope(kb,qb)*( la(i,j,nk-qb+1)*i12*
                  (-u(1,i+2,j,nk-qb+1) + 8*u(1,i+1,j,nk-qb+1)
@@ -1642,6 +1896,7 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 
 	    /* (la*v_y)_z: NOT CENTERED */
             lau2yz=0;
+	    #pragma GCC unroll 8
 	    for(  qb=1; qb <= 8 ; qb++ )
 	    {
               lau2yz -= bope(kb,qb)*( la(i,j,nk-qb+1)*i12*
@@ -1650,9 +1905,9 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 	    }
             r3 = r3 + stry(j)*lau2yz;
 
-            lu(1,i,j,k) = a1*lu(1,i,j,k) + cof*r1;
-            lu(2,i,j,k) = a1*lu(2,i,j,k) + cof*r2;
-            lu(3,i,j,k) = a1*lu(3,i,j,k) + cof*r3;
+            SW4_LU_STORE(1, cof*r1);
+            SW4_LU_STORE(2, cof*r2);
+            SW4_LU_STORE(3, cof*r3);
 	       }
       }
    }
@@ -1666,7 +1921,49 @@ void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfir
 #undef acof
 #undef bope
 #undef ghcof
+#undef SW4_LU_STORE
 }
+
+//-----------------------------------------------------------------------
+// Wrappers keeping the existing `char op` interface. An op outside {=,+,-} is
+// now a no-op; previously it fell through leaving a1 uninitialised.
+void rhs4th3fort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+		     int nk, int* __restrict__ onesided, float_sw4* __restrict__ a_acof, 
+		     float_sw4 *__restrict__ a_bope, float_sw4* __restrict__ a_ghcof, 
+		     float_sw4* __restrict__ a_lu, float_sw4* __restrict__ a_u,
+		     float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda, 
+		     float_sw4 h, char op )
+{
+   if( op == '=' )
+      rhs4th3fort_ci_impl<'='>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk,
+			  onesided, a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h );
+   else if( op == '+' )
+      rhs4th3fort_ci_impl<'+'>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk,
+			  onesided, a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h );
+   else if( op == '-' )
+      rhs4th3fort_ci_impl<'-'>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk,
+			  onesided, a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h );
+}
+
+//-----------------------------------------------------------------------
+void rhs4th3fortsgstr_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+		 int nk, int* __restrict__ onesided, float_sw4* __restrict__ a_acof, float_sw4 *__restrict__ a_bope,
+		 float_sw4* __restrict__ a_ghcof, float_sw4* __restrict__ a_lu, float_sw4* __restrict__ a_u,
+		 float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda, 
+		 float_sw4 h, float_sw4* __restrict__ a_strx, float_sw4* __restrict__ a_stry, 
+			  float_sw4* __restrict__ a_strz, char op )
+{
+   if( op == '=' )
+      rhs4th3fortsgstr_ci_impl<'='>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk, onesided,
+	    a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h, a_strx, a_stry, a_strz );
+   else if( op == '+' )
+      rhs4th3fortsgstr_ci_impl<'+'>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk, onesided,
+	    a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h, a_strx, a_stry, a_strz );
+   else if( op == '-' )
+      rhs4th3fortsgstr_ci_impl<'-'>( ifirst, ilast, jfirst, jlast, kfirst, klast, nk, onesided,
+	    a_acof, a_bope, a_ghcof, a_lu, a_u, a_mu, a_lambda, h, a_strx, a_stry, a_strz );
+}
+
 
 //-----------------------------------------------------------------------
 void rhserrfort_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
@@ -1814,8 +2111,7 @@ void predfort_ci( int ib, int ie, int jb, int je, int kb, int ke,
 		      float_sw4 dt2 )
 {
    const size_t npts = static_cast<size_t>((ie-ib+1))*(je-jb+1)*(ke-kb+1);
-#pragma omp parallel for
-#pragma ivdep
+#pragma omp parallel for simd
    //#pragma simd
    for( size_t i=0 ; i < npts ; i++ )
    {
@@ -1834,8 +2130,7 @@ void corrfort_ci( int ib, int ie, int jb, int je, int kb, int ke,
 {
    const float_sw4 dt4i12= dt4/12;
    const size_t npts = static_cast<size_t>((ie-ib+1))*(je-jb+1)*(ke-kb+1);
-#pragma omp parallel for
-#pragma ivdep
+#pragma omp parallel for simd
    //#pragma simd
    for( size_t i=0 ; i < npts ; i++ )
    {
@@ -1853,8 +2148,7 @@ void dpdmtfort_ci( int ib, int ie, int jb, int je, int kb, int ke,
 		   float_sw4 dt2i )
 {
   const size_t npts = static_cast<size_t>((ie-ib+1))*(je-jb+1)*(ke-kb+1);
-#pragma omp parallel for
-#pragma ivdep
+#pragma omp parallel for simd
   //#pragma simd
   for( size_t i = 0 ; i < 3*npts ; i++ )
     u2[i] = dt2i*(up[i]-2*u[i]+um[i]);
@@ -1866,8 +2160,7 @@ void dpdmtfortatt_ci( int ib, int ie, int jb, int je, int kb, int ke,
 		      float_sw4* __restrict__ um, float_sw4 dt2i )
 {
   const size_t npts = static_cast<size_t>((ie-ib+1))*(je-jb+1)*(ke-kb+1);
-#pragma omp parallel for
-#pragma ivdep
+#pragma omp parallel for simd
   //#pragma simd
   for( size_t i = 0 ; i < 3*npts ; i++ )
     um[i] = dt2i*(up[i]-2*u[i]+um[i]);
@@ -1941,8 +2234,7 @@ void satt_ci( float_sw4* __restrict__ up, float_sw4* __restrict__ qs,
 {
    const size_t npts = static_cast<size_t>((ilast-ifirst+1))*(jlast-jfirst+1)*(klast-kfirst+1);
    const float_sw4 efact=M_PI*cfreq*dt;
-#pragma omp parallel for   
-#pragma ivdep
+#pragma omp parallel for simd
    //#pragma simd
    for( size_t i = 0 ; i < npts ; i++ )
    {
@@ -1972,19 +2264,19 @@ void solveattfreeac_ci( int ifirst, int ilast, int jfirst, int jlast,
       int k=0;
 #pragma omp for
       for( int j=jfirst+2; j<=jlast-2; j++)
-#pragma ivdep
+#pragma omp simd
 	 //#pragma simd
 	 for( int i=ifirst+2; i<=ilast-2; i++ )
 	    alpha(1,i,j,k) += cof*up(1,i,j,k);
 #pragma omp for
       for( int j=jfirst+2; j<=jlast-2; j++)
-#pragma ivdep
+#pragma omp simd
 	 //#pragma simd
 	 for( int i=ifirst+2; i<=ilast-2; i++ )
 	    alpha(2,i,j,k) += cof*up(2,i,j,k);
 #pragma omp for
       for( int j=jfirst+2; j<=jlast-2; j++)
-#pragma ivdep
+#pragma omp simd
 	 //#pragma simd
 	 for( int i=ifirst+2; i<=ilast-2; i++ )
 	    alpha(3,i,j,k) += cof*up(3,i,j,k);
@@ -2026,7 +2318,7 @@ void solveattfreec_ci( int ifirst, int ilast, int jfirst, int jlast,
       int k=1, kl=1;
 #pragma omp for
       for( int j=jfirst+2 ; j<=jlast-2 ; j++ )
-#pragma ivdep
+#pragma omp simd
 	 //#pragma simd
 	 for( int i=ifirst+2 ; i<=ilast-2 ; i++ )
 	 {
@@ -2128,7 +2420,7 @@ void addbstresswresc_ci( int ifirst, int ilast, int jfirst, int jlast,
       float_sw4 sgx = 1, sgy = 1, isgx = 1, isgy = 1;
 #pragma omp for
       for( int j=jfirst+2 ; j<=jlast-2 ; j++ )
-#pragma ivdep
+#pragma omp simd
 	 //#pragma simd
 	 for( int i=ifirst+2 ; i<=ilast-2 ; i++ )
 	 {
@@ -2304,7 +2596,7 @@ void ve_bndry_stress_curvi_ci( int ifirst, int ilast, int jfirst, int jlast, int
       float_sw4 sgx = 1, sgy = 1, isgx = 1, isgy = 1;
 #pragma omp for
       for( int j=jfirst+2 ; j<=jlast-2 ; j++ )
-#pragma ivdep
+#pragma omp simd
 	 for( int i=ifirst+2 ; i<=ilast-2 ; i++ )
 	 {
             if( usesg== 1 )
@@ -2453,7 +2745,7 @@ void att_free_curvi_ci( int ifirst, int ilast, int jfirst, int jlast, int kfirst
       float_sw4 s0i= 1/sbop[0];
 #pragma omp for
       for( int j=jfirst+2 ; j<=jlast-2 ; j++ )
-#pragma ivdep
+#pragma omp simd
 	 for( int i=ifirst+2 ; i<=ilast-2 ; i++ )
 	 {
             if( usesg == 1 )

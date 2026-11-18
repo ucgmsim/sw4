@@ -28,7 +28,7 @@ public:
 	       size_t bufsize=10000000 );
    CheckPoint( EW * a_ew, string fname, size_t bufsize=10000000 );
    ~CheckPoint();
-   void set_restart_file( string fname, size_t bufsize );
+   void set_restart_file( string fname, size_t bufsize, bool useHDF5 = false );
    void set_checkpoint_file( string fname, int cycle, int cycleInterval, size_t bufsize, bool useHDF5, int compressionMode, double compressionPar );
 
    void write_checkpoint( float_sw4 a_time, int a_cycle, std::vector<Sarray>& a_Um,

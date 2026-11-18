@@ -76,7 +76,63 @@ void oddIoddJinterpJacobiOpt(float_sw4 rmax[3], float_sw4* __restrict__ a_uf,  f
 			     float_sw4 cof, float_sw4 relax,
 			     float_sw4 a_sbop[], float_sw4 a_ghcof[]);
    
-void evenIevenJinterp(float_sw4 rmax[6], Sarray &Uf, Sarray &Muf, Sarray &Lambdaf, Sarray &Rhof, 
+// Double-precision variants of the four *interpJacobiOpt kernels used by
+// EW::consintp. The iterated unknowns (the interface ghost planes Uf at
+// k=nkf+1 and Uc at k=0) are passed as double-precision single-plane buffers,
+// laid out as u[(i-iStart) + ni*(j-jStart) + ni*nj*(c-1)] over the full local
+// (i,j) extent, and all arithmetic is done in double. With float_sw4==float
+// the Jacobi residual otherwise stagnates at one float ULP, above any usable
+// tolerance, leaving the interface conditions under-enforced (which breaks
+// the energy estimate of the refinement coupling). Coefficient and RHS
+// arrays remain float_sw4.
+void oddIoddJinterpJacobiOptD(double rmax[3], double* __restrict__ a_uf,  double* __restrict__ a_ufnew,
+			     double* __restrict__ a_uc, double* __restrict__ a_ucnew,
+			     float_sw4* __restrict__ a_mufs, float_sw4* __restrict__ a_mlfs,
+			     float_sw4* __restrict__ a_morc,  float_sw4* __restrict__ a_mlrc,
+			     float_sw4* __restrict__ a_mucs, float_sw4* __restrict__ a_mlcs,
+			     float_sw4* __restrict__ a_morf, float_sw4* __restrict__ a_mlrf,
+			     float_sw4* __restrict__ a_unextf, float_sw4* __restrict__ a_bfr,
+			     float_sw4* __restrict__ a_unextc, float_sw4* __restrict__ a_bc,
+			     int a_iStart[], int a_iEnd[], int a_jStart[], int a_jEnd[], int a_kStart[], int a_kEnd[],
+			     int a_iStartInt[], int a_iEndInt[], int a_jStartInt[], int a_jEndInt[],
+			     int gf, int gc, int nkf, double a_Dt, double hf, double hc,
+			     double cof, double relax,
+			     float_sw4 a_sbop[], float_sw4 a_ghcof[]);
+
+void oddIevenJinterpJacobiOptD(double rmax[6], double* __restrict__ a_uf,
+			      double* __restrict__ a_ufnew, double* __restrict__ a_uc,
+			      float_sw4* __restrict__ a_morc, float_sw4* __restrict__ a_mlrc,
+			      float_sw4* __restrict__ a_morf, float_sw4* __restrict__ a_mlrf,
+			      float_sw4* __restrict__ a_unextf, float_sw4* __restrict__ a_uncint,
+			      int a_iStart[], int a_iEnd[], int a_jStart[], int a_jEnd[], int a_kStart[], int a_kEnd[],
+			      int a_iStartInt[], int a_iEndInt[], int a_jStartInt[], int a_jEndInt[],
+			      int gf, int gc, int nkf, double a_Dt, double hf, double hc,
+			      double cof, double relax,
+			      float_sw4 a_sbop[], float_sw4 a_ghcof[]);
+
+void evenIoddJinterpJacobiOptD(double rmax[6], double* __restrict__ a_uf,
+			      double* __restrict__ a_ufnew, double* __restrict__ a_uc,
+			      float_sw4* __restrict__ a_morc, float_sw4* __restrict__ a_mlrc,
+			      float_sw4* __restrict__ a_morf, float_sw4* __restrict__ a_mlrf,
+			      float_sw4* __restrict__ a_unextf, float_sw4* __restrict__ a_uncint,
+			      int a_iStart[], int a_iEnd[], int a_jStart[], int a_jEnd[], int a_kStart[], int a_kEnd[],
+			      int a_iStartInt[], int a_iEndInt[], int a_jStartInt[], int a_jEndInt[],
+			      int gf, int gc, int nkf, double a_Dt, double hf, double hc,
+			      double cof, double relax,
+			      float_sw4 a_sbop[], float_sw4 a_ghcof[]);
+
+void evenIevenJinterpJacobiOptD(double rmax[6], double* __restrict__ a_uf,
+			       double* __restrict__ a_ufnew, double* __restrict__ a_uc,
+			       float_sw4* __restrict__ a_morc, float_sw4* __restrict__ a_mlrc,
+			       float_sw4* __restrict__ a_morf, float_sw4* __restrict__ a_mlrf,
+			       float_sw4* __restrict__ a_unextf, float_sw4* __restrict__ a_uncint,
+			       int a_iStart[], int a_iEnd[], int a_jStart[], int a_jEnd[], int a_kStart[], int a_kEnd[],
+			       int a_iStartInt[], int a_iEndInt[], int a_jStartInt[], int a_jEndInt[],
+			       int gf, int gc, int nkf, double a_Dt, double hf, double hc,
+			       double cof, double relax,
+			       float_sw4 a_sbop[], float_sw4 a_ghcof[]);
+
+void evenIevenJinterp(float_sw4 rmax[6], Sarray &Uf, Sarray &Muf, Sarray &Lambdaf, Sarray &Rhof,
 		     Sarray &Uc, Sarray &Muc, Sarray &Lambdac, Sarray &Rhoc,
 		     Sarray &Morc, Sarray &Mlrc,
 		     Sarray &Unextf, Sarray &Bf, Sarray &Unextc, Sarray &Bc,

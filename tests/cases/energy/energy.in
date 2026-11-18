@@ -1,0 +1,12 @@
+# Discrete energy of random initial data (SW4 testenergy). Random data excites
+# every wavenumber up to the grid scale, so a slowly growing (unstable) mode
+# shows up in the energy long before it shows up in a seismogram.
+fileio verbose=1
+developer cfl={{cfl}} ctol=1e-10 cmaxit=100 crelax=0.92 {{dev}}
+grid x={{xy}} y={{xy}} z={{z}} nx={{nx}}
+time t={{t}}
+{{topo}}
+{{refinements}}
+{{atten}}
+{{sg}}
+testenergy seed=34983249 cpcsratio={{cpcs}} bchorizontal={{bch}} {{teextra}}

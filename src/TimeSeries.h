@@ -55,8 +55,9 @@ public:
 // support for derived quantities of the time derivative are not yet implemented
   enum receiverMode{Displacement, Div, Curl, Strains, Velocity, DisplacementGradient /*, DivVelo, CurlVelo, StrainsVelo */ };
 
-TimeSeries( EW* a_ew, std::string fileName, std::string staName, receiverMode mode, bool sacFormat, bool usgsFormat, bool hdf5Format, std::string hdf5FileName, 
-	    float_sw4 x, float_sw4 y, float_sw4 z, bool topoDepth, int writeEvery, int downSample, bool xyzcomponent=true, int event=0 );
+TimeSeries( EW* a_ew, std::string fileName, std::string staName, receiverMode mode, bool sacFormat, bool usgsFormat, bool hdf5Format, std::string hdf5FileName,
+	    double x, double y, double z, bool topoDepth, int writeEvery, int downSample, bool xyzcomponent=true, int event=0,
+	    bool deferCollectives=false, float_sw4 precomputedZTopo=0.0 );
 ~TimeSeries();
 
 void allocateRecordingArrays( int numberOfTimeSteps, float_sw4 startTime, float_sw4 timeStep );
@@ -82,17 +83,33 @@ receiverMode getMode(){ return m_mode; }
 
 int getUseHDF5(){ return m_hdf5Format; }
 
-float_sw4 getX() const {return mX;}
-float_sw4 getY() const {return mY;}
-float_sw4 getZ() const {return mZ;}
+double getX() const {return mX;}
+double getY() const {return mY;}
+double getZ() const {return mZ;}
+
+// The grid point the station is actually recorded at, which is what the
+// supergrid predicate must be evaluated on - not the requested location.
+double getGPX() const {return mGPX;}
+double getGPY() const {return mGPY;}
+double getGPZ() const {return mGPZ;}
+
+// Cached result of is_in_supergrid_layer(), so the SAC/USGS/HDF5 writers need
+// no round trip to EW. Three states, matching the downstream convention:
+// 0.0 = interior (clean), > 0 = inside the layer, and 'absent' is the reader's
+// problem, never written here.
+float_sw4 getSupergridDepth() const {return m_sg_depth;}
+int getSupergridDepthGP() const {return m_sg_depth_gp;}
+// The run's absorbing-layer width, for the file-level SGWIDTH/SGWIDTHGP
+// scalars. Returns false when the run has no supergrid at all.
+bool getSupergridWidth( double& width_m, double& width_gp ) const;
 
 float_sw4 getZtopo() const {return m_zTopo;}
 bool getZtype() const {return m_zRelativeToTopography;}
 float_sw4 getStartTime() const { return m_t0;}
 float_sw4 getTimeShift() const { return m_shift;}
 
-float_sw4 getLat() const {return m_rec_lat;}
-float_sw4 getLon() const {return m_rec_lon;}
+double getLat() const {return m_rec_lat;}
+double getLon() const {return m_rec_lon;}
 float_sw4 getXaz() const {return m_x_azimuth;}
 
 int getMUTC(int i) const {return m_utc[i];}
@@ -165,10 +182,21 @@ hid_t openHDF5File(std::string suffix);
 void  write_hdf5_format( int npts, hid_t loc, float *y, float btime, float dt, char *var,
 		       float cmpinc, float cmpaz, bool makeCopy=false, bool isLast=false);
 double getWriteTime() {return m_writeTime;};
+
+// Resolve this station's output file name (path + name + suffix + extension).
+std::string hdf5FileName( std::string suffix );
+// Number of doubles packed by packHDF5Metadata, in on-disk dataset order.
+static const int s_nMetaDoubles = 16;
+// Pack this station's small scalars for the single-writer metadata pass.
+void  packHDF5Metadata( int& npts, double* meta );
+int   getNptsWritten() {return m_nptsWritten;};
 #endif
 double getReadTime() {return m_readTime;};
 void addReadTime(double t) {m_readTime += t;};
-bool is_in_supergrid_layer();
+// Is this station's recording point inside the supergrid absorbing layer?
+// Optionally reports how far inside, in metres and in grid points. The default
+// arguments preserve every existing caller.
+bool is_in_supergrid_layer( float_sw4* depth_m = NULL, int* depth_gp = NULL );
 void misfitanddudp( TimeSeries* observed, TimeSeries* dudp,
                     float_sw4& misfit, float_sw4& dmisfit );
 void add( TimeSeries& A, TimeSeries& B, double wghA, double wghB );
@@ -209,7 +237,14 @@ bool m_myPoint; // set to true if this processor writes to the arrays
 
 std::string m_fileName, m_staName, m_hdf5Name;
 
-float_sw4 mX, mY, mZ, mGPX, mGPY, mGPZ; // original and actual location
+// Receiver coordinates are double in every build: in float builds x,y of a
+// station 100s of km from the origin lose ~1 cm, and its lat/lon ~1 m.
+double mX, mY, mZ, mGPX, mGPY, mGPZ; // original and actual location
+
+// How far the recording point is inside the supergrid absorbing layer:
+// 0 = interior, > 0 = inside. Filled by is_in_supergrid_layer().
+float_sw4 m_sg_depth;
+int m_sg_depth_gp;
 float_sw4 m_zTopo;
 
 bool m_zRelativeToTopography; // location is given relative to topography
@@ -238,7 +273,8 @@ float**  mRecordedFloats;
 
 // sac header data
 int mEventYear, mEventMonth, mEventDay, mEventHour, mEventMinute;
-float_sw4 mEventSecond, m_rec_lat, m_rec_lon, m_rec_gp_lat, m_rec_gp_lon;
+float_sw4 mEventSecond;
+double m_rec_lat, m_rec_lon, m_rec_gp_lat, m_rec_gp_lon;
 float_sw4 m_epi_lat, m_epi_lon, m_epi_depth, m_epi_time_offset, m_x_azimuth;
 
 // sac ascii or binary?
@@ -284,9 +320,11 @@ float_sw4 m_scalefactor;
 #ifdef USE_HDF5
    float_sw4 m_sta_z;
    hid_t *m_fid_ptr;
-   bool m_isMetaWritten;
    bool m_isIncAzWritten;
    int  m_nptsWritten;
+   // On restart: leading samples of the existing HDF5 file that are kept
+   // verbatim (recorded before the checkpoint cycle) instead of rewritten.
+   int  m_nptsKeptOnRestart;
    int  m_nsteps;
    std::string m_fidName;
    TimeSeries *m_ts0Ptr;

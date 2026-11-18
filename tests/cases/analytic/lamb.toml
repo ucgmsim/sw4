@@ -1,0 +1,34 @@
+description = "AN-01: Lamb's problem against the exact surface solution. PR: golden error norms at h=0.1. Nightly: order of accuracy between h=0.1 and 0.05 (pre-asymptotic: about 2.0, as in the old reference ladder where it rises to 3.6 only at h=0.02)."
+labels = ["analytic", "lamb", "supergrid"]
+input = "lamb.in"
+ranks = 4
+
+[params]
+L = 10.0
+D = 5.0
+xs = 5.0
+t = 3.0
+sgw = 2.0
+
+[[run]]
+name = "h1"
+params = { h = 0.1 }
+
+[[run]]
+name = "h2"
+tier = "nightly"
+params = { h = 0.05 }
+
+[[check]]
+name = "golden"
+kind = "err_golden"
+file = "LambErr.txt"
+runs = ["h1"]
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+source = "LambErr.txt"
+stat = "final"
+expect = 2.0
+band = 0.5

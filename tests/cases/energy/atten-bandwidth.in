@@ -1,0 +1,8 @@
+# EN-06: the atten-cfl configuration (slow high-Vp/Vs wedge over a Poisson
+# basement, Qs=50 Qp=100) with the attenuation line as a parameter, to test
+# the bandwidth= option of the attenuation command.
+grid x=3000 y=3000 z=2833 h=100
+{{atten}}
+time t={{t}}
+fileio verbose=1
+testenergy seed=34983249 cpcsratio=3.6 rhobase=1816 mubase=4.54e8 rhoamp=100 muamp=5e7 qsbase=50 qsamp=0 qpbase=100 basementz=500 basementvfact=2.7 basementrhofact=1.28 bchorizontal=dirichlet

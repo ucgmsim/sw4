@@ -1,0 +1,57 @@
+description = "EQ-10: the same double-couple source and stations on grids rotated by az = 0, 90, 180 and 270 degrees (each a node-for-node rotation of the others, so no interpolation differs). Geographic NS/EW/UP output must be identical: checks the azimuth handling in the source strike, the receiver NSEW rotation and the grid frame. The workflow runs at az ~ 329."
+labels = ["equivalence", "azimuth"]
+input = "eq.in"
+generate = "eq"
+ranks = 4
+requires = ["hdf5", "proj"]
+
+[params]
+L = 12000.0
+Z = 6000.0
+h = 200.0
+az = 0.0
+t = 5.0
+sg = "width=2400"
+topo = ""
+rho = 2500.0
+vs = 2300.0
+material = "block vp=4000 vs=2300 rho=2500"
+source = "source x={{src_x}} y={{src_y}} z=2000 m0=1e15 strike=30 dip=70 rake=45 t0=1.5 freq=3.3333333333 type=Gaussian"
+station_mode = "xy"
+stations = [["N", 0, 3000], ["E", 3000, 0], ["SW", -2000, -2000], ["NE2", 1000, 2600]]
+recvars = ""
+rec = ""
+
+[[run]]
+name = "az0"
+params = { az = 0.0 }
+
+[[run]]
+name = "az90"
+params = { az = 90.0 }
+
+[[run]]
+name = "az180"
+params = { az = 180.0 }
+
+[[run]]
+name = "az270"
+params = { az = 270.0 }
+
+[[check]]
+name = "az0-vs-az90"
+kind = "traces_agree"
+runs = ["az0", "az90"]
+rtol = { double = 2e-6, float = 1e-4 }
+
+[[check]]
+name = "az0-vs-az180"
+kind = "traces_agree"
+runs = ["az0", "az180"]
+rtol = { double = 2e-6, float = 1e-4 }
+
+[[check]]
+name = "az0-vs-az270"
+kind = "traces_agree"
+runs = ["az0", "az270"]
+rtol = { double = 2e-6, float = 1e-4 }

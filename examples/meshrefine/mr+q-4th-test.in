@@ -9,7 +9,11 @@ grid x=2e4 y=2e4 z=1e4 h=300.0
 refinement zmax=1650
 
 time t=20.0
-supergrid gp=30
+# gp=30 at h=300 is a 9 km sponge per side, which leaves only 2 km of interior
+# in this 20 km domain: the source at x=1.4e4 would sit 3 km inside the x=xmax
+# layer and 651 m inside the bottom layer. 12 points (3600 m) leaves the source
+# 2400 m clear laterally and 4749 m clear of the bottom.
+supergrid gp=12
 attenuation phasefreq=1.0 nmech=3 maxfreq=1.25
 
 # block model 1D 

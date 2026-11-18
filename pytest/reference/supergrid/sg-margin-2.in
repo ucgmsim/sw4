@@ -1,0 +1,17 @@
+# The passing half of the margin pair: the source is W + 6h = 1600 m from the
+# x=0 boundary, so it clears the layer by 6 grid points and the run proceeds.
+# Also exercises:
+#   * the receiver flag - 'inlayer' is inside the x=0 sponge, 'interior' is not;
+#   * the absorption metric - a 1000 m layer in Vs=3464 m/s material absorbs to
+#     1000/(0.4308374*3464) = 0.6700 s, and the prefilter's fc1=0.5 Hz asks for
+#     2 s, so the warning must fire and quote the required width;
+#   * the print-once latch on that metric block.
+fileio path=sg-margin-2
+grid x=6000 y=6000 z=4000 h=100
+time steps=20
+supergrid gp=10
+block vp=6000 vs=3464 rho=2700
+prefilter fc1=0.5 fc2=5.0 type=bandpass passes=2 order=2
+source x=1600 y=3000 z=1500 mxy=1e18 t0=0.1 freq=5 type=Gaussian
+rec x=3000 y=3000 z=0 sta=interior file=interior usgsformat=1 sacformat=0
+rec x=400  y=3000 z=0 sta=inlayer  file=inlayer  usgsformat=1 sacformat=0

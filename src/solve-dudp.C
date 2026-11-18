@@ -209,7 +209,7 @@ void EW::solve_dudp( vector<Source*>& a_Sources, vector<Sarray>& a_Rho,
        t += mDt;
 
 // periodically, print time stepping info to stdout
-       printTime( n, t, n == mNumberOfTimeSteps[event] ); 
+       printTime( n, t, -1, n == mNumberOfTimeSteps[event] );
 
 // save the current solution on receiver records (time-derivative require Up and Um 
 // for a 2nd order approximation, so do this before cycling the arrays).

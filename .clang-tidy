@@ -1,0 +1,25 @@
+# clang-tidy checks for SW4.
+#
+# CI runs these only on the lines a pull request adds or changes
+# (.github/ci/static-analysis.sh), so existing code is not held to them until
+# someone touches it. Run over a whole file, this will report plenty.
+#
+# Excluded as noise for numerical code rather than signal:
+#   bugprone-easily-swappable-parameters   kernels take a dozen int bounds
+#   bugprone-narrowing-conversions         float_sw4 <-> double is pervasive
+#   bugprone-implicit-widening-of-multiplication-result   int index arithmetic
+#   clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+#                                          flags every memcpy/sprintf
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  mpi-*,
+  openmp-exception-escape,
+  performance-*
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*/src/.*'

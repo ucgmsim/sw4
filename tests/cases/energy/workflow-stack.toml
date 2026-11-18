@@ -1,0 +1,53 @@
+description = "EN-02: the workflow grid stack (curvilinear top grid, mapping order 3, over two refinement interfaces) at the workflow CFL 0.9: the energy is conserved to round-off (4.7e-14 over 625 steps, largest step-to-step rise 1.1e-14, double). With a single curvilinear grid the curvilinear/Cartesian join only copies ghost points, which is energy-exact only if the curvilinear metric is Cartesian wherever the Cartesian stencils reach: the old mapping's zetaBreak is capped at (Nz-5)/(Nz-1) for that. With zetaBreak = 0.95 (Nz = 29) the energy drifted by -3.3e-6 with step-to-step rises up to 1.3e-9."
+labels = ["energy", "curvi", "mr"]
+input = "energy.in"
+ranks = 4
+
+[params]
+xy = 12.0
+cfl = 0.9
+dev = ""
+z = 26.0
+nx = 13
+t = 30.0
+topo = "topography input=gaussian zmax=6 order=3 gaussianAmp=2 gaussianXc=6 gaussianYc=6.5 gaussianLx=2.5 gaussianLy=3"
+refinements = "refinement zmax=9\nrefinement zmax=15"
+atten = ""
+sg = ""
+cpcs = 1.732
+bch = "dirichlet"
+teextra = ""
+
+[[run]]
+name = "pr"
+
+[[run]]
+name = "long"
+tier = "nightly"
+params = { t = 300.0 }
+
+[[check]]
+name = "energy"
+kind = "energy"
+runs = ["pr"]
+mode = "decay"
+tol = { double = 1e-12, float = 2e-3 }
+
+[[check]]
+name = "energy-conserved"
+kind = "energy"
+runs = ["pr"]
+mode = "conserve"
+tol = { double = 1e-11, float = 1e-3 }
+
+[[check]]
+name = "energy-long"
+kind = "energy"
+runs = ["long"]
+mode = "decay"
+tol = { double = 1e-12, float = 2e-3 }
+
+[[check]]
+name = "interface-converged"
+kind = "stdout_absent"
+pattern = "no convergence"

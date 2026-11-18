@@ -1,0 +1,49 @@
+description = "AN-02: moment tensor point source in a whole space against the analytic solution. Golden error norms, and the observed order of the final-time error after the waves have left the source (the reference ladder gives 3.2 then 3.95; the singular source itself is 2nd order, Petersson & Sjogreen 2010)."
+labels = ["analytic", "pointsource", "supergrid"]
+input = "pointsource.in"
+ranks = 4
+
+[params]
+L = 6.0
+xs = 3.0
+zs = 3.0
+t = 2.5
+sgw = 1.8
+freq = 1.0
+refinement = ""
+
+[[run]]
+name = "h1"
+params = { h = 0.1 }
+
+[[run]]
+name = "h2"
+params = { h = 0.05 }
+
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { h = 0.025 }
+
+[[check]]
+name = "golden"
+kind = "err_golden"
+file = "PointSourceErr.txt"
+runs = ["h1", "h2"]
+
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+source = "PointSourceErr.txt"
+stat = "final"
+expect = 3.5
+band = 0.7
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+source = "PointSourceErr.txt"
+stat = "final"
+expect = 3.5
+band = 0.7

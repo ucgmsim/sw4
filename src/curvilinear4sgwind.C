@@ -32,9 +32,70 @@
 
 #include "sw4.h"
 #include <sys/types.h>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+//-----------------------------------------------------------------------
+// Chunk size for schedule(static,chunk) on the collapse(2) (k,j) loop nests
+// below. There are three ways to hand a collapsed (k,j) space to a team and
+// only one of them suits a 4th-order stencil:
+//
+//   schedule(static)    one contiguous k-RANGE per thread, so each thread
+//                       walks its own 5-plane stencil window and the team
+//                       holds nthreads of them at once. At the production
+//                       decomposition that is 24 MB against a 16 MB L3
+//                       share, so every k-plane is refetched from DRAM.
+//   schedule(static,1)  j-rows round-robin. The team shares one k-plane
+//                       window, but a thread's consecutive rows are j and
+//                       j+nthreads, whose 5-row j-windows overlap in ONE row
+//                       rather than four: it buys the shared plane by giving
+//                       up the row reuse. Measured 0.73-0.98x on Div-stress
+//                       in every A/B layout tried (ab-genoa 8649002, 8649007,
+//                       8649028, 8649029, 8649030 -- 4x1 through 40x4),
+//                       against a predicted 1.6-1.8x.
+//   schedule(static,C)  with C = ceil(nj/nthreads): thread t takes j-block t
+//                       of every k-plane. Contiguous in j, so the 4/5 row
+//                       reuse is back, and the team still advances through
+//                       the k-planes together, so the 5-plane window is
+//                       fetched once per team rather than once per thread.
+//                       Both properties at once, which is the point.
+//
+// C is a runtime value because nj and the team size both are. Chunks per
+// plane is ceil(nj/C) == nthreads whenever nj >= nthreads, so thread t owns
+// the same j-block on every plane and its rows stay hot in L2 from one plane
+// to the next; when nj < nthreads the loop is too thin for any of this to
+// matter. Numerically inert: this moves iterations between threads, changes
+// no arithmetic, and these loops carry no reductions.
+static inline int sw4_jblock( int jbeg, int jend )
+{
+   int nj = jend - jbeg + 1;
+   int nthr = 1;
+#ifdef _OPENMP
+   nthr = omp_get_num_threads();
+#endif
+   if( nj < 1 )
+      nj = 1;
+   if( nthr < 1 )
+      nthr = 1;
+   return (nj + nthr - 1)/nthr;
+}
+
 //#include <iostream>
 //using namespace std;
-void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+// OP is a template parameter so the dispatch resolves at compile time. This is
+// the port of 86fd071 that its own commit message flagged as left undone: with
+// OP=='=' the store was `lu = a1*lu + sgn*r*ijac` with a1 == 0, and the
+// compiler cannot fold that away -- for floating point 0*x is not 0, since x
+// may be NaN, Inf or -0.0 -- so the kernel read the entire 3-component output
+// array back purely to multiply it by zero. That is 3 of the 16 words/pt this
+// kernel touches, on top of the 3 written by the memset the caller also did.
+//
+// Bit-exact: with OP=='=' sgn is 1 and multiplying by exactly 1.0 is exact;
+// with OP=='-' sgn is -1 and `a + (-1)*b` is exactly `a - b` in IEEE-754.
+template<char OP>
+static void curvilinear4sgwind_impl( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
                          int kfirstw, int klastw,
 			float_sw4* __restrict__ a_u, float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda,
 			float_sw4* __restrict__ a_met, float_sw4* __restrict__ a_jac, float_sw4* __restrict__ a_lu,
@@ -42,7 +103,7 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 			float_sw4* __restrict__ a_ghcof, float_sw4* __restrict__ a_acof_no_gp, 
                         float_sw4* __restrict__ a_ghcof_no_gp,
                         float_sw4* __restrict__ a_strx, float_sw4* __restrict__ a_stry,
-			int nk, char op )
+			int nk )
 {
 
 // Routine with supergrid stretchings strx and stry. Evaluate Lu for kfirstw <= k <= klastw.
@@ -64,26 +125,31 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 //      Interior (k>6), 2126 arithmetic ops.
 //      Boundary discretization (1<=k<=6 ), 6049 arithmetic ops.
 
-//   const float_sw4 a1 =0;
-   float_sw4 a1 =0;
-   float_sw4 sgn = 1;
-   if( op=='=' )
+   if constexpr( OP == '=' )
    {
-      a1 = 0;
+      // Threaded. This sits outside the kernel's `#pragma omp parallel` region
+      // and was a plain serial loop writing 3*ni*nj*nk words -- Sarray's own
+      // set_to_zero is threaded, but this open-coded twin was not. Its cost
+      // relative to the parallel region grows linearly with threads per rank,
+      // which is the regime the HPC3 data shows SW4 is actually limited in
+      // (16x4 beats 2x32 by 1.42-2.34x, tracking synchronisation and serial
+      // work rather than bandwidth). Amdahl-fitting the measured cart
+      // 16x4->2x32 divstress ratio puts a serial term of this size at ~13% of
+      // Div-stress at 4 threads/rank and ~54% at 32 -- INFERRED, and exactly
+      // the shape of estimate this campaign has got wrong before, so treat the
+      // magnitude as unverified. The change itself is free and bit-exact.
+#pragma omp parallel for simd
       for(size_t i=0 ; i < static_cast<size_t>((ilast-ifirst+1))*(jlast-jfirst+1)*(klastw-kfirstw+1)*3; i++)
          a_lu[i]=0;
-      sgn= 1;
    }
-   else if( op=='+')
-   {
-      a1 = 1;
-      sgn= 1;
-   }
-   else if( op=='-')
-   {
-      a1 = 1;
-      sgn=-1;
-   }
+
+// Assign when OP=='=', accumulate otherwise. See the note above the function.
+#define SW4_CURV_LU_STORE(c,val)                                        \
+   do {                                                                 \
+      if constexpr( OP == '=' )      lu(c,i,j,k) = (val);                \
+      else if constexpr( OP == '+' ) lu(c,i,j,k) = lu(c,i,j,k) + (val);  \
+      else                           lu(c,i,j,k) = lu(c,i,j,k) - (val);  \
+   } while(0)
 
    const float_sw4 i6 = 1.0/6;
    const float_sw4 tf = 0.75;
@@ -169,10 +235,32 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
    //   int idbg=108, jdbg=107;
 #pragma omp parallel
    {
+   const int jblk = sw4_jblock( jfirst+2, jlast-2 );
    if( lower )
    {
    // SBP Boundary closure terms
-#pragma omp for
+// collapse(2) over (k,j): the closure loops run over only SIX k-iterations, so
+// a bare `omp for` leaves most threads idle -- 25% at 8 threads, 57% at 14,
+// 89% at 56, and the targets here have 112-168 cores per node. The interior
+// loop is also thin (nk-12). Legal: the j bounds do not depend on k, and every
+// iteration writes a distinct lu(c,i,j,k). Numerically inert -- no reduction,
+// so no accumulation order changes.
+// nowait on every omp for in this region. Each loop writes a disjoint slice
+// of lu -- the closures write k=1..6 and k=nk-5..nk while the interior writes
+// k1..k2 (k1=7 when the low closure runs, k2=nk-6 when the high one does), and
+// the fissioned curvilinear interior loops write one output component each --
+// and every loop reads only u/mu/la/met/jac, never another loop's output. So
+// the implicit barrier at the end of each omp for is redundant; the parallel
+// region's own closing barrier is sufficient. Nothing follows the last loop
+// inside the region but #undefs.
+//
+// This matters more than it looks. At equal core count, 16 ranks x 4 threads
+// beat 2 ranks x 32 threads by 1.42-2.34x on total runtime across every case
+// measured on HPC3, and the degradation tracked synchronisation density, not
+// bandwidth: the one phase that is a single long parallel loop was flat while
+// bc, which forks 42 times, degraded 6.5-8.0x. Div-stress carries 3 barriers
+// per Cartesian call and 5 per curvilinear call; this removes all but one.
+#pragma omp for collapse(2) schedule(static,jblk) nowait
       for( int k= klowb; k <= klowe ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -309,6 +397,7 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 	       // averaging the coefficient
 // 54*8*8+25*8 = 3656 ops, tot=3939
 	       float_sw4 mucofu2, mucofuv, mucofuw, mucofvw, mucofv2, mucofw2;
+	       #pragma GCC unroll 8
 	       for( int q=1 ; q <= 8 ; q++ )
 	       {
 		  mucofu2=0;
@@ -317,6 +406,7 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 		  mucofvw=0;
 		  mucofv2=0;
 		  mucofw2=0;
+		  #pragma GCC unroll 8
 		  for( int m=1 ; m <= 8 ; m++ )
 		  {
 		     mucofu2 += 
@@ -440,6 +530,7 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 	       float_sw4 dudrm2 = 0, dudrm1=0, dudrp1=0, dudrp2=0;
 	       float_sw4 dvdrm2 = 0, dvdrm1=0, dvdrp1=0, dvdrp2=0;
 	       float_sw4 dwdrm2 = 0, dwdrm1=0, dwdrp1=0, dwdrp2=0;
+	       #pragma GCC unroll 8
 	       for( int q=1 ; q <= 8 ; q++ )
 	       {
 		  dudrm2 += bope(k,q)*u(1,i-2,j,q);
@@ -525,6 +616,7 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 	       dwdrm1 = 0;
 	       dwdrp1 = 0;
 	       dwdrp2 = 0;
+	       #pragma GCC unroll 8
 	       for( int q=1 ; q <= 8 ; q++ )
 	       {
 		  dudrm2 += bope(k,q)*u(1,i,j-2,q);
@@ -597,6 +689,7 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 
 	       // pr and qr derivatives at once
 // in loop: 8*(53+53+43) = 1192 ops, tot=6037
+	       #pragma GCC unroll 8
 	       for( int q=1 ; q <= 8 ; q++ )
 	       {
 		  // (u-eq)
@@ -661,14 +754,28 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 	       }
 
 // 12 ops, tot=6049
-	       lu(1,i,j,k) = a1*lu(1,i,j,k) + sgn*r1*ijac;
-	       lu(2,i,j,k) = a1*lu(2,i,j,k) + sgn*r2*ijac;
-	       lu(3,i,j,k) = a1*lu(3,i,j,k) + sgn*r3*ijac;
+	       SW4_CURV_LU_STORE(1, r1*ijac);
+	       SW4_CURV_LU_STORE(2, r2*ijac);
+	       SW4_CURV_LU_STORE(3, r3*ijac);
 	    }
    }
    if( mid )
    {
-#pragma omp for
+// Fissioned by output component. The three sections below (u-, v-, w-equation)
+// are provably independent: each assigns every cof/mux temporary before reading
+// it, and each touches only its own accumulator -- verified by scanning for
+// read-before-assign and for cross-component reads of r1/r2/r3. Splitting them
+// into three loop nests shortens the dependency chains and cuts repeated
+// address computation; it does NOT reduce register spilling (the static spill
+// fraction is unchanged). Accumulation order within each component is preserved
+// exactly, so this is algebraically inert.
+//
+// The cost is re-reading u/mu/la/met/jac three times instead of once. That is
+// the right trade here and the wrong one for the Cartesian kernel: this kernel
+// is compute-bound on every target (AI 32.3 flop/B single against a machine
+// balance of 8.4-24.5), so it has traffic budget to spend. This is the CPU
+// analogue of the loop fission that gave 3x in the published GPU port.
+#pragma omp for collapse(2) schedule(static,jblk)
    for( int k= kmidb ; k <= kmide ; k++ )
       for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -681,7 +788,7 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
             float_sw4 istrx = 1/(strx(i));
             float_sw4 istrxy = istry*istrx;
 
-            float_sw4 r1 = 0, r2=0, r3=0;
+	    float_sw4 r1 = 0;
 
 	    // pp derivative (u)
 // 53 ops, tot=58
@@ -962,7 +1069,24 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
              c1*(u(2,i,j-1,k+1)-u(2,i,j-1,k-1)) ) ) );
 
 // 4 ops, tot=773
-	    lu(1,i,j,k) = a1*lu(1,i,j,k) + sgn*r1*ijac;
+	    SW4_CURV_LU_STORE(1, r1*ijac);
+	 }
+
+#pragma omp for collapse(2) schedule(static,jblk)
+   for( int k= kmidb ; k <= kmide ; k++ )
+      for( int j=jfirst+2; j <= jlast-2 ; j++ )
+#pragma omp simd
+#pragma ivdep	 
+	 for( int i=ifirst+2; i <= ilast-2 ; i++ )
+	 {
+// 5 ops
+	    float_sw4 ijac = strx(i)*stry(j)/jac(i,j,k);
+            float_sw4 istry = 1/(stry(j));
+            float_sw4 istrx = 1/(strx(i));
+            float_sw4 istrxy = istry*istrx;
+
+	    float_sw4 cof1, cof2, cof3, cof4, cof5, mux1, mux2, mux3, mux4;
+	    float_sw4 r2 = 0;
 // v-equation
 
 //	    r1 = 0;
@@ -1251,7 +1375,24 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 
 
 // 4 ops, tot=1541
-	    lu(2,i,j,k) = a1*lu(2,i,j,k) + sgn*r2*ijac;
+	    SW4_CURV_LU_STORE(2, r2*ijac);
+	 }
+
+#pragma omp for collapse(2) schedule(static,jblk)
+   for( int k= kmidb ; k <= kmide ; k++ )
+      for( int j=jfirst+2; j <= jlast-2 ; j++ )
+#pragma omp simd
+#pragma ivdep	 
+	 for( int i=ifirst+2; i <= ilast-2 ; i++ )
+	 {
+// 5 ops
+	    float_sw4 ijac = strx(i)*stry(j)/jac(i,j,k);
+            float_sw4 istry = 1/(stry(j));
+            float_sw4 istrx = 1/(strx(i));
+            float_sw4 istrxy = istry*istrx;
+
+	    float_sw4 cof1, cof2, cof3, cof4, cof5, mux1, mux2, mux3, mux4;
+	    float_sw4 r3 = 0;
 	 
 // w-equation
 
@@ -1474,12 +1615,12 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
              c1*(u(2,i,j-1,k+1)-u(2,i,j-1,k-1)) ) ) ) );
 
 // 4 ops, tot=2126
-	    lu(3,i,j,k) = a1*lu(3,i,j,k) + sgn*r3*ijac;
+	    SW4_CURV_LU_STORE(3, r3*ijac);
 	 }
    }
    if( upper )
    {
-#pragma omp for
+#pragma omp for collapse(2) schedule(static,jblk) nowait
       for( int k= khighb; k <= khighe ; k++ )
 	 for( int j=jfirst+2; j <= jlast-2 ; j++ )
 #pragma omp simd
@@ -1617,16 +1758,23 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 	       // averaging the coefficient
 // 54*8*8+25*8 = 3656 ops, tot=3939
 	       float_sw4 mucofu2, mucofuv, mucofuw, mucofvw, mucofv2, mucofw2;
-	       for( int q=nk-7 ; q <= nk ; q++ )
-	       {
+// Constant trip-count loops (qq,mm = 1..8) rather than q,m = nk-7..nk: with
+// the runtime bounds the compiler does not fully unroll and fold the 8x8
+// coefficient loops below, and this upper closure ran 4.5x slower per point
+// than the lower one (k=1..6, which loops q=1..8). Same arithmetic in the
+// same order, so bit-identical.
+	       #pragma GCC unroll 8
+	       for( int qq=1 ; qq <= 8 ; qq++ )
+	       { const int q = nk-8+qq;
 		  mucofu2=0;
 		  mucofuv=0;
 		  mucofuw=0;
 		  mucofvw=0;
 		  mucofv2=0;
 		  mucofw2=0;
-		  for( int m=nk-7 ; m <= nk ; m++ )
-		  {
+		  #pragma GCC unroll 8
+		  for( int mm=1 ; mm <= 8 ; mm++ )
+		  { const int m = nk-8+mm;
 		     mucofu2 += 
 			acof_no_gp(nk-k+1,nk-q+1,nk-m+1)*(
 		      (2*mu(i,j,m)+la(i,j,m) )*met(2,i,j,m)*strx(i)*met(2,i,j,m)*strx(i)
@@ -1750,8 +1898,9 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 	       float_sw4 dudrm2 = 0, dudrm1=0, dudrp1=0, dudrp2=0;
 	       float_sw4 dvdrm2 = 0, dvdrm1=0, dvdrp1=0, dvdrp2=0;
 	       float_sw4 dwdrm2 = 0, dwdrm1=0, dwdrp1=0, dwdrp2=0;
-	       for( int q=nk-7 ; q <= nk ; q++ )
-	       {
+	       #pragma GCC unroll 8
+	       for( int qq=1 ; qq <= 8 ; qq++ )
+	       { const int q = nk-8+qq;
 		  dudrm2 -= bope(nk-k+1,nk-q+1)*u(1,i-2,j,q);
 		  dvdrm2 -= bope(nk-k+1,nk-q+1)*u(2,i-2,j,q);
 		  dwdrm2 -= bope(nk-k+1,nk-q+1)*u(3,i-2,j,q);
@@ -1835,8 +1984,9 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 	       dwdrm1 = 0;
 	       dwdrp1 = 0;
 	       dwdrp2 = 0;
-	       for( int q=nk-7 ; q <= nk ; q++ )
-	       {
+	       #pragma GCC unroll 8
+	       for( int qq=1 ; qq <= 8 ; qq++ )
+	       { const int q = nk-8+qq;
 		  dudrm2 -= bope(nk-k+1,nk-q+1)*u(1,i,j-2,q);
 		  dvdrm2 -= bope(nk-k+1,nk-q+1)*u(2,i,j-2,q);
 		  dwdrm2 -= bope(nk-k+1,nk-q+1)*u(3,i,j-2,q);
@@ -1907,8 +2057,9 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 
 	       // pr and qr derivatives at once
 // in loop: 8*(53+53+43) = 1192 ops, tot=6037
-	       for( int q=nk-7 ; q <= nk ; q++ )
-	       {
+	       #pragma GCC unroll 8
+	       for( int qq=1 ; qq <= 8 ; qq++ )
+	       { const int q = nk-8+qq;
 		  // (u-eq)
 // 53 ops
 		  r1 -= bope(nk-k+1,nk-q+1)*( 
@@ -1973,9 +2124,9 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 
 
 // 12 ops, tot=6049
-	       lu(1,i,j,k) = a1*lu(1,i,j,k) + sgn*r1*ijac;
-	       lu(2,i,j,k) = a1*lu(2,i,j,k) + sgn*r2*ijac;
-	       lu(3,i,j,k) = a1*lu(3,i,j,k) + sgn*r3*ijac;
+	       SW4_CURV_LU_STORE(1, r1*ijac);
+	       SW4_CURV_LU_STORE(2, r2*ijac);
+	       SW4_CURV_LU_STORE(3, r3*ijac);
 	    }
    }
    }
@@ -1992,4 +2143,26 @@ void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirs
 #undef bope
 #undef ghcof
 #undef ghcof_no_gp
+#undef SW4_CURV_LU_STORE
+}
+
+//-----------------------------------------------------------------------
+// Wrapper keeping the existing `char op` interface. An op outside {=,+,-} is
+// now a no-op; previously it fell through leaving a1/sgn at their initialisers.
+void curvilinear4sgwind( int ifirst, int ilast, int jfirst, int jlast, int kfirst, int klast,
+                         int kfirstw, int klastw,
+			float_sw4* __restrict__ a_u, float_sw4* __restrict__ a_mu, float_sw4* __restrict__ a_lambda,
+			float_sw4* __restrict__ a_met, float_sw4* __restrict__ a_jac, float_sw4* __restrict__ a_lu,
+			int* onesided, float_sw4* __restrict__ a_acof, float_sw4* __restrict__ a_bope,
+			float_sw4* __restrict__ a_ghcof, float_sw4* __restrict__ a_acof_no_gp, 
+                        float_sw4* __restrict__ a_ghcof_no_gp,
+                        float_sw4* __restrict__ a_strx, float_sw4* __restrict__ a_stry,
+			int nk, char op )
+{
+   if( op == '=' )
+      curvilinear4sgwind_impl<'='>( ifirst, ilast, jfirst, jlast, kfirst, klast, kfirstw, klastw, a_u, a_mu, a_lambda, a_met, a_jac, a_lu, onesided, a_acof, a_bope, a_ghcof, a_acof_no_gp, a_ghcof_no_gp, a_strx, a_stry, nk );
+   else if( op == '+' )
+      curvilinear4sgwind_impl<'+'>( ifirst, ilast, jfirst, jlast, kfirst, klast, kfirstw, klastw, a_u, a_mu, a_lambda, a_met, a_jac, a_lu, onesided, a_acof, a_bope, a_ghcof, a_acof_no_gp, a_ghcof_no_gp, a_strx, a_stry, nk );
+   else if( op == '-' )
+      curvilinear4sgwind_impl<'-'>( ifirst, ilast, jfirst, jlast, kfirst, klast, kfirstw, klastw, a_u, a_mu, a_lambda, a_met, a_jac, a_lu, onesided, a_acof, a_bope, a_ghcof, a_acof_no_gp, a_ghcof_no_gp, a_strx, a_stry, nk );
 }

@@ -45,6 +45,7 @@
 
 #include "Require.h"
 #include "EW.h"
+#include "GridGenerator.h"
 #include "TimeSeries.h"
 #include "readhdf5.h"
 
@@ -126,7 +127,7 @@ struct srf_data_t {
 
 static herr_t traverse_func (hid_t loc_id, const char *grp_name, const H5L_info_t *info, void *operator_data)
 {
-  hid_t grp, dset, attr;
+  hid_t grp = -1, dset = -1, attr = -1;
   herr_t status;
 #if H5_VERSION_GE(1,12,0)
   H5O_info1_t infobuf;
@@ -176,7 +177,9 @@ static herr_t traverse_func (hid_t loc_id, const char *grp_name, const H5L_info_
       op_data->winlset = true;
       attr = H5Dopen(grp, "WindowL", H5P_DEFAULT);
       ASSERT(attr > 0);
-      ret = H5Dread(attr, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &op_data->winl);
+      double wtmp; // the file stores a double; winl is float_sw4
+      ret = H5Dread(attr, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &wtmp);
+      op_data->winl = wtmp;
       ASSERT(ret >= 0);
       H5Dclose(attr);
     }
@@ -185,7 +188,9 @@ static herr_t traverse_func (hid_t loc_id, const char *grp_name, const H5L_info_
       op_data->winrset = true;
       attr = H5Dopen(grp, "WindowR", H5P_DEFAULT);
       ASSERT(attr > 0);
-      ret = H5Dread(attr, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &op_data->winr);
+      double wtmp; // the file stores a double; winr is float_sw4
+      ret = H5Dread(attr, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &wtmp);
+      op_data->winr = wtmp;
       ASSERT(ret >= 0);
       H5Dclose(attr);
     }
@@ -219,7 +224,7 @@ static herr_t traverse_func (hid_t loc_id, const char *grp_name, const H5L_info_
       dset = H5Dopen(grp, "STX,STY,STZ", H5P_DEFAULT);
       if (dset < 0)
         fprintf(stderr, "Error reading from rechdf5 station %s, STX,STY,STZ open failed!\n", grp_name);
-      ASSERT(attr > 0);
+      ASSERT(dset > 0);
       ret = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
       ASSERT(ret >= 0);
       H5Dclose(dset);
@@ -233,7 +238,7 @@ static herr_t traverse_func (hid_t loc_id, const char *grp_name, const H5L_info_
       dset = H5Dopen(grp, "STLA,STLO,STDP", H5P_DEFAULT);
       if (dset < 0)
         fprintf(stderr, "Error reading from rechdf5 station %s, STLA,STLO,STDP open failed!\n", grp_name);
-      ASSERT(attr > 0);
+      ASSERT(dset > 0);
       ret = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
       ASSERT(ret >= 0);
       H5Dclose(dset);
@@ -346,8 +351,340 @@ static herr_t traverse_func (hid_t loc_id, const char *grp_name, const H5L_info_
   return 0;
 }
 
+// Callback for the cheap "name only" scan over the station file's root group.
+// It records every link name without opening the target object, so it does no
+// per-object metadata reads - the expensive per-station dataset reads are
+// deferred to the parallel phase in readStationHDF5 below. Runs on rank 0 only.
+static herr_t collect_names_cb(hid_t loc_id, const char *grp_name, const H5L_info_t *info, void *operator_data)
+{
+  vector<string> *names = (vector<string> *)operator_data;
+  names->push_back(grp_name);
+  return 0;
+}
+
+// One station's data as read from the file.
+struct sta_rec_t { double x, y, z; int nsew; int topodepth; };
+
+// Read a single station group by name and fill 'out'. Returns true if 'name' is
+// a valid station group whose location is inside the domain bounding box
+// [0,gxmax] x [0,gymax] (matching the original per-rank traversal's accept
+// test). Prints the "outside grid" warning for rejected stations when verbose.
+// Pure per-rank work: no MPI, so it can run concurrently on many reader ranks,
+// each over a disjoint set of names.
+static bool read_one_station(hid_t file_id, const string &name, EW *ew,
+                             double gxmax, double gymax, sta_rec_t &out)
+{
+  double data[4];
+  double lon = 0, lat = 0, depth, x = 0, y = 0, z = 0;
+  bool geoCoordSet = true, topodepth = true, nsew = true;
+  int isnsew, usezvalue, ret;
+
+  hid_t grp;
+  H5E_BEGIN_TRY { grp = H5Gopen(file_id, name.c_str(), H5P_DEFAULT); } H5E_END_TRY;
+  if (grp < 0)
+    return false;   // link is not an openable group
+
+  if (H5Lexists(grp, "ISNSEW", H5P_DEFAULT) > 0) {
+    hid_t attr = H5Dopen(grp, "ISNSEW", H5P_DEFAULT);
+    ret = H5Dread(attr, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, &isnsew);
+    H5Dclose(attr);
+    if (ret >= 0 && isnsew == 0)
+      nsew = false;
+  }
+
+  if (H5Lexists(grp, "USEZVALUE", H5P_DEFAULT) > 0) {
+    hid_t attr = H5Dopen(grp, "USEZVALUE", H5P_DEFAULT);
+    ret = H5Dread(attr, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, &usezvalue);
+    H5Dclose(attr);
+    if (ret >= 0 && usezvalue != 0)
+      topodepth = false;
+  }
+
+  if (H5Lexists(grp, "STX,STY,STZ", H5P_DEFAULT) > 0) {
+    hid_t dset = H5Dopen(grp, "STX,STY,STZ", H5P_DEFAULT);
+    if (dset < 0) {
+      fprintf(stderr, "Error reading from rechdf5 station %s, STX,STY,STZ open failed!\n", name.c_str());
+      H5Gclose(grp);
+      return false;
+    }
+    ret = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+    H5Dclose(dset);
+    x = data[0];
+    y = data[1];
+    z = data[2];
+    geoCoordSet = false;
+  }
+  else if (H5Lexists(grp, "STLA,STLO,STDP", H5P_DEFAULT) > 0) {
+    hid_t dset = H5Dopen(grp, "STLA,STLO,STDP", H5P_DEFAULT);
+    if (dset < 0) {
+      fprintf(stderr, "Error reading from rechdf5 station %s, STLA,STLO,STDP open failed!\n", name.c_str());
+      H5Gclose(grp);
+      return false;
+    }
+    ret = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+    H5Dclose(dset);
+    lat = data[0];
+    lon = data[1];
+    z = data[2];
+  }
+  else {
+    // Not a station group, ignore
+    H5Gclose(grp);
+    return false;
+  }
+  H5Gclose(grp);
+
+  depth = z;
+  if (geoCoordSet)
+    ew->computeCartesianCoord(x, y, lon, lat);
+
+  bool inCurvilinear = false;
+  if (ew->topographyExists() && z < ew->m_zmin[ew->mNumberOfCartesianGrids-1])
+    inCurvilinear = true;
+
+  if (!((inCurvilinear || z >= 0) && x >= 0 && x <= gxmax && y >= 0 && y <= gymax)) {
+    // Outside the domain: don't include it in the global list
+    if (ew->getVerbosity() > 0) {
+      stringstream receivererr;
+      receivererr << endl
+                  << "***************************************************" << endl
+                  << " WARNING:  RECEIVER positioned outside grid!" << endl
+                  << " No RECEIVER file will be generated for station = " << name << endl;
+      if (geoCoordSet)
+        receivererr << " @ lon=" << lon << " lat=" << lat << " depth=" << depth << endl << endl;
+      else
+        receivererr << " @ x=" << x << " y=" << y << " z=" << z << endl << endl;
+      receivererr << "***************************************************" << endl;
+      cerr << receivererr.str();
+      cerr.flush();
+    }
+    return false;
+  }
+
+  out.x = x;
+  out.y = y;
+  out.z = z;
+  out.nsew = nsew ? 1 : 0;
+  out.topodepth = topodepth ? 1 : 0;
+  return true;
+}
+
 void readStationHDF5(EW* ew, string inFileName, string outFileName, int writeEvery, int downSample, TimeSeries::receiverMode mode, int event, vector< vector<TimeSeries*> > *GlobalTimeSeries, float_sw4 m_global_xmax, float_sw4 m_global_ymax, bool is_obs, bool winlset, bool winrset, float_sw4 winl, float_sw4 winr, bool usex, bool usey, bool usez, float_sw4 t0, bool scalefactor_set, float_sw4 scalefactor)
 {
+  if (!is_obs) {
+    // Bulk receiver path (rechdf5/receiver command). Built to scale to 1e5+
+    // stations. The original code had every rank independently H5Literate the
+    // whole file (~10 HDF5 metadata reads per station), i.e. O(stations x ranks)
+    // uncoordinated filesystem traffic, plus 2 collective MPI_Allreduce per
+    // station inside the TimeSeries constructor, i.e. O(stations) serialized
+    // collectives. Both dominate startup at scale. This replacement is:
+    //
+    //   1. rank 0 enumerates station group names only (cheap link iteration,
+    //      no per-object reads) and broadcasts them.
+    //   2. a spread-out subset of "reader" ranks each open the file once and
+    //      read a disjoint block of stations in parallel; results are
+    //      Allgatherv'd to all ranks. Total dataset reads = O(stations).
+    //   3. topography elevation and the "exactly one owner" safety check are
+    //      each done as a single batched Allreduce over all stations, instead
+    //      of per-station collectives (see TimeSeries ctor deferCollectives).
+    MPI_Comm comm = ew->m_1d_communicator;
+    int rank = ew->getRank();
+    int nprocs = 1;
+    MPI_Comm_size(comm, &nprocs);
+    double t0all = MPI_Wtime();
+
+    // ---- 1. rank 0 enumerates station names, broadcast to all ranks ----
+    vector<string> names;
+    if (rank == 0) {
+      if (inFileName == outFileName)
+        printf("Warning: Same station input file and output file name [%s]\n", inFileName.c_str());
+      printf("readStationHDF5: enumerating stations in %s ...\n", inFileName.c_str());
+      fflush(stdout);
+
+      hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+      hid_t fid = H5Fopen(inFileName.c_str(), H5F_ACC_RDONLY, fapl);
+      if (fid < 0)
+        printf("%s Error opening file [%s]\n", __func__, inFileName.c_str());
+      else {
+        H5Literate(fid, H5_INDEX_NAME, H5_ITER_NATIVE, NULL, collect_names_cb, &names);
+        H5Fclose(fid);
+      }
+      H5Pclose(fapl);
+
+      printf("readStationHDF5: found %d candidate station groups in %.2f s\n",
+             (int)names.size(), MPI_Wtime() - t0all);
+      fflush(stdout);
+    }
+
+    int ncand = (int)names.size();
+    MPI_Bcast(&ncand, 1, MPI_INT, 0, comm);
+
+    // Broadcast the names ('\0'-separated buffer).
+    string namebuf;
+    if (rank == 0)
+      for (int s = 0; s < ncand; s++) { namebuf += names[s]; namebuf += '\0'; }
+    int namebuflen = (int)namebuf.size();
+    MPI_Bcast(&namebuflen, 1, MPI_INT, 0, comm);
+    vector<char> namebytes(namebuflen > 0 ? namebuflen : 1);
+    if (rank == 0 && namebuflen > 0)
+      memcpy(namebytes.data(), namebuf.data(), namebuflen);
+    if (namebuflen > 0)
+      MPI_Bcast(namebytes.data(), namebuflen, MPI_CHAR, 0, comm);
+    if (rank != 0) {
+      names.resize(ncand);
+      int pos = 0;
+      for (int s = 0; s < ncand; s++) { names[s] = string(&namebytes[pos]); pos += (int)names[s].size() + 1; }
+    }
+
+    if (ncand == 0)
+      return;
+
+    // ---- 2. parallel read of station data by a spread-out reader subset ----
+    // Cap the number of concurrent readers so we don't overload the filesystem
+    // metadata server; spread them evenly across the job (every 'stride'-th rank)
+    // so the readers land on as many different nodes as possible.
+    int target_readers = nprocs < 128 ? nprocs : 128;
+    if (target_readers > ncand) target_readers = ncand;
+    if (target_readers < 1) target_readers = 1;
+    int stride = nprocs / target_readers;              // >= 1
+    if (stride < 1) stride = 1;
+    bool am_reader = (rank % stride == 0) && (rank / stride < target_readers);
+    int reader_id  = am_reader ? rank / stride : -1;
+    int nreaders   = target_readers;                   // reader_id in [0, nreaders)
+    int block = (ncand + nreaders - 1) / nreaders;     // names per reader
+
+    vector<double> lcoord;    // accepted x,y,z triples read by this rank
+    vector<int>    lflag;     // accepted nsew,topodepth pairs read by this rank
+    string         lnames;    // accepted names, '\0'-separated
+    double t0read = MPI_Wtime();
+    if (am_reader) {
+      int begin = reader_id * block;
+      int end   = begin + block;
+      if (end > ncand) end = ncand;
+      hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+      hid_t fid  = H5Fopen(inFileName.c_str(), H5F_ACC_RDONLY, fapl);
+      if (fid < 0)
+        printf("%s reader rank %d: error opening file [%s]\n", __func__, rank, inFileName.c_str());
+      else {
+        for (int s = begin; s < end; s++) {
+          sta_rec_t rec;
+          if (read_one_station(fid, names[s], ew, m_global_xmax, m_global_ymax, rec)) {
+            lcoord.push_back(rec.x); lcoord.push_back(rec.y); lcoord.push_back(rec.z);
+            lflag.push_back(rec.nsew); lflag.push_back(rec.topodepth);
+            lnames += names[s]; lnames += '\0';
+          }
+        }
+        H5Fclose(fid);
+      }
+      H5Pclose(fapl);
+    }
+
+    // ---- Allgatherv the accepted stations to all ranks ----
+    // Every rank ends up with an identical global list (reader-block order),
+    // so the batched Allreduces below index the same station on every rank.
+    int local_n = (int)lflag.size() / 2;
+    vector<int> counts(nprocs), displs(nprocs);
+    MPI_Allgather(&local_n, 1, MPI_INT, counts.data(), 1, MPI_INT, comm);
+    int total = 0;
+    for (int p = 0; p < nprocs; p++) { displs[p] = total; total += counts[p]; }
+
+    if (rank == 0) {
+      printf("readStationHDF5: %d reader ranks read %d in-domain stations in %.2f s\n",
+             nreaders, total, MPI_Wtime() - t0read);
+      fflush(stdout);
+    }
+    if (total == 0)
+      return;
+
+    // coordinates: 3 doubles per station
+    vector<int> ccounts(nprocs), cdispls(nprocs);
+    for (int p = 0; p < nprocs; p++) { ccounts[p] = 3*counts[p]; cdispls[p] = 3*displs[p]; }
+    vector<double> gcoord(3*total);
+    MPI_Allgatherv(lcoord.data(), 3*local_n, MPI_DOUBLE,
+                   gcoord.data(), ccounts.data(), cdispls.data(), MPI_DOUBLE, comm);
+    // flags: 2 ints per station
+    vector<int> fcounts(nprocs), fdispls(nprocs);
+    for (int p = 0; p < nprocs; p++) { fcounts[p] = 2*counts[p]; fdispls[p] = 2*displs[p]; }
+    vector<int> gflag(2*total);
+    MPI_Allgatherv(lflag.data(), 2*local_n, MPI_INT,
+                   gflag.data(), fcounts.data(), fdispls.data(), MPI_INT, comm);
+    // names: '\0'-separated bytes
+    int lnbytes = (int)lnames.size();
+    vector<int> ncounts(nprocs), ndispls(nprocs);
+    MPI_Allgather(&lnbytes, 1, MPI_INT, ncounts.data(), 1, MPI_INT, comm);
+    int totbytes = 0;
+    for (int p = 0; p < nprocs; p++) { ndispls[p] = totbytes; totbytes += ncounts[p]; }
+    vector<char> gnames(totbytes > 0 ? totbytes : 1);
+    MPI_Allgatherv(lnames.data(), lnbytes, MPI_CHAR,
+                   gnames.data(), ncounts.data(), ndispls.data(), MPI_CHAR, comm);
+    vector<string> snames(total);
+    { int pos = 0; for (int s = 0; s < total; s++) { snames[s] = string(&gnames[pos]); pos += (int)snames[s].size() + 1; } }
+
+    // ---- 3a. batched topography elevation: one Allreduce over all stations ----
+    // Each rank interpolates topography locally for every station (returning a
+    // sentinel where the (x,y) column isn't in its subdomain); one MPI_MAX
+    // reduction then yields the true elevation, replacing the per-station
+    // Allreduce the TimeSeries ctor would otherwise do.
+    vector<double> zTopo(total, 0.0);
+    if (ew->topographyExists()) {
+      vector<float_sw4> zloc(total), zglob(total);
+      for (int s = 0; s < total; s++) {
+        float_sw4 zt;
+        if (!ew->m_gridGenerator->interpolate_topography(ew, gcoord[3*s], gcoord[3*s+1], zt, ew->mTopoGridExt))
+          zt = -1e38;
+        zloc[s] = zt;
+      }
+      MPI_Allreduce(zloc.data(), zglob.data(), total, ew->m_mpifloat, MPI_MAX, comm);
+      for (int s = 0; s < total; s++) zTopo[s] = zglob[s];
+    }
+
+    // ---- 3b. construct TimeSeries objects (no per-station collectives) ----
+    double t0con = MPI_Wtime();
+    int base = (int)(*GlobalTimeSeries)[event].size();
+    for (int s = 0; s < total; s++) {
+      TimeSeries *ts_ptr = new TimeSeries(ew, snames[s], snames[s], mode, false, false, true,
+                                          outFileName, gcoord[3*s], gcoord[3*s+1], gcoord[3*s+2],
+                                          gflag[2*s+1] != 0, writeEvery, downSample,
+                                          gflag[2*s] == 0, event,
+                                          /*deferCollectives=*/true, (float_sw4)zTopo[s]);
+      if ((*GlobalTimeSeries)[event].size() == 0) {
+        ts_ptr->allocFid();
+        ts_ptr->setTS0Ptr(ts_ptr);
+      }
+      else {
+        ts_ptr->setFidPtr((*GlobalTimeSeries)[event][0]->getFidPtr());
+        ts_ptr->setTS0Ptr((*GlobalTimeSeries)[event][0]);
+      }
+      (*GlobalTimeSeries)[event].push_back(ts_ptr);
+    }
+
+    // ---- 3c. batched "exactly one owner" safety check: one Allreduce ----
+    {
+      vector<int> owned(total), ownsum(total);
+      for (int s = 0; s < total; s++)
+        owned[s] = (*GlobalTimeSeries)[event][base + s]->myPoint() ? 1 : 0;
+      MPI_Allreduce(owned.data(), ownsum.data(), total, MPI_INT, MPI_SUM, comm);
+      if (rank == 0) {
+        int nbad = 0;
+        for (int s = 0; s < total; s++) if (ownsum[s] != 1) nbad++;
+        if (nbad > 0)
+          printf("readStationHDF5: WARNING, %d of %d stations are not owned by exactly one rank\n",
+                 nbad, total);
+      }
+    }
+
+    if (rank == 0) {
+      printf("readStationHDF5: constructed %d TimeSeries in %.2f s (total station setup %.2f s)\n",
+             total, MPI_Wtime() - t0con, MPI_Wtime() - t0all);
+      fflush(stdout);
+    }
+    return;
+  }
+
+  // is_obs == true (observation command): each owning rank must read its
+  // own SAC/HDF5 waveform data out of the same file via readSACHDF5(), so
+  // every rank still needs its own file handle - left as a per-rank
+  // H5Literate traversal.
   hid_t fid, fapl;
 
   struct traverse_data_t tData;
@@ -399,14 +736,14 @@ void readStationHDF5(EW* ew, string inFileName, string outFileName, int writeEve
 
 static herr_t traverse_func2 (hid_t loc_id, const char *grp_name, const H5L_info_t *info, void *operator_data)
 {
-  hid_t grp, dset, attr;
+  hid_t grp = -1, dset = -1, attr = -1;
   herr_t status;
 #if H5_VERSION_GE(1,12,0)
   H5O_info1_t infobuf;
 #else
   H5O_info_t infobuf;
 #endif
-  float data[3];
+  double data[3]; // read with H5T_NATIVE_DOUBLE below (was float[3]: stack overflow)
   int isnsew, ret;
 
   ASSERT(operator_data != NULL);
@@ -443,7 +780,7 @@ static herr_t traverse_func2 (hid_t loc_id, const char *grp_name, const H5L_info
       dset = H5Dopen(grp, "STX,STY,STZ", H5P_DEFAULT);
       if (dset < 0)
         fprintf(stderr, "Error reading from rechdf5 station %s, STX,STY,STZ open failed!\n", grp_name);
-      ASSERT(attr > 0);
+      ASSERT(dset > 0);
       ret = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
       ASSERT(ret >= 0);
       H5Dclose(dset);
@@ -453,7 +790,7 @@ static herr_t traverse_func2 (hid_t loc_id, const char *grp_name, const H5L_info
       dset = H5Dopen(grp, "STLA,STLO,STDP", H5P_DEFAULT);
       if (dset < 0)
         fprintf(stderr, "Error reading from rechdf5 station %s, STLA,STLO,STDP open failed!\n", grp_name);
-      ASSERT(attr > 0);
+      ASSERT(dset > 0);
       ret = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
       ASSERT(ret >= 0);
       H5Dclose(dset);
@@ -507,7 +844,7 @@ void readStationInfoHDF5(string inFileName, vector<string> *staname, vector<doub
   return;
 }
 
-void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSources, EW *ew, int event, float_sw4 m_global_xmax, float_sw4 m_global_ymax, float_sw4 m_global_zmax, float_sw4 mGeoAz, float_sw4 xmin, float_sw4 ymin, float_sw4 zmin, int mVerbose, int nreader)
+void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSources, EW *ew, int event, float_sw4 m_global_xmax, float_sw4 m_global_ymax, float_sw4 m_global_zmax, float_sw4 mGeoAz, float_sw4 xmin, float_sw4 ymin, float_sw4 zmin, int mVerbose, int nreader, bool skip_outside)
 {
   bool is_debug = true;
   int world_rank, world_size;
@@ -569,101 +906,143 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
   int npts = 0, nseg = 0, nsr1 = 0;
   hsize_t dims;
   double rVersion;
-  int nSources=0, nu1=0, nu2=0, nu3=0;
+  int nSources=0, nu1=0, nu2=0, nu3=0, nskip_zero_slip=0;
 
   stime = MPI_Wtime();
-  // Only rank 0 reads data, then broadcast to all other processes
+  // Reader ranks (read_color == 0, always including rank 0) read the file and
+  // broadcast it to the other ranks of their node_comm. Any problem with the
+  // file is a fatal input error: the reader that finds it prints the message,
+  // then all ranks agree on the error (Allreduce) and abort together. Before
+  // this, a missing file/POINTS/SR1 left the run going with no source.
+  int rd_err = 0;
+  std::stringstream rd_msg;
+  point_data = NULL;
+  sr_data = NULL;
   if (read_color == 0) {
 
     fapl = H5Pcreate(H5P_FILE_ACCESS);
     H5Pset_fapl_mpio(fapl, read_comm, MPI_INFO_NULL);
-    fid = H5Fopen(fname, H5F_ACC_RDONLY, fapl);
-    if (fid <= 0) 
-      cout << "Rupture HDF5 file " << fname << " not found" << endl;
-    
-    if (world_rank == 0) 
-      printf("Opened rupture file '%s'\n", fname);
+    // H5Fopen of a missing file would print the HDF5 error stack: check first.
+    if (access(fname, R_OK) != 0) {
+      fid = -1;
+    } else {
+      fid = H5Fopen(fname, H5F_ACC_RDONLY, fapl);
+    }
+    H5Pclose(fapl);
+    if (fid < 0) {
+      rd_err = 1;
+      rd_msg << "Rupture HDF5 file '" << fname << "' not found or not a readable HDF5 file";
+    }
 
-    attr = H5Aopen(fid, "VERSION", H5P_DEFAULT);
-    H5Aread(attr, H5T_NATIVE_DOUBLE, &rVersion);
-    H5Aclose(attr);
-    if (world_rank == 0) 
-      printf("Version = %.1f\n", rVersion);
+    if (!rd_err) {
+      if (world_rank == 0)
+        printf("Opened rupture file '%s'\n", fname);
 
-    // read each header block
-    attr = H5Aopen(fid, "PLANE", H5P_DEFAULT);
-    aspace = H5Aget_space(attr);
-    H5Sget_simple_extent_dims(aspace, &dims, NULL);
-    nseg = (int)dims;
-    srf_metadata = (struct srf_meta_t *)malloc(nseg * sizeof(struct srf_meta_t));
-    H5Sclose(aspace);
-    if (world_rank == 0) 
-      printf("Number of segments in header block: %i\n", nseg);
-    H5Aread(attr, ctype, srf_metadata);
-    H5Aclose(attr);
+      // VERSION and PLANE are informational only: warn if absent.
+      if (H5Aexists(fid, "VERSION") > 0) {
+        attr = H5Aopen(fid, "VERSION", H5P_DEFAULT);
+        H5Aread(attr, H5T_NATIVE_DOUBLE, &rVersion);
+        H5Aclose(attr);
+        if (world_rank == 0)
+          printf("Version = %.1f\n", rVersion);
+      } else if (world_rank == 0)
+        printf("WARNING: rupture HDF5 file '%s' has no VERSION attribute\n", fname);
 
-    if (world_rank == 0) {
-      for (int seg=0; seg<nseg; seg++) {
-        printf("Seg #%i: elon=%g, elat=%g, nstk=%i, ndip=%i, len=%g, wid=%g\n", 
-                seg+1, srf_metadata[seg].elon, srf_metadata[seg].elat, srf_metadata[seg].nstk, srf_metadata[seg].ndip, srf_metadata[seg].len, srf_metadata[seg].wid);
-        printf("        stk=%g, dip=%g, dtop=%g, shyp=%g, dhyp=%g\n", 
-                srf_metadata[seg].stk, srf_metadata[seg].dip, srf_metadata[seg].dtop, srf_metadata[seg].shyp, srf_metadata[seg].dhyp);
+      if (H5Aexists(fid, "PLANE") > 0) {
+        attr = H5Aopen(fid, "PLANE", H5P_DEFAULT);
+        aspace = H5Aget_space(attr);
+        H5Sget_simple_extent_dims(aspace, &dims, NULL);
+        nseg = (int)dims;
+        srf_metadata = (struct srf_meta_t *)malloc(nseg * sizeof(struct srf_meta_t));
+        H5Sclose(aspace);
+        if (world_rank == 0)
+          printf("Number of segments in header block: %i\n", nseg);
+        H5Aread(attr, ctype, srf_metadata);
+        H5Aclose(attr);
+
+        if (world_rank == 0) {
+          for (int seg=0; seg<nseg; seg++) {
+            printf("Seg #%i: elon=%g, elat=%g, nstk=%i, ndip=%i, len=%g, wid=%g\n",
+                    seg+1, srf_metadata[seg].elon, srf_metadata[seg].elat, srf_metadata[seg].nstk, srf_metadata[seg].ndip, srf_metadata[seg].len, srf_metadata[seg].wid);
+            printf("        stk=%g, dip=%g, dtop=%g, shyp=%g, dhyp=%g\n",
+                    srf_metadata[seg].stk, srf_metadata[seg].dip, srf_metadata[seg].dtop, srf_metadata[seg].shyp, srf_metadata[seg].dhyp);
+          }
+        }
+        free(srf_metadata);
+      } else if (world_rank == 0)
+        printf("WARNING: rupture HDF5 file '%s' has no PLANE attribute\n", fname);
+
+      if (H5Lexists(fid, "POINTS", H5P_DEFAULT) <= 0) {
+        rd_err = 2;
+        rd_msg << "Rupture HDF5 file '" << fname << "' has no POINTS dataset";
+      } else {
+        dset = H5Dopen(fid, "POINTS", H5P_DEFAULT);
+        dspace = H5Dget_space(dset);
+        H5Sget_simple_extent_dims(dspace, &dims, NULL);
+        npts = (int)dims;
+        if (world_rank == 0)
+          printf("Number of point sources in data block: %i\n", npts);
+
+        point_data = (struct srf_data_t*)malloc(npts*sizeof(struct srf_data_t));
+        if (H5Dread(dset, dtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, point_data) < 0) {
+          rd_err = 2;
+          rd_msg << "Rupture HDF5 file '" << fname << "': could not read the POINTS dataset";
+        }
+        H5Sclose(dspace);
+        H5Dclose(dset);
       }
     }
 
-    free(srf_metadata);
-    dset = H5Dopen(fid, "POINTS", H5P_DEFAULT);
-    if (dset < 0) {
-      printf("Error with Rupture HDF5 file, no POINTS dataset found!\n");
-      npts = -1;
-    }
-    else {
-      dspace = H5Dget_space(dset);
- 
-      H5Sget_simple_extent_dims(dspace, &dims, NULL);
-      npts = (int)dims;
-      if (world_rank == 0) 
-        printf("Number of point sources in data block: %i\n", npts);
+    if (!rd_err) {
+      if (H5Lexists(fid, "SR1", H5P_DEFAULT) <= 0) {
+        rd_err = 3;
+        rd_msg << "Rupture HDF5 file '" << fname << "' has no SR1 dataset";
+      } else {
+        dset = H5Dopen(fid, "SR1", H5P_DEFAULT);
+        dspace = H5Dget_space(dset);
+        H5Sget_simple_extent_dims(dspace, &dims, NULL);
+        nsr1 = (int)dims;
 
-      point_data = (struct srf_data_t*)malloc(npts*sizeof(struct srf_data_t));
-      H5Dread(dset, dtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, point_data);
-      H5Sclose(dspace);
-      H5Dclose(dset);
-    }
-
-    dset = H5Dopen(fid, "SR1", H5P_DEFAULT);
-    if (dset < 0) {
-      printf("Error with Rupture HDF5 file, no SR1 dataset found!\n");
-      nsr1 = -1;
-    }
-    else {
-      dspace = H5Dget_space(dset);
- 
-      H5Sget_simple_extent_dims(dspace, &dims, NULL);
-      nsr1 = (int)dims;
-
-      sr_data = (float*)malloc(nsr1*sizeof(float));
-      H5Dread(dset, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, sr_data);
-      H5Sclose(dspace);
-      H5Dclose(dset);
+        sr_data = (float*)malloc(nsr1*sizeof(float));
+        if (H5Dread(dset, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, sr_data) < 0) {
+          rd_err = 3;
+          rd_msg << "Rupture HDF5 file '" << fname << "': could not read the SR1 dataset";
+        }
+        H5Sclose(dspace);
+        H5Dclose(dset);
+      }
     }
 
-    H5Fclose(fid);
+    if (!rd_err) {
+      // The slip-rate time series of all points are concatenated in SR1:
+      // it must hold sum(NT1) values, otherwise we would read past its end.
+      long long nt1sum = 0;
+      for (int pts = 0; pts < npts; pts++)
+        if (point_data[pts].nt1 > 0) nt1sum += point_data[pts].nt1;
+      if (nt1sum > nsr1) {
+        rd_err = 4;
+        rd_msg << "Rupture HDF5 file '" << fname << "': POINTS NT1 sum to " << nt1sum
+               << " slip-rate samples but SR1 only has " << nsr1;
+      }
+    }
+
+    if (fid >= 0)
+      H5Fclose(fid);
+    if (rd_err)
+      std::cout << "Fatal input error: rupturehdf5: " << rd_msg.str() << '\n' << std::flush;
   }// End read_color=0
   etime = MPI_Wtime();
 
-  if (is_debug && world_rank == 0) 
+  int rd_err_all = 0;
+  MPI_Allreduce(&rd_err, &rd_err_all, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  if (rd_err_all)
+    MPI_Abort(MPI_COMM_WORLD, 1);
+
+  if (is_debug && world_rank == 0)
       printf("Read SRF-HDF5 takes %.2f seconds\n", etime-stime);
 
   MPI_Bcast(&npts, 1, MPI_INT, 0, node_comm);
-  /* MPI_Bcast(&npts, 1, MPI_INT, 0, MPI_COMM_WORLD); */
-  if (npts == -1) 
-    return;
-
   MPI_Bcast(&nsr1, 1, MPI_INT, 0, node_comm);
-  /* MPI_Bcast(&nsr1, 1, MPI_INT, 0, MPI_COMM_WORLD); */
-  if (nsr1 == -1) 
-    return;
 
   if (read_color != 0) {
     point_data = (struct srf_data_t*)malloc(npts*sizeof(struct srf_data_t));
@@ -671,16 +1050,13 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
   }
 
   MPI_Bcast(point_data, npts*sizeof(struct srf_data_t), MPI_CHAR, 0, node_comm);
-  /* MPI_Bcast(point_data, npts*sizeof(struct srf_data_t), MPI_CHAR, 0, MPI_COMM_WORLD); */
-
   MPI_Bcast(sr_data, nsr1, MPI_FLOAT, 0, node_comm);
-  /* MPI_Bcast(sr_data, nsr1, MPI_FLOAT, 0, MPI_COMM_WORLD); */
   stime = MPI_Wtime();
 
   MPI_Comm_free(&node_comm);
   MPI_Comm_free(&read_comm);
 
-  if (is_debug && world_rank == 0) 
+  if (is_debug && world_rank == 0)
       printf("Bcast SRF-HDF5 takes %.2f seconds\n", stime-etime);
 
   Source* sourcePtr;
@@ -698,10 +1074,12 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
   float_sw4* par=NULL;
   int* ipar=NULL;
   int npar=0, nipar=0, ncyc=0, sr1pos=0;
+  int noutside = 0;
+  const int max_outside_report = 10;
   // read all point sources
-  for (int pts=0; pts<npts; pts++) 
+  for (int pts=0; pts<npts; pts++)
   {
-    double lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, slip2, slip3;
+    double lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, slip2, slip3, vs, den;
     int nt1, nt2, nt3;
 
     lon = (double)point_data[pts].lon;
@@ -723,7 +1101,7 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
     // nothing to do if nt1=nt2=nt3=0
     if (nt1<=0 && nt2<=0 && nt3<=0) continue;
 
-    if (world_rank == 0 && mVerbose >= 2)
+    if (world_rank == 0 && mVerbose >= 3)
     {
       printf("point #%i: lon=%g, lat=%g, dep=%g, stk=%g, dip=%g, area=%g, tinit=%g, dt=%g\n", 
              pts+1, lon, lat, dep, stk, dip, area, tinit, dt);
@@ -773,24 +1151,39 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
       }
       slip_sum *=dt;
   
-      if (world_rank == 0 && mVerbose >= 2)
+      if (world_rank == 0 && mVerbose >= 3)
       {
          printf("INFO: SRF file: dt*sum(slip_vel)=%e [m], total slip (from header)=%e [m]\n", slip_sum, slip_m);
       }
-      // scale time series to sum to integrate to one        
-      for (int i=1; i<=nt1dim+1; i++)
+      float_sw4 slip_sum_tol = sizeof(float_sw4) == sizeof(float) ? 1e-4 : 1e-12;
+      bool skip_zero_slip_point = false;
+      if( slip_sum > -slip_sum_tol && slip_sum < slip_sum_tol )
       {
-         par[i] /= slip_sum;
+        nskip_zero_slip++;
+        skip_zero_slip_point = true;
+        if( world_rank == 0 && nskip_zero_slip <= 10 )
+        {
+          printf("WARNING: skipping rupture point #%i because dt*sum(slip_vel)=%e [m], total slip (from header)=%e [m]\n",
+                 pts+1, slip_sum, slip_m);
+        }
       }
-      if (world_rank == 0 && mVerbose >= 2)
+      // scale time series to sum to integrate to one
+      if( !skip_zero_slip_point )
       {
-         slip_sum=0;
-         for (int i=1; i<=nt1dim+1; i++)
-         {
-            slip_sum += par[i];
-         }
-         slip_sum *=dt;
-         printf("INFO: SRF file: After scaling time series: dt*sum(par)=%e [m]\n", slip_sum);
+        for (int i=1; i<=nt1dim+1; i++)
+        {
+           par[i] /= slip_sum;
+        }
+        if (world_rank == 0 && mVerbose >= 3)
+        {
+           slip_sum=0;
+           for (int i=1; i<=nt1dim+1; i++)
+           {
+              slip_sum += par[i];
+           }
+           slip_sum *=dt;
+           printf("INFO: SRF file: After scaling time series: dt*sum(par)=%e [m]\n", slip_sum);
+        }
       }
       //done scaling        
       
@@ -809,7 +1202,9 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
   // convert strike, dip, rake to Mij
       float_sw4 radconv = M_PI / 180.;
       float_sw4 S, D, R;
-      stk -= mGeoAz; // subtract off the grid azimuth
+      // SRF STK is a bearing from TRUE north; the grid x-axis points at true
+      // azimuth mGeoAz + gamma (gamma = meridian convergence at the subfault).
+      stk -= mGeoAz + ew->computeMeridianConvergence(lon, lat);
       S = stk*radconv; D = dip*radconv; R = rake*radconv;
     
       mxx = -1.0 * ( sin(D) * cos(R) * sin (2*S) + sin(2*D) * sin(R) * sin(S)*sin(S) );
@@ -831,15 +1226,19 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
   
   // before creating the source, make sure (x,y,z) is inside the computational domain
   
-  // only check the z>zmin when we have topography. For a flat free surface, we will remove sources too 
+  // only check the z>zmin when we have topography. For a flat free surface, we will remove sources too
   // close or above the surface in the call to mGlobalUniqueSources[i]->correct_Z_level()
-  
+  // Every rank holds the same point data, so all ranks agree on noutside.
+  // Points with zero slip would be skipped anyway and are not counted.
+
       if (x < xmin || x > m_global_xmax || y < ymin || y > m_global_ymax || z < zmin || z > m_global_zmax)
       {
+       if (!skip_zero_slip_point && ++noutside <= max_outside_report)
+       {
         stringstream sourceposerr;
         sourceposerr << endl
                      << "***************************************************" << endl
-                     << " ERROR:  Source positioned outside grid!  " << endl
+                     << (skip_outside ? " WARNING:" : " ERROR:") << "  Source positioned outside grid!  \n"
                      << endl
                      << " Source from rupture file @" << endl
                      << "  x=" << x << " y=" << y << " z=" << z << endl 
@@ -867,8 +1266,9 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
         sourceposerr << "***************************************************" << endl;
         if (world_rank == 0)
           cout << sourceposerr.str();
+       }
       }
-      else
+      else if( !skip_zero_slip_point )
       {
         sourcePtr = new Source(ew, freq, t0, x, y, z, mxx, mxy, mxz, myy, myz, mzz,
                                tDep, formstring, topodepth, ncyc, par, npar, ipar, nipar, true ); // true is correctStrengthForMu
@@ -911,6 +1311,28 @@ void readRuptureHDF5(char *fname, vector<vector<Source*> > & a_GlobalUniqueSourc
   } // end for all sources
   if (world_rank == 0)
     printf("Read npts=%i, made %i point moment tensor sources, nu1=%i, nu2=%i, nu3=%i\n", npts, nSources, nu1, nu2, nu3);
+  if (world_rank == 0 && nskip_zero_slip > 0)
+    printf("Skipped %i rupture points with zero slip-velocity integral in u1.\n", nskip_zero_slip);
+  if (noutside > 0)
+  {
+    if (skip_outside)
+    {
+      if (world_rank == 0)
+        printf("WARNING: dropped %i rupture points positioned outside grid (outside=skip)\n", noutside);
+    }
+    else
+    {
+      if (world_rank == 0)
+        std::cout << "Fatal input error: rupturehdf5: " << noutside << " of " << npts
+                  << " rupture points in '" << fname << "' are positioned outside grid"
+                  << (noutside > max_outside_report ? " (first ones listed above)." : ".")
+                  << " Enlarge the domain, or add outside=skip to the rupturehdf5 command"
+                  << " to drop these points." << '\n' << std::flush;
+      // Make sure rank 0 has printed before anyone aborts.
+      MPI_Barrier(MPI_COMM_WORLD);
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+  }
 
   etime = MPI_Wtime();
   if (is_debug && world_rank == 0) 

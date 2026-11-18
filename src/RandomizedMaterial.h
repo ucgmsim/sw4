@@ -52,8 +52,8 @@ public:
 		       float_sw4 corrlenz, float_sw4 hurst, float_sw4 sigma, 
 		       float_sw4 rhoamplitude=0.0, bool randomrho=false, unsigned int seed=0 );
   ~RandomizedMaterial();
-  void perturb_velocities( int g, Sarray& cs, Sarray& cp, 
-			   double h, double zmin, double zmax );
+  void perturb_velocities( int g, Sarray& cs, Sarray& cp,
+			   float_sw4 h, float_sw4 zmin, float_sw4 zmax );
 
 
   void perturb_velocities( std::vector<Sarray> & cs, std::vector<Sarray> & cp ); 

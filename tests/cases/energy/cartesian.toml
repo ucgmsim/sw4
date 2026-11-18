@@ -1,0 +1,39 @@
+description = "EN-01: Cartesian grid, free surface, Dirichlet sides, no damping: the energy is conserved to round-off."
+labels = ["energy"]
+input = "energy.in"
+ranks = 4
+
+[params]
+xy = 30.0
+cfl = 0.9
+dev = ""
+z = 17.0
+nx = 41
+t = 30.0
+topo = ""
+refinements = ""
+atten = ""
+sg = ""
+cpcs = 1.732
+bch = "dirichlet"
+teextra = ""
+
+[[run]]
+name = "pr"
+
+[[run]]
+name = "long"
+tier = "nightly"
+params = { t = 300.0 }
+
+[[check]]
+name = "energy"
+kind = "energy"
+runs = ["pr"]
+mode = "conserve"
+
+[[check]]
+name = "energy-long"
+kind = "energy"
+runs = ["long"]
+mode = "conserve"

@@ -1,0 +1,39 @@
+description = "MMS-09: twilight with lambda/mu large (Vp/Vs about 3.5). Asserts 4th order."
+labels = ["mms", "twilight"]
+input = "highvpvs.in"
+ranks = 4
+
+[params]
+t = 0.8
+cfl = 0.9
+
+[[run]]
+name = "h1"
+params = { nx = 31, h = 0.03333333333333333 }
+
+[[run]]
+name = "h2"
+params = { nx = 61, h = 0.016666666666666666 }
+
+[[run]]
+name = "h3"
+tier = "nightly"
+params = { nx = 121, h = 0.008333333333333333 }
+
+[[check]]
+name = "golden"
+kind = "twilight_golden"
+runs = ["h1", "h2"]
+
+[[check]]
+name = "rate"
+kind = "rate"
+runs = ["h1", "h2"]
+expect = 4.0
+band = 0.4
+
+[[check]]
+name = "rate-nightly"
+kind = "rate"
+expect = 4.0
+band = 0.4

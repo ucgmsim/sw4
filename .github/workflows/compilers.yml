@@ -1,0 +1,53 @@
+name: compilers
+
+# Build SW4 through CMake with each supported compiler family, in both
+# precisions. This catches code one compiler accepts and another rejects
+# (e.g. a misplaced pragma, a float/double overload) before it reaches a
+# cluster where only that other compiler is installed.
+
+on:
+  push:
+    branches: [ master, single_precision ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.compiler }} / ${{ matrix.precision }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [ gcc, clang, intel, aocc ]
+        precision: [ double, float ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ${{ matrix.compiler }} and dependencies
+        run: .github/ci/install-compiler.sh ${{ matrix.compiler }}
+
+      - name: Build
+        run: .github/ci/build.sh ${{ matrix.compiler }} ${{ matrix.precision }} build
+
+  # clang-tidy (checks in .clang-tidy) on only the lines this pull request
+  # adds or changes. Existing code is not held to the checks until touched.
+  static-analysis:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # HEAD is the PR merged into its base; HEAD^1 is the base
+
+      - name: Install clang-tidy and dependencies
+        run: .github/ci/install-compiler.sh clang
+
+      - name: clang-tidy on changed lines
+        run: .github/ci/static-analysis.sh HEAD^1

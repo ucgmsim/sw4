@@ -1,146 +1,197 @@
-# The name of our project is "SW4". CMakeLists files in this project can 
-# refer to the root source directory of the project as ${SW4_SOURCE_DIR} and 
-# to the root binary directory of the project as ${SW4_BINARY_DIR}. 
-CMAKE_MINIMUM_REQUIRED(VERSION 3.12)
-PROJECT(SW4 C CXX Fortran)
-ENABLE_LANGUAGE(Fortran)
-CMAKE_POLICY(SET CMP0028 NEW) # Double colon in target name means ALIAS or IMPORTED target.
-CMAKE_POLICY(SET CMP0074 NEW)
+cmake_minimum_required(VERSION 3.16)
 
-# Add extra CMake module path (is it still neeed?)
-SET(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/configs/")
+# Prefer the MPI compiler wrappers as the project's compilers, unless the user
+# already picked one explicitly (via -DCMAKE_<LANG>_COMPILER=... or the CC/CXX/FC
+# environment variables). This must happen before project(), since a language's
+# compiler can only be chosen before it is first detected.
+#
+# Why: find_package(MPI) below still works with a plain (non-wrapper) compiler,
+# but then has to derive the right MPI include/library flags itself, usually by
+# scraping the output of `mpicc -show` and friends. That heuristic is fragile
+# across MPI implementations/versions -- e.g. on mahuika with OpenMPI 5.0.10 +
+# GCC 15.2.0, it fails outright ("Could NOT find MPI_C (missing: MPI_C_WORKS)")
+# even though mpicc/mpicxx/mpifort are on PATH and work fine invoked directly.
+# Using the wrapper as CMAKE_<LANG>_COMPILER sidesteps that derivation entirely:
+# the wrapper already knows its own flags, and FindMPI recognizes an MPI-aware
+# compiler immediately.
+if(NOT CMAKE_C_COMPILER AND NOT DEFINED ENV{CC})
+  find_program(SW4_MPICC_EXECUTABLE NAMES mpicc)
+  if(SW4_MPICC_EXECUTABLE)
+    set(CMAKE_C_COMPILER "${SW4_MPICC_EXECUTABLE}")
+  endif()
+endif()
+if(NOT CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
+  find_program(SW4_MPICXX_EXECUTABLE NAMES mpicxx mpic++)
+  if(SW4_MPICXX_EXECUTABLE)
+    set(CMAKE_CXX_COMPILER "${SW4_MPICXX_EXECUTABLE}")
+  endif()
+endif()
+# There does not appear be any fortran code calling MPI so turning off
+#if(NOT CMAKE_Fortran_COMPILER AND NOT DEFINED ENV{FC})
+#  find_program(SW4_MPIFORT_EXECUTABLE NAMES mpifort mpif90)
+#  if(SW4_MPIFORT_EXECUTABLE)
+#    set(CMAKE_Fortran_COMPILER "${SW4_MPIFORT_EXECUTABLE}")
+#  endif()
+#endif()
 
-# Enable testing framework
-INCLUDE(CTest)
+project(SW4 C CXX Fortran)
 
-MACRO (TODAY RESULT)
-    IF (WIN32)
-        EXECUTE_PROCESS(COMMAND "date" "/T" OUTPUT_VARIABLE ${RESULT})
-        STRING(REGEX REPLACE "(..)/(..)/..(..).*" "\\3\\2\\1" ${RESULT} ${${RESULT}})
-    ELSEIF(UNIX)
-        EXECUTE_PROCESS(COMMAND "date" "+%d/%m/%Y" OUTPUT_VARIABLE ${RESULT})
-        STRING(REGEX REPLACE "(..)/(..)/..(..).*" "\\3\\2\\1" ${RESULT} ${${RESULT}})
-    ELSE (WIN32)
-        MESSAGE(SEND_ERROR "date not implemented")
-        SET(${RESULT} 000000)
-    ENDIF (WIN32)
-ENDMACRO (TODAY)
+# The sources use C++17 features (e.g. `if constexpr` in rhs4th3fortc.C). Without
+# an explicit standard each compiler uses its own default, and those older than
+# C++17 (e.g. Apple clang) emit a -Wc++17-extensions warning for every use.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# If the user doesn't specify, build the release version by default
-IF (NOT CMAKE_BUILD_TYPE)
-    SET(CMAKE_BUILD_TYPE Release)
-ENDIF (NOT CMAKE_BUILD_TYPE)
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/configs/")
 
-SET(CMAKE_Fortran_MODULE_DIRECTORY "${SW4_BINARY_DIR}/include")
-SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${SW4_BINARY_DIR}/bin")
-SET(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${SW4_BINARY_DIR}/lib")
+include(CTest)
 
-# Use the preprocessor to handle #ifdefs
-SITE_NAME(HOSTNAME)
-SET(USERNAME $ENV{USER})
-TODAY(CURDATETIME)
-ADD_DEFINITIONS(-DEW_MADEBY="${USERNAME}" -DEW_OPT_LEVEL="${CMAKE_BUILD_TYPE}" -DEW_COMPILER="${CMAKE_CXX_COMPILER}" -DEW_LIBDIR="NA" -DEW_INCDIR="NA" -DEW_HOSTNAME="${HOSTNAME}" -DEW_WHEN="${CURDATETIME}")
+macro(today RESULT)
+  if(WIN32)
+    execute_process(COMMAND "date" "/T" OUTPUT_VARIABLE ${RESULT})
+    string(REGEX REPLACE "(..)/(..)/..(..).*" "\\3\\2\\1" ${RESULT} ${${RESULT}})
+  elseif(UNIX)
+    execute_process(COMMAND "date" "+%d/%m/%Y" OUTPUT_VARIABLE ${RESULT})
+    string(REGEX REPLACE "(..)/(..)/..(..).*" "\\3\\2\\1" ${RESULT} ${${RESULT}})
+  else()
+    message(SEND_ERROR "date not implemented")
+    set(${RESULT} 000000)
+  endif()
+endmacro()
 
-# Look for MPI and add the required flags if found
-FIND_PACKAGE(MPI REQUIRED)
-ADD_DEFINITIONS(${MPI_C_COMPILE_FLAGS})
-INCLUDE_DIRECTORIES(${MPI_C_INCLUDE_PATH})
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING
+      "Build type (Debug, Release, RelWithDebInfo, MinSizeRel)" FORCE)
+endif()
 
-# Allow a shorter version of the PROJ directory definition
-IF (NOT PROJ_OSGEO4W_HOME)
-    SET(PROJ_OSGEO4W_HOME ${PROJ_HOME})
-ENDIF (NOT PROJ_OSGEO4W_HOME)
+set(CMAKE_Fortran_MODULE_DIRECTORY "${PROJECT_BINARY_DIR}/include")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/lib")
 
-OPTION(USE_PROJ "Use PROJ." OFF)
-IF(USE_PROJ)
-    FIND_PACKAGE(PROJ REQUIRED)
-    IF (PROJ_FOUND)
-        INCLUDE_DIRECTORIES(${PROJ_INCLUDE_DIR})
-        if(PROJ_VERSION VERSION_LESS "6.0.0")
-            MESSAGE(SEND_ERROR "PROJ library must be version 6 or higher")
-        else()
-            ADD_DEFINITIONS(-DENABLE_PROJ)
-        endif()
-    ENDIF (PROJ_FOUND)
-ENDIF (USE_PROJ)
+site_name(HOSTNAME)
+set(USERNAME $ENV{USER})
+today(CURDATETIME)
 
-OPTION(USE_HDF5 "Use HDF5." OFF)
-IF(USE_HDF5)
-    FIND_PACKAGE(HDF5 REQUIRED)
-    IF (HDF5_FOUND)
-        ADD_DEFINITIONS(-DUSE_HDF5)
-        INCLUDE_DIRECTORIES(${HDF5_INCLUDE_DIR})
-    ENDIF (HDF5_FOUND)
-ENDIF (USE_HDF5)
+find_package(MPI REQUIRED COMPONENTS C CXX)
 
-OPTION(USE_ZFP "Use ZFP compression." OFF)
-IF(USE_ZFP)
-    SET(H5Z_ZFP_USE_STATIC_LIBS ON)
-    FIND_PACKAGE(ZFP REQUIRED CONFIG)
-    FIND_PACKAGE(H5Z_ZFP 1.1.0 REQUIRED CONFIG)
-    ADD_DEFINITIONS(-DUSE_ZFP)
-ENDIF (USE_ZFP)
+if(NOT PROJ_OSGEO4W_HOME)
+  set(PROJ_OSGEO4W_HOME ${PROJ_HOME})
+endif()
 
-OPTION(USE_SZ "Use SZ compression." OFF)
-IF(USE_SZ)
-    FIND_PACKAGE(SZ REQUIRED)
-    IF (SZ_FOUND)
-        ADD_DEFINITIONS(-DUSE_SZ)
-        INCLUDE_DIRECTORIES(${SZ_INCLUDE_DIR})
-    ENDIF (SZ_FOUND)
-ENDIF (USE_SZ)
+option(USE_PROJ "Use PROJ." OFF)
+if(USE_PROJ)
+  find_package(PROJ REQUIRED)
+  if(PROJ_VERSION VERSION_LESS "6.0.0")
+    message(SEND_ERROR "PROJ library must be version 6 or higher")
+  endif()
+endif()
 
-OPTION(USE_FFTW3 "Use FFTW3." OFF)
-IF(USE_FFTW3)
-    FIND_PACKAGE(FFTW3 REQUIRED)
-    IF (FFTW3_FOUND)
-        ADD_DEFINITIONS(-DUSE_FFTW)
-        INCLUDE_DIRECTORIES(${FFTW3_INCLUDE_DIR})
-    ENDIF (FFTW3_FOUND)
-ENDIF (USE_FFTW3)
+option(USE_HDF5 "Use HDF5." OFF)
+if(USE_HDF5)
+  find_package(ZLIB REQUIRED)
+  find_package(HDF5 REQUIRED)
 
-# Find BLAS and LAPACK installation
-FIND_PACKAGE(BLAS REQUIRED)
-FIND_PACKAGE(LAPACK REQUIRED)
-FIND_PACKAGE(OpenMP)
+  # SW4 calls the MPI-IO driver (H5Pset_fapl_mpio, H5Pset_dxpl_mpio, ...)
+  # unconditionally, so a serial HDF5 configures fine but fails to compile
+  # much later. Fail early instead, by checking that the hdf5.h actually
+  # found defines H5_HAVE_PARALLEL. This works whether HDF5 was found through
+  # its own CMake config (HDF5 >= 1.14/2.x, which sets HDF5_PROVIDES_PARALLEL)
+  # or through CMake's FindHDF5 module (which sets HDF5_IS_PARALLEL).
+  include(CheckCXXSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state(RESET)
+  if(TARGET HDF5::HDF5)
+    set(CMAKE_REQUIRED_LIBRARIES HDF5::HDF5 MPI::MPI_CXX)
+  else()
+    set(CMAKE_REQUIRED_INCLUDES ${HDF5_INCLUDE_DIRS})
+    set(CMAKE_REQUIRED_LIBRARIES ${HDF5_LIBRARIES} MPI::MPI_CXX)
+  endif()
+  # Re-run on every configure so switching HDF5_DIR is never masked by a
+  # stale cached result.
+  unset(SW4_HDF5_IS_PARALLEL CACHE)
+  check_cxx_source_compiles("
+    #include <mpi.h>
+    #include <hdf5.h>
+    #ifndef H5_HAVE_PARALLEL
+    #error HDF5 was built without MPI support
+    #endif
+    int main() {
+      hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+      H5Pset_fapl_mpio(fapl, MPI_COMM_SELF, MPI_INFO_NULL);
+      return 0;
+    }" SW4_HDF5_IS_PARALLEL)
+  cmake_pop_check_state()
+  if(NOT SW4_HDF5_IS_PARALLEL)
+    if(HDF5_DIR)
+      set(_sw4_hdf5_where "HDF5_DIR=${HDF5_DIR}")
+    else()
+      set(_sw4_hdf5_where "include dirs: ${HDF5_INCLUDE_DIRS}")
+    endif()
+    message(FATAL_ERROR
+      "USE_HDF5=ON requires a parallel (MPI-enabled) HDF5, but the HDF5 found "
+      "(version ${HDF5_VERSION}, ${_sw4_hdf5_where}) was built "
+      "without MPI (H5_HAVE_PARALLEL is not defined in its H5pubconf.h). "
+      "Point CMake at a parallel build, e.g. -DHDF5_DIR=<prefix>/lib/cmake/hdf5 "
+      "or -DHDF5_PREFER_PARALLEL=ON, or configure with -DUSE_HDF5=OFF.")
+  endif()
 
-# Determine how to mangle names between Fortran and C
-INCLUDE(FortranCInterface)
+  # The station time-series file is built through a page buffer (sachdf5.C).
+  # Parallel HDF5 before 1.14.5 refuses a page buffer on any file, even one
+  # opened with the serial driver ("page buffering is disabled for parallel"),
+  # which leaves the file empty. Use the unpaged layout there.
+  set(SW4_HDF5_PAGED_MIN_VERSION 1.14.5)
+  if(NOT HDF5_VERSION OR HDF5_VERSION VERSION_LESS SW4_HDF5_PAGED_MIN_VERSION)
+    set(SW4_HDF5_NO_PAGED ON)
+    message(STATUS "HDF5 ${HDF5_VERSION} < ${SW4_HDF5_PAGED_MIN_VERSION}: "
+      "station HDF5 files are written unpaged (SW4_HDF5_PAGED is ignored)")
+  else()
+    set(SW4_HDF5_NO_PAGED OFF)
+  endif()
+endif()
+
+option(USE_ZFP "Use ZFP compression." OFF)
+if(USE_ZFP)
+  set(H5Z_ZFP_USE_STATIC_LIBS ON)
+  find_package(ZFP REQUIRED CONFIG)
+  find_package(H5Z_ZFP 1.1.0 REQUIRED CONFIG)
+endif()
+
+option(USE_SZ "Use SZ compression." OFF)
+if(USE_SZ)
+  find_package(SZ REQUIRED)
+endif()
+
+option(USE_FFTW3 "Use FFTW3." OFF)
+if(USE_FFTW3)
+  find_package(FFTW3 REQUIRED)
+  if(NOT FFTW3_MPI_LIBRARIES)
+    message(SEND_ERROR "FFTW3 MPI library (fftw3_mpi) is required when USE_FFTW3=ON")
+  endif()
+endif()
+
+find_package(BLAS REQUIRED)
+find_package(LAPACK REQUIRED)
+find_package(OpenMP REQUIRED)
+message(STATUS "OpenMP_CXX_FLAGS = ${OpenMP_CXX_FLAGS}")
+
+include(FortranCInterface)
 FortranCInterface_HEADER(FC.h MACRO_NAMESPACE "FC_")
-INCLUDE_DIRECTORIES(${SW4_BINARY_DIR})
-ADD_DEFINITIONS(-DCMAKE_FC_FUNC="1")
-INCLUDE_DIRECTORIES(${SW4_SOURCE_DIR}/src/double)
-INCLUDE_DIRECTORIES(${SW4_SOURCE_DIR}/src)
 
-# Check validity of different flags
-INCLUDE(CheckCXXCompilerFlag)
-CHECK_CXX_COMPILER_FLAG(-O0 COMPILER_SUPPORTS_OPT0_FLAG)
-CHECK_CXX_COMPILER_FLAG(-O3 COMPILER_SUPPORTS_OPT3_FLAG)
-CHECK_CXX_COMPILER_FLAG(-g COMPILER_SUPPORTS_DEBUG_FLAG)
+option(USE_DOUBLE "Use double precision" ON)
 
-# Define debug vs release compiler flags
-IF(COMPILER_SUPPORTS_OPT0_FLAG)
-    SET(DEBUG_FLAGS "${DEBUG_FLAGS} -O0")
-ENDIF(COMPILER_SUPPORTS_OPT0_FLAG)
+set(SW4_ARCH_FLAGS "" CACHE STRING
+    "Architecture-specific compiler flags. Leave empty to let SW4_TARGET pick them.")
+set(SW4_EXTRA_RELEASE_FLAGS "" CACHE STRING
+    "Extra Release-mode flags, appended after the ones SW4_TARGET selects.")
 
-IF(COMPILER_SUPPORTS_OPT3_FLAG)
-    SET(RELEASE_FLAGS "${RELEASE_FLAGS} -O3")
-    SET(RELWITHDEBINFO_FLAGS "${RELWITHDEBINFO_FLAGS} -O3")
-ENDIF(COMPILER_SUPPORTS_OPT3_FLAG)
+# Selects numerically-inert Release flags for the deployment target and the
+# compiler in use. Defines SW4_RESOLVED_ARCH_FLAGS / _CXX_OPT / _FORT_OPT.
+list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+include(SW4Optimization)
 
-IF(COMPILER_SUPPORTS_DEBUG_FLAG)
-    SET(DEBUG_FLAGS "${DEBUG_FLAGS} -g")
-    SET(RELWITHDEBINFO_FLAGS "${RELWITHDEBINFO_FLAGS} -g")
-ENDIF(COMPILER_SUPPORTS_DEBUG_FLAG)
+file(GLOB SW4_QUADPACK_SRC_FILES CONFIGURE_DEPENDS src/quadpack/*.f)
 
-SET(CMAKE_CXX_FLAGS_DEBUG ${DEBUG_FLAGS})
-SET(CMAKE_CXX_FLAGS_RELEASE ${RELEASE_FLAGS})
-SET(CMAKE_CXX_FLAGS_RELWITHDEBINFO ${RELWITHDEBINFO_FLAGS})
-
-# Define source files
-FILE(GLOB SW4_QUADPACK_SRC_FILES src/quadpack/*.f)
-
-SET(SW4_SRC_C_FILES src/main.C src/EW.C src/Sarray.C src/version.C src/parseInputFile.C
+set(SW4_SRC_C_FILES src/EW.C src/Sarray.C src/version.C src/parseInputFile.C
     src/ForcingTwilight.C src/curvilinearGrid.C src/parallelStuff.C src/Source.C
     src/MaterialProperty.C src/MaterialData.C src/material.C src/setupRun.C
     src/solve.C src/Parallel_IO.C src/Image.C src/GridPointSource.C src/MaterialBlock.C
@@ -150,7 +201,7 @@ SET(SW4_SRC_C_FILES src/main.C src/EW.C src/Sarray.C src/version.C src/parseInpu
     src/MaterialVolimagefile.C src/MaterialRfile.C src/MaterialSfile.C src/AnisotropicMaterialBlock.C
     src/sacutils.C src/DataPatches.C src/addmemvarforcing2.C src/consintp.C src/oddIoddJinterp.C
     src/evenIoddJinterp.C src/oddIevenJinterp.C src/evenIevenJinterp.C src/CheckPoint.C src/geodyn.C
-    src/AllDims.C src/Patch.C src/RandomizedMaterial.C src/MaterialInvtest.C src/sw4-prof.C
+    src/AllDims.C src/Patch.C src/RandomizedMaterial.C src/MaterialInvtest.C src/sw4-prof.C src/sw4timer.C src/sw4mpiprof.C src/sw4ompt.C
     src/sachdf5.C src/readhdf5.C src/TestTwilight.C src/TestPointSource.C src/curvilinear4sgwind.C
     src/TestEcons.C src/GridGenerator.C src/GridGeneratorGeneral.C src/GridGeneratorGaussianHill.C
     src/CurvilinearInterface2.C src/SfileOutput.C src/pseudohess.C src/fastmarching.C src/solveTT.C
@@ -161,160 +212,180 @@ SET(SW4_SRC_C_FILES src/main.C src/EW.C src/Sarray.C src/version.C src/parseInpu
     src/testsrcc.C src/rhs4th3windc.C src/tw_aniso_forcec.C src/tw_aniso_force_ttc.C src/velsumc.C 
     src/twilightfortc.C src/twilightsgfortc.C src/tw_ani_stiffc.C src/anisomtrltocurvilinearc.C 
     src/scalar_prodc.C src/updatememvarc.C src/addsg4windc.C src/bndryOpNoGhostc.C src/rhs4th3windc2.C
-    src/Sarray.h src/double/sw4.h)
+)
 
+set(SW4_SRC_F_FILES src/rayleighfort.f src/lamb_exact_numquad.f)
 
-SET(SW4_SRC_F_FILES src/rayleighfort.f src/lamb_exact_numquad.f)
+# Sources specific to the material optimization driver (sw4mopt)
+set(SW4_SRC_MOPT_FILES src/moptmain.C src/solve-backward-allpars.C src/lbfgs.C src/nlcg.C
+    src/ProjectMtrl.C src/MaterialParameterization.C src/Mopt.C src/MaterialParCartesian.C
+    src/InterpolateMaterial.C src/MaterialParCartesianVels.C src/MaterialParCartesianVp.C
+    src/MParGridFile.C src/MaterialParCartesianVsVp.C src/MaterialParAllpts.C
+    src/MaterialParCart.C src/solve-dudp.C src/MaterialParCurv.C
+)
 
-ADD_EXECUTABLE(sw4 ${SW4_SRC_C_FILES} ${SW4_SRC_F_FILES} ${SW4_QUADPACK_SRC_FILES})
-TARGET_LINK_LIBRARIES(sw4 PUBLIC ${MPI_C_LIBRARIES} ${MPI_CXX_LIBRARIES}
-                        ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES}
-                        ${PROJ_LIBRARIES} ${HDF5_LIBRARIES})
+# Interface target carrying the compile/link settings shared by every SW4 target
+add_library(sw4_config INTERFACE)
 
-IF(OpenMP_FOUND)
-    TARGET_LINK_LIBRARIES(sw4 PRIVATE OpenMP::OpenMP_CXX)
-ENDIF (OpenMP_FOUND)
+target_compile_definitions(sw4_config INTERFACE
+    EW_MADEBY="${USERNAME}"
+    EW_OPT_LEVEL="${CMAKE_BUILD_TYPE}"
+    EW_COMPILER="${CMAKE_CXX_COMPILER}"
+    EW_LIBDIR="NA"
+    EW_INCDIR="NA"
+    EW_HOSTNAME="${HOSTNAME}"
+    EW_WHEN="${CURDATETIME}"
+    CMAKE_FC_FUNC=1
+)
 
-IF (USE_FFTW3)
-    TARGET_LINK_LIBRARIES(sw4 PRIVATE fftw3)
-ENDIF (USE_FFTW3)
+option(SW4_TIMERS "Collect region timers and print a min/avg/max table at the end of the run." ON)
+option(SW4_TIMERS_MPI "Charge MPI time, bytes and messages to the timer regions (PMPI wrappers). Turn off when using another PMPI tool." ON)
+if(NOT SW4_TIMERS)
+  target_compile_definitions(sw4_config INTERFACE SW4_NO_TIMERS)
+endif()
+if(NOT SW4_TIMERS_MPI)
+  target_compile_definitions(sw4_config INTERFACE SW4_NO_MPI_TIMERS)
+endif()
 
-IF (USE_PROJ)
-    TARGET_LINK_LIBRARIES(sw4 PRIVATE PROJ::proj)
-ENDIF (USE_PROJ)
+# OpenMP thread timing through the OMPT tools interface. Needs omp-tools.h and
+# an OMPT-capable runtime (LLVM libomp, Intel libiomp5); GCC's libgomp has
+# neither, and the report then simply omits the OpenMP table.
+option(SW4_TIMERS_OMPT "Charge OpenMP parallel time and thread imbalance to the timer regions (OMPT)." ON)
+set(SW4_HAVE_OMPT OFF)
+if(SW4_TIMERS AND SW4_TIMERS_OMPT)
+  include(CheckIncludeFileCXX)
+  set(CMAKE_REQUIRED_FLAGS "${OpenMP_CXX_FLAGS}")
+  set(CMAKE_REQUIRED_INCLUDES "${OpenMP_CXX_INCLUDE_DIRS}")
+  check_include_file_cxx(omp-tools.h SW4_OMP_TOOLS_H)
+  unset(CMAKE_REQUIRED_FLAGS)
+  unset(CMAKE_REQUIRED_INCLUDES)
+  if(SW4_OMP_TOOLS_H)
+    set(SW4_HAVE_OMPT ON)
+    target_compile_definitions(sw4_config INTERFACE SW4_HAVE_OMPT)
+  endif()
+endif()
+message(STATUS "SW4 region timers: ${SW4_TIMERS}, MPI: ${SW4_TIMERS_MPI}, OpenMP (OMPT): ${SW4_HAVE_OMPT}")
 
-IF(USE_ZFP)
-    TARGET_LINK_LIBRARIES(sw4 PRIVATE h5z_zfp::h5z_zfp)
-ENDIF (USE_ZFP)
+if(USE_PROJ AND PROJ_FOUND)
+  target_compile_definitions(sw4_config INTERFACE ENABLE_PROJ)
+endif()
 
-# Show the banner once sw4 is built
-ADD_CUSTOM_COMMAND(TARGET sw4 POST_BUILD COMMAND cat ${SW4_SOURCE_DIR}/wave.txt)
+if(USE_HDF5 AND HDF5_FOUND)
+  target_compile_definitions(sw4_config INTERFACE USE_HDF5)
+  if(SW4_HDF5_NO_PAGED)
+    target_compile_definitions(sw4_config INTERFACE SW4_HDF5_NO_PAGED)
+  endif()
+endif()
 
-# Level of tests to run, corresponding to computational time
-# Level 0 tests should take just less than a minute each, level 1 tests take less than 10 minutes (includes level 0 tests)
-# and level 2 consists of all tests
-SET(TESTING_LEVEL 0 CACHE STRING "Level of testing thoroughness: 0=short tests (<1 minute each), 2=all tests (may take an hour)")
-SET(MPI_NUM_TEST_PROCS 4 CACHE STRING "Number of MPI processes to use in tests")
+if(USE_ZFP)
+  target_compile_definitions(sw4_config INTERFACE USE_ZFP)
+endif()
 
-SET(PYTEST_DIR ${SW4_SOURCE_DIR}/pytest)
-SET(REF_DIR ${SW4_SOURCE_DIR}/pytest/reference)
+if(USE_SZ AND SZ_FOUND)
+  target_compile_definitions(sw4_config INTERFACE USE_SZ)
+endif()
 
-# Define tests and tolerances
-SET(TEST_DIRS       twilight               twilight         twilight
-                    twilight               twilight         twilight
-                    attenuation            attenuation      attenuation
-                    attenuation            attenuation      attenuation
-		    meshrefine             meshrefine       meshrefine
-		    meshrefine             meshrefine       meshrefine
-                    lamb                   lamb             lamb
-                    pointsource            pointsource      pointsource)
+if(USE_FFTW3 AND FFTW3_FOUND)
+  target_compile_definitions(sw4_config INTERFACE USE_FFTW)
+endif()
 
-SET(RESULT_SUBDIRS  flat-twi-1             flat-twi-2       flat-twi-3
-                    gauss-twi-1            gauss-twi-2      gauss-twi-3
-                    tw-att-1               tw-att-2         tw-att-3
-                    tw-topo-att-1          tw-topo-att-2    tw-topo-att-3
-                    refine-el-1            refine-att-1     refine-att-2nd-1
-                    refine-el-2            refine-att-2     refine-att-2nd-2
-                    lamb-1                 lamb-2           lamb-3
-                    pointsource-sg-1       pointsource-sg-2 pointsource-sg-3)
+target_include_directories(sw4_config INTERFACE
+    "${PROJECT_BINARY_DIR}"
+    "${PROJECT_SOURCE_DIR}/src"
+)
 
-SET(TEST_IN_FILES   flat-twi-1.in          flat-twi-2.in       flat-twi-3.in
-                    gauss-twi-1.in         gauss-twi-2.in      gauss-twi-3.in
-                    tw-att-1.in            tw-att-2.in         tw-att-3.in
-                    tw-topo-att-1.in       tw-topo-att-2.in    tw-topo-att-3.in
-		    refine-el-1.in         refine-att-1.in     refine-att-2nd-1.in
-		    refine-el-2.in         refine-att-2.in     refine-att-2nd-2.in
-                    lamb-1.in              lamb-2.in           lamb-3.in
-                    pointsource-sg-1.in    pointsource-sg-2.in pointsource-sg-3.in)
+if(USE_DOUBLE)
+  target_include_directories(sw4_config INTERFACE "${PROJECT_SOURCE_DIR}/src/double")
+  message(STATUS "Precision: double (USE_DOUBLE=ON)")
+else()
+  target_include_directories(sw4_config INTERFACE "${PROJECT_SOURCE_DIR}/src/float")
+  message(STATUS "Precision: single/float (USE_DOUBLE=OFF)")
+endif()
 
-SET(TEST_BASE_FILES TwilightErr            TwilightErr             TwilightErr    
-                    TwilightErr            TwilightErr             TwilightErr    
-                    TwilightErr            TwilightErr             TwilightErr    
-                    TwilightErr            TwilightErr             TwilightErr    
-                    TwilightErr            TwilightErr             TwilightErr    
-                    TwilightErr            TwilightErr             TwilightErr
-                    LambErr                LambErr                 LambErr
-                    PointSourceErr         PointSourceErr          PointSourceErr)
+if(USE_SZ AND SZ_FOUND)
+  target_include_directories(sw4_config INTERFACE ${SZ_INCLUDE_DIR})
+endif()
 
-SET(TEST_CHECKS     compare             compare                 compare 
-                    compare             compare                 compare 
-                    compare             compare                 compare 
-                    compare             compare                 compare 
-                    compare             compare                 compare 
-		    compare             compare                 compare
-                    compare             compare                 compare
-                    compare             compare                 compare)
+string(JOIN " " SW4_RELEASE_CXX_FLAGS
+    ${SW4_RESOLVED_ARCH_FLAGS} ${SW4_RESOLVED_CXX_OPT} ${SW4_EXTRA_RELEASE_FLAGS})
+string(JOIN " " SW4_RELEASE_FORT_FLAGS
+    ${SW4_RESOLVED_ARCH_FLAGS} ${SW4_RESOLVED_FORT_OPT})
 
-SET(TEST_LEVELS     0                       0                    1
-                    0                       0                    1
-                    0                       0                    1
-                    0                       1                    2
-		    0                       0                    0
-		    1                       1                    1
-                    0                       1                    2
-                    0                       1                    2)
+target_compile_options(sw4_config INTERFACE
+    "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Debug>>:SHELL:-O0>"
+    "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:SHELL:${SW4_RELEASE_CXX_FLAGS}>"
+    "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:RelWithDebInfo>>:SHELL:-O3 ${SW4_RELEASE_CXX_FLAGS}>"
+    "$<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:Release>>:SHELL:${SW4_RELEASE_FORT_FLAGS}>"
+    "$<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:RelWithDebInfo>>:SHELL:${SW4_RELEASE_FORT_FLAGS}>"
+)
 
-SET(TEST_ERRINF_TOL 1e-5                    1e-5                 1e-5
-                    1e-5                    1e-5                 1e-5
-                    1e-5                    1e-5                 1e-5
-                    1e-5                    1e-5                 1e-5
-		    1e-5                    1e-5                 1e-5
-		    1e-5                    1e-5                 1e-5
-                    1e-5                    1e-5                 1e-5
-                    1e-5                    1e-5                 1e-5)
+# HDF5 goes first: link order also sets include-directory order, and other
+# dependencies' prefixes (e.g. PROJ in /opt/homebrew/include) may hold a
+# serial hdf5.h that would otherwise shadow the parallel one checked above.
+if(USE_HDF5 AND HDF5_FOUND)
+  target_link_libraries(sw4_config INTERFACE HDF5::HDF5)
+endif()
 
-SET(TEST_ERRL2_TOL  1e-5                    1e-5                 1e-5
-                    1e-5                    1e-5                 1e-5
-                    1e-5                    1e-5                 1e-5
-                    1e-5                    1e-5                 1e-5
-		    1e-5                    1e-5                 1e-5
-		    1e-5                    1e-5                 1e-5
-                    1e-5                    1e-5                 1e-5
-                    1e-5                    1e-5                 1e-5)
+target_link_libraries(sw4_config INTERFACE
+    MPI::MPI_C
+    MPI::MPI_CXX
+    BLAS::BLAS
+    LAPACK::LAPACK
+    OpenMP::OpenMP_CXX
+)
 
-SET(TEST_SOLINF_TOL 1e-2                    1e-2                 1e-2
-                    1e-2                    1e-2                 1e-2
-                    1e-2                    1e-2                 1e-2
-                    1e-2                    1e-2                 1e-2
-		    1e-2                    1e-2                 1e-2
-		    1e-2                    1e-2                 1e-2
-                    0                       0                    0
-                    0                       0                    0)
+if(USE_PROJ AND PROJ_FOUND)
+  target_link_libraries(sw4_config INTERFACE PROJ::proj)
+endif()
 
-LIST(LENGTH TEST_DIRS N)
-MATH(EXPR NUM_TESTS "${N}-1")
+if(USE_ZFP)
+  target_link_libraries(sw4_config INTERFACE h5z_zfp::h5z_zfp)
+endif()
 
-# Run through and register all tests within the current testing level
-FOREACH(TEST_IND RANGE ${NUM_TESTS})
-    LIST(GET TEST_LEVELS ${TEST_IND} TEST_LEVEL)
-    IF (NOT ${TESTING_LEVEL} LESS ${TEST_LEVEL})
-        LIST(GET TEST_DIRS ${TEST_IND} TEST_DIR)
-        LIST(GET RESULT_SUBDIRS ${TEST_IND} RESULT_SUBDIR)
-        SET(Test_Name ${TEST_DIR}/${RESULT_SUBDIR})
-        LIST(GET TEST_IN_FILES ${TEST_IND} TEST_IN_FILE)
-        LIST(GET TEST_BASE_FILES ${TEST_IND} TEST_BASE_FILE)
-        LIST(GET TEST_CHECKS ${TEST_IND} TEST_CHECK_TYPE)
-        LIST(GET TEST_ERRINF_TOL ${TEST_IND} ERRINF_TOL)
-        LIST(GET TEST_ERRL2_TOL ${TEST_IND} ERRL2_TOL)
-        LIST(GET TEST_SOLINF_TOL ${TEST_IND} SOLINF_TOL)
-        ADD_TEST(
-            NAME Run_${Test_Name}
-            WORKING_DIRECTORY ${SW4_BINARY_DIR}
-            COMMAND ${MPIEXEC} ${MPIEXEC_NUMPROC_FLAG} ${MPI_NUM_TEST_PROCS} ${MPIEXEC_PREFLAGS} ${MPIEXEC_POSTFLAGS}
-                ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/sw4 ${REF_DIR}/${TEST_DIR}/${TEST_IN_FILE}
-            )
+if(USE_FFTW3 AND FFTW3_FOUND)
+  target_link_libraries(sw4_config INTERFACE FFTW3::FFTW3 FFTW3::FFTW3_MPI)
+endif()
 
-        SET(TEST_REF_FILE ${REF_DIR}/${TEST_DIR}/${RESULT_SUBDIR}/${TEST_BASE_FILE}.txt)
-        SET(TEST_OUT_FILE ${SW4_BINARY_DIR}/${RESULT_SUBDIR}/${TEST_BASE_FILE}.txt)
-        ADD_TEST(
-            NAME Check_Result_${Test_Name}
-            WORKING_DIRECTORY ${SW4_BINARY_DIR}/${TEST_OUTPUT_DIR}
-            COMMAND ${PYTEST_DIR}/check_results.py ${TEST_CHECK_TYPE} ${TEST_REF_FILE} ${TEST_OUT_FILE} ${ERRINF_TOL} ${ERRL2_TOL} ${SOLINF_TOL}
-            )
-        SET_TESTS_PROPERTIES(
-            Check_Result_${Test_Name}
-            PROPERTIES DEPENDS ${Test_Name}
-            )
-    ENDIF (NOT ${TESTING_LEVEL} LESS ${TEST_LEVEL})
-ENDFOREACH(TEST_IND RANGE ${NUM_AUTO_TESTS})
+# Objects shared by sw4 and sw4mopt; compiled once, linked into both drivers
+add_library(sw4_common OBJECT ${SW4_SRC_C_FILES} ${SW4_SRC_F_FILES} ${SW4_QUADPACK_SRC_FILES})
+target_link_libraries(sw4_common PUBLIC sw4_config)
 
+add_executable(sw4 src/main.C)
+target_link_libraries(sw4 PRIVATE sw4_common)
+if(SW4_HAVE_OMPT)
+  # The OpenMP runtime looks up ompt_start_tool in the global symbol table,
+  # which on Linux only holds the executable's symbols when exported.
+  set_target_properties(sw4 PROPERTIES ENABLE_EXPORTS ON)
+endif()
+
+add_custom_command(TARGET sw4 POST_BUILD COMMAND cat ${CMAKE_SOURCE_DIR}/wave.txt)
+
+# The sw4mopt sources have not been ported to single precision: they still use
+# raw double* where the solver now expects float_sw4*, so they only compile when
+# USE_DOUBLE=ON. Default the target on accordingly.
+option(BUILD_SW4MOPT "Build the sw4mopt material optimization driver (requires USE_DOUBLE)." ${USE_DOUBLE})
+if(BUILD_SW4MOPT AND NOT USE_DOUBLE)
+  message(SEND_ERROR "BUILD_SW4MOPT requires USE_DOUBLE=ON: the sw4mopt sources are not single-precision clean.")
+endif()
+
+if(BUILD_SW4MOPT)
+  add_executable(sw4mopt ${SW4_SRC_MOPT_FILES})
+  target_link_libraries(sw4mopt PRIVATE sw4_common)
+  if(SW4_HAVE_OMPT)
+    set_target_properties(sw4mopt PROPERTIES ENABLE_EXPORTS ON)
+  endif()
+endif()
+
+include(GNUInstallDirs)
+install(TARGETS sw4 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(BUILD_SW4MOPT)
+  install(TARGETS sw4mopt RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# Tests: cases live in tests/cases/*.toml and are registered by the harness in
+# tests/harness (see tests/README.md). Select with labels: `ctest -L pr` runs
+# the pull-request tier, plain `ctest` runs everything (the nightly tier).
+if(BUILD_TESTING)
+  include(cmake/UnitTests.cmake)
+  add_subdirectory(tests)
+endif()

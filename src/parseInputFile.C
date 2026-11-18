@@ -65,6 +65,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <algorithm>
@@ -149,6 +150,20 @@ int gcd( int a, int b )
 //}
 
 //-----------------------------------------------------------------------
+bool EW::readInputLine(std::istream& in, std::vector<char>& buf)
+{
+  // std::getline has no length limit. istream::getline(buf, 256) used to set the
+  // failbit on a longer line, after which every read failed without reaching
+  // eof and the reading loops spun forever.
+  std::string line;
+  if (!std::getline(in, line))
+    return false;
+  buf.assign(line.begin(), line.end());
+  buf.push_back('\0');
+  return true;
+}
+
+//-----------------------------------------------------------------------
 bool EW::startswith(const char begin[], char *line)
 {
   int lenb = strlen(begin);
@@ -193,7 +208,7 @@ void EW::deprecatedOption(const string& command,
 bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 			 vector< vector<TimeSeries*> > & a_GlobalTimeSeries )
 {
-  char buffer[256];
+  std::vector<char> lineBuf;
   ifstream inputFile;
   int blockCount=0;
   int ablockCount=0;
@@ -214,9 +229,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 //  cout << "********Reading the input file, proc=" << m_myRank << endl;
 
 // First process Geodyn input for restrictions of allowable grid sizes.
- while (!inputFile.eof())
+ while (readInputLine(inputFile, lineBuf))
  {
-    inputFile.getline(buffer, 256);
+    char* buffer = lineBuf.data();
     if( startswith("geodynbc",buffer ) )
        geodynFindFile(buffer);
  }
@@ -225,9 +240,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 
 // process the testrayleigh command to enable a periodic domain in the (x,y)-directions
 // these commands can enter data directly the object (this->)
-  while (!inputFile.eof())
+  while (readInputLine(inputFile, lineBuf))
   {    
-     inputFile.getline(buffer, 256);
+     char* buffer = lineBuf.data();
      if (startswith("testrayleigh", buffer) )
      {
        m_doubly_periodic = true;
@@ -264,9 +279,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
 //---------------------------------------------------------------
 
 // these commands can enter data directly into the object (this->)
-  while (!inputFile.eof())
+  while (readInputLine(inputFile, lineBuf))
   {    
-     inputFile.getline(buffer, 256);
+     char* buffer = lineBuf.data();
      if( startswith("grid", buffer) )
      {
        foundGrid = true;
@@ -448,9 +463,9 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
   //----------------------------------------------------------
   // Now onto the rest of the input file...
   //----------------------------------------------------------
-  while (!inputFile.eof())
+  while (readInputLine(inputFile, lineBuf))
   {
-     inputFile.getline(buffer, 256);
+     char* buffer = lineBuf.data();
 
      if (strlen(buffer) > 0) // empty lines produce this
      {
@@ -570,10 +585,8 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
        }
        else if( startswith("randomblock", buffer ) )
           processRandomBlock(buffer);
-       else if (!inputFile.eof() && m_myRank == 0)
+       else if (m_myRank == 0)
        {
-	 // Maybe just reached eof, don't want to echo
-	 // the ignoring command line for nothing
 	 cout << "*** Ignoring command: '" << buffer << "'" << endl;
        }
      } // end if strlen(buffer) > 0
@@ -612,6 +625,20 @@ bool EW::parseInputFile( vector<vector<Source*> > & a_GlobalUniqueSources,
       cerr << "Error:  The input file is requesting a topo image but there is no topography command" << endl;
     return false;
   }
+// dt = cfl*h/sqrt((4mu+lambda)/rho) and the largest interior eigenvalue of the
+// 4th order spatial operator is (16/3)(lambda+4mu)/(rho h^2), so dt^2*eig <= (16/3)*cfl^2.
+// The 4th order time stepper is stable for dt^2*eig <= 12 (cfl 1.5), the 2nd order one
+// for dt^2*eig <= 4 (cfl sqrt(3)/2). This holds with attenuation since the memory
+// variables are recomputed from the corrected displacement (see solve.C). Boundary
+// closures, curvilinear metrics and refinement interfaces lower the practical limit.
+  const float_sw4 cflStable = mOrder == 4 ? 1.5 : 0.5*sqrt(3.0);
+  if( mCFL > cflStable )
+  {
+    if (m_myRank == 0)
+      cerr << "Error: cfl=" << mCFL << " exceeds the von Neumann stability limit " << cflStable
+           << " of the order " << mOrder << " time stepper" << endl;
+    return false;
+  }
 // if we made it this far, the object should be ready for time stepping
   return true;
 }
@@ -634,6 +661,11 @@ void EW::processGrid(char* buffer)
   bool latSet = false, lonSet = false, lon_p_set=false, lat_p_set=false, datum_set=false;
   bool ellps_set=false, proj_set=false;
   bool use_geoprojection=false;
+  bool scale_set=false;
+  double scale_k0=1.0;
+  string projName = "utm"; // the default projection
+  double lon_p = 0;
+  int utmZone = 0;
   
   stringstream proj0;
 
@@ -809,9 +841,17 @@ void EW::processGrid(char* buffer)
      {
         token +=5;
 // accumulate new style string
-        proj0 << "+proj=" << token;
+        proj0 << " +proj=" << token;
 	use_geoprojection = true;
         proj_set=true;
+        projName = token;
+     }
+     else if( startswith("zone=",token))
+     {
+        token +=5;
+        utmZone = atoi(token);
+        CHECK_INPUT( 1 <= utmZone && utmZone <= 60, "grid: UTM zone must be 1 to 60, not " << token );
+	use_geoprojection = true;
      }
 //                        123456789
      else if( startswith("ellps=",token))
@@ -834,7 +874,8 @@ void EW::processGrid(char* buffer)
      else if( startswith("lon_p=",token))
      {
         token +=6;
-        proj0 << " +lon_0=" << atof(token);
+        lon_p = atof(token);
+        proj0 << " +lon_0=" << lon_p;
 	use_geoprojection = true;
         lon_p_set=true;
      }
@@ -849,8 +890,13 @@ void EW::processGrid(char* buffer)
 //                        123456789
      else if( startswith("scale=",token))
      {
+// Scale factor on the central meridian (tmerc etc). PROJ calls it k_0; an
+// unknown +scale parameter would be silently ignored. Appended after the
+// other parameters, see below.
         token +=6;
-        proj0 << " +scale=" << atof(token);
+        scale_k0 = atof(token);
+        CHECK_INPUT( scale_k0 > 0.0, err << "scale must be a positive float, not: " << token );
+        scale_set = true;
 	use_geoprojection = true;
      }
      else
@@ -943,8 +989,11 @@ void EW::processGrid(char* buffer)
   {
      if (!proj_set)
      {
-// Default projection: Universal Transverse Mercator (UTM)
-        proj0 << " +proj=utm";
+// Default projection: Universal Transverse Mercator (UTM). +proj must come
+// first: PROJ >= 6 does not take ' +ellps=... +proj=utm' as a CRS.
+        const string rest = proj0.str();
+        proj0.str("");
+        proj0 << "+proj=utm" << rest;
      }
 
      if (!ellps_set && !datum_set)
@@ -964,6 +1013,19 @@ void EW::processGrid(char* buffer)
      {
         proj0 << " +lat_0=" << mLatOrigin;
      }
+
+// PROJ >= 6 needs the UTM zone (it no longer takes it from +lon_0): use the zone
+// of lon_p if given, else of the origin, and the hemisphere of the origin.
+     if (projName == "utm")
+     {
+        if (utmZone == 0)
+           utmZone = std::min(60, std::max(1, static_cast<int>(floor(((lon_p_set ? lon_p : mLonOrigin) + 180.0)/6.0)) + 1));
+        proj0 << " +zone=" << utmZone;
+        if (mLatOrigin < 0)
+           proj0 << " +south";
+     }
+     else
+        CHECK_INPUT( utmZone == 0, "grid: zone= only applies to proj=utm, not proj=" << projName );
   }
 
   float_sw4 cubelen, zcubelen, hcube;
@@ -1271,10 +1333,26 @@ void EW::processGrid(char* buffer)
 #endif
   if( use_geoprojection )
   {
+// PROJ rejects a definition that starts with white space; the tokens above
+// all start with " +" since the keywords may come in any order.
+     string pstr = proj0.str();
+     pstr.erase(0, pstr.find_first_not_of(" \t"));
+     if( scale_set )
+     {
+#if defined(ENABLE_PROJ)
+        CHECK_INPUT( GeographicProjection::scaleFactorHasEffect( pstr, mLonOrigin, mLatOrigin ),
+                     "ERROR: grid scale=" << scale_k0 << " has no effect with the projection '" << pstr
+                     << "' (PROJ ignores +k_0 for it, e.g. utm fixes k_0=0.9996). Remove scale= or use "
+                     "a projection with a scale factor such as proj=tmerc." );
+#endif
+        stringstream k0;
+        k0 << " +k_0=" << setprecision(15) << scale_k0;
+        pstr += k0.str();
+     }
 // tmp
-//     cout << "New proj4 string: '" << proj0.str() << "'" << endl;
+//     cout << "New proj4 string: '" << pstr << "'" << endl;
 
-     m_geoproj = new GeographicProjection( mLonOrigin, mLatOrigin, proj0.str(), mGeoAz );
+     m_geoproj = new GeographicProjection( mLonOrigin, mLatOrigin, pstr, mGeoAz );
   }
   else
      m_geoproj = static_cast<GeographicProjection*>(0);
@@ -1484,6 +1562,12 @@ void EW::processAttenuation(char* buffer)
         m_att_ppw = atof( token ); // AP: changed from atoi
         foundppw = true;
         CHECK_INPUT(m_att_ppw >= 0, "ERROR: minimum ppw must be >= 0, not " << m_att_ppw);
+     }
+     else if( startswith("bandwidth=",token) )
+     {
+        token += 10;
+        m_att_bandwidth = atof( token );
+        CHECK_INPUT(m_att_bandwidth > 1, "ERROR: bandwidth (ratio of max to min frequency) must be > 1, not " << m_att_bandwidth);
      }
      else if( startswith("qmultiplier=",token) )
      {
@@ -2048,6 +2132,29 @@ void EW::processDeveloper(char* buffer)
 	token += 12;
 	m_checkfornan = strcmp(token,"1")==0 || strcmp(token,"on")==0 || strcmp(token,"yes")==0;
      }
+     else if( startswith("failonnan=",token) )
+     {
+	token += 10;
+	m_failonnan = strcmp(token,"1")==0 || strcmp(token,"on")==0 || strcmp(token,"yes")==0;
+	// failonnan requires the NaN checks to actually run
+	if( m_failonnan )
+	   m_checkfornan = true;
+     }
+     else if( startswith("divergencelimit=",token) )
+     {
+	// Escape hatch for the max|U| divergence abort (solve.C). <= 0 disables.
+	token += 16;
+	m_divergence_limit = atof(token);
+     }
+     else if( startswith("allowsourceinsupergrid=",token) )
+     {
+	// Downgrade the source-in-the-sponge abort to a warning. Lives under
+	// 'developer' because that command is parsed in both pass 2 and pass 4,
+	// so it takes effect whatever order the user's file is in - and because
+	// it means "you are on your own".
+	token += 23;
+	m_allow_source_in_supergrid = strcmp(token,"1")==0 || strcmp(token,"on")==0 || strcmp(token,"yes")==0;
+     }
 
 // //     if (startswith("update_processor_boundary=", token))
 // //     {
@@ -2331,7 +2438,10 @@ void EW::processTestEnergy(char* buffer)
   string filename("energy.log");
 
   float_sw4 cpcsratio = sqrt(3.0);
-  
+  float_sw4 basementz = 1e38, basementvfact = 2.7, basementrhofact = 1.28;
+  float_sw4 rhobase = 2.0, mubase = 2.0, rhoamp = -1, muamp = -1;
+  float_sw4 qsbase = 20.0, qpbase = -1.0, qsamp = 20.0, qpamp = 0.0;
+
   while (token != NULL)
   {
     if (startswith("#", token) || startswith(" ", buffer))
@@ -2339,8 +2449,63 @@ void EW::processTestEnergy(char* buffer)
 
     if (startswith("cpcsratio=", token))
     {
-      token += 10; 
+      token += 10;
       cpcsratio = atof(token);
+    }
+    else if (startswith("rhobase=", token))
+    {
+      token += 8;
+      rhobase = atof(token);
+    }
+    else if (startswith("mubase=", token))
+    {
+      token += 7;
+      mubase = atof(token);
+    }
+    else if (startswith("rhoamp=", token))
+    {
+      token += 7;
+      rhoamp = atof(token);
+    }
+    else if (startswith("muamp=", token))
+    {
+      token += 6;
+      muamp = atof(token);
+    }
+    else if (startswith("qsbase=", token))
+    {
+      token += 7;
+      qsbase = atof(token);
+    }
+    else if (startswith("qpbase=", token))
+    {
+      token += 7;
+      qpbase = atof(token);
+    }
+    else if (startswith("qsamp=", token))
+    {
+      token += 6;
+      qsamp = atof(token);
+    }
+    else if (startswith("qpamp=", token))
+    {
+      token += 6;
+      qpamp = atof(token);
+    }
+    else if (startswith("basementz=", token))
+    {
+      token += 10;
+      basementz = atof(token);
+    }
+    else if (startswith("basementvfact=", token))
+    {
+      token += 14;
+      basementvfact = atof(token);
+    }
+    else if (startswith("basementrhofact=", token))
+    {
+      token += 16;
+      basementrhofact = atof(token);
     }
     else if (startswith("seed=", token))
     {
@@ -2384,6 +2549,17 @@ void EW::processTestEnergy(char* buffer)
     token = strtok(NULL, " \t");
   }
   m_energy_test = new TestEnergy( seed, cpcsratio, write_every, filename, stochastic_amp, sg_eps );
+  m_energy_test->m_basement_z = basementz;
+  m_energy_test->m_basement_vfact = basementvfact;
+  m_energy_test->m_basement_rhofact = basementrhofact;
+  m_energy_test->m_rhobase = rhobase;
+  m_energy_test->m_mubase = mubase;
+  m_energy_test->m_rhoamp = rhoamp >= 0 ? rhoamp : stochastic_amp;
+  m_energy_test->m_muamp = muamp >= 0 ? muamp : stochastic_amp;
+  m_energy_test->m_qsbase = qsbase;
+  m_energy_test->m_qpbase = qpbase;
+  m_energy_test->m_qsamp = qsamp;
+  m_energy_test->m_qpamp = qpamp;
   // default bc is periodic in the horizontal directions
   boundaryConditionType bct[6]={bPeriodic, bPeriodic, bPeriodic, bPeriodic, bStressFree, bDirichlet};
 
@@ -3020,11 +3196,11 @@ void EW::processGeodynbc(char* buf)
    float_sw4 srcx0, srcy0, srcz0, h, toff;
 
    bool timestepset = false, nstepsset=false, toffset=false;
-   char buffer[256];
+   std::vector<char> lineBuf;
    bool done = false;
-   while (!geodynfile.eof() && !done )
+   while (!done && readInputLine(geodynfile, lineBuf))
    {
-      geodynfile.getline(buffer,256);
+      char* buffer = lineBuf.data();
       if (startswith("#", buffer) || startswith("\n", buffer) || buffer == "\0" )
          break;
       if( startswith("begindata",buffer) )
@@ -3289,13 +3465,13 @@ void EW::geodynbcGetSizes( string filename, float_sw4 origin[3], float_sw4 &cube
    double x0, y0, z0, elev, h;
    adjust=1;
 
-   char buffer[256];
+   std::vector<char> lineBuf;
    bool done = false;
    bool nxfound=false, nyfound=false, nzfound=false, x0found=false, y0found=false, z0found=false;
    bool latfound=false, lonfound=false, azfound=false, hfound=false, elevfound=false;
-   while (!geodynfile.eof() && !done )
+   while (!done && readInputLine(geodynfile, lineBuf))
    {
-      geodynfile.getline(buffer,256);
+      char* buffer = lineBuf.data();
       if (startswith("#", buffer) || startswith("\n", buffer) || buffer == "\0" )
          break;
       if( startswith("begindata",buffer) )
@@ -4007,7 +4183,6 @@ void EW::processCheckPoint(char* buffer)
    string err = "CheckPoint Error: ";
    int cycle=-1, cycleInterval=0;
    float_sw4 time=0.0, timeInterval=0.0;
-   bool timingSet=false;
    string filePrefix = "checkpoint";
 
    string restartFileName, restartPath;
@@ -4021,19 +4196,22 @@ void EW::processCheckPoint(char* buffer)
     {
        if (startswith("#", token) || startswith(" ", buffer))
           break;
-       //      if (startswith("cycle=", token) )
-       //      {
-       //	 token += 6; // skip cycle=
-       //	 CHECK_INPUT( atoi(token) >= 0., err << "cycle must be a non-negative integer, not: " << token);
-       //	 cycle = atoi(token);
-       //	 timingSet = true;
-       //      }
-      if (startswith("cycleInterval=", token) )
+      // A single checkpoint after time step `cycle` (CheckPoint::timeToWrite).
+      if (startswith("cycle=", token) )
+      {
+	 token += 6; // skip cycle=
+	 CHECK_INPUT( atoi(token) >= 1, err << "cycle must be a positive integer, not: " << token);
+	 cycle = atoi(token);
+      }
+      else if (startswith("time=", token) || startswith("timeInterval=", token) )
+      {
+	 CHECK_INPUT( false, err << "checkpoint is written by time step only; use cycle= or cycleInterval=, not " << token);
+      }
+      else if (startswith("cycleInterval=", token) )
       {
 	 token += 14; // skip cycleInterval=
 	 CHECK_INPUT( atoi(token) >= 0., err << "cycleInterval must be a non-negative integer, not: " << token);
 	 cycleInterval = atoi(token);
-	 timingSet = true;
       }
       else if (startswith("file=", token))
       {
@@ -4142,11 +4320,11 @@ void EW::processCheckPoint(char* buffer)
 
    if( m_check_point == CheckPoint::nil )
       m_check_point = new CheckPoint(this);
-   if( cycleInterval > 0 )
+   if( cycleInterval > 0 || cycle > 0 )
       m_check_point->set_checkpoint_file( filePrefix, cycle, cycleInterval, bufsize, useHDF5, compressionMode, compressionPar );
    if( restartFileGiven )
    {
-      m_check_point->set_restart_file( restartFileName, bufsize );
+      m_check_point->set_restart_file( restartFileName, bufsize, useHDF5 );
    }
    if( restartPathGiven )
    {
@@ -4851,8 +5029,8 @@ void EW::allocateCurvilinearArrays()
 // the mTopoGridExt array was allocated in allocateCartesianSolverArrays()   
    zMinLocal = -mTopoGridExt.maximum();
    zMaxLocal = -mTopoGridExt.minimum();
-   MPI_Allreduce( &zMinLocal, &zMinGlobal, 1, MPI_DOUBLE, MPI_MIN, m_cartesian_communicator);
-   MPI_Allreduce( &zMaxLocal, &zMaxGlobal, 1, MPI_DOUBLE, MPI_MAX, m_cartesian_communicator);
+   MPI_Allreduce( &zMinLocal, &zMinGlobal, 1, m_mpifloat, MPI_MIN, m_cartesian_communicator);
+   MPI_Allreduce( &zMaxLocal, &zMaxGlobal, 1, m_mpifloat, MPI_MAX, m_cartesian_communicator);
 
 
    //   for (i= imin ; i<=imax ; i++)
@@ -4927,10 +5105,10 @@ void EW::allocateCurvilinearArrays()
          if (d3h > maxd3z2h) maxd3z2h = d3h;
       }
    float_sw4 d2zh_global=0, d2z2h_global=0, d3zh_global=0, d3z2h_global=0;
-   MPI_Allreduce( &maxd2zh,  &d2zh_global,  1, MPI_DOUBLE, MPI_MIN, m_cartesian_communicator);
-   MPI_Allreduce( &maxd2z2h, &d2z2h_global, 1, MPI_DOUBLE, MPI_MIN, m_cartesian_communicator);
-   MPI_Allreduce( &maxd3zh,  &d3zh_global,  1, MPI_DOUBLE, MPI_MIN, m_cartesian_communicator);
-   MPI_Allreduce( &maxd3z2h, &d3z2h_global, 1, MPI_DOUBLE, MPI_MIN, m_cartesian_communicator);
+   MPI_Allreduce( &maxd2zh,  &d2zh_global,  1, m_mpifloat, MPI_MIN, m_cartesian_communicator);
+   MPI_Allreduce( &maxd2z2h, &d2z2h_global, 1, m_mpifloat, MPI_MIN, m_cartesian_communicator);
+   MPI_Allreduce( &maxd3zh,  &d3zh_global,  1, m_mpifloat, MPI_MIN, m_cartesian_communicator);
+   MPI_Allreduce( &maxd3z2h, &d3z2h_global, 1, m_mpifloat, MPI_MIN, m_cartesian_communicator);
 
    float_sw4 topo_zmax = m_gridGenerator->get_topo_zmax();
    if(proc_zero() )
@@ -5804,16 +5982,25 @@ void EW::processSource(char* buffer, vector<vector<Source*> > & a_GlobalUniqueSo
      //         ....
      FILE* fd=fopen(dfile, "r" );
      CHECK_INPUT( fd !=NULL , err << "Source time function file " << dfile << " not found" );
-     float_sw4 t0, dt;
+     // "%lg" fills a double: read into double temporaries, float_sw4 may be float.
+     double t0d, dt;
      int npts;
-     ret = fscanf(fd," %lg %lg %i", &t0, &dt, &npts );
+     ret = fscanf(fd," %lg %lg %i", &t0d, &dt, &npts );
+     CHECK_INPUT( ret == 3 && npts > 0 && dt > 0,
+                  err << "Source time function file " << dfile << ": could not read 't0 dt npts' header" );
      par = new float_sw4[npts+1];
-     par[0]  = t0;
+     par[0]  = t0d;
      freq    = 1/dt;
      ipar    = new int[1];
      ipar[0] = npts;
      for( int i=0 ; i < npts ; i++ )
-	ret = fscanf(fd,"%lg", &par[i+1] );
+     {
+        double val;
+	ret = fscanf(fd,"%lg", &val );
+        CHECK_INPUT( ret == 1, err << "Source time function file " << dfile << ": expected "
+                     << npts << " values, could only read " << i );
+        par[i+1] = val;
+     }
      npar = npts+1;
      nipar = 1;
      //     cout << "Read disc source: t0=" << t0 << " dt="  << dt << " npts= " << npts << endl;
@@ -6010,7 +6197,14 @@ void EW::processSource(char* buffer, vector<vector<Source*> > & a_GlobalUniqueSo
     {
       float_sw4 radconv = M_PI / 180.;
       float_sw4 S, D, R;
-      strike -= mGeoAz; // subtract off the grid azimuth
+      // strike= is a bearing from TRUE north (as SRF STK). The grid x-axis
+      // points at true azimuth mGeoAz + gamma, gamma = meridian convergence
+      // at the source (EW::computeMeridianConvergence), whether the source is
+      // positioned by lat/lon or by x/y.
+      double slon = lon, slat = lat;
+      if (!geoCoordSet)
+        computeGeographicCoord(x, y, slon, slat);
+      strike -= mGeoAz + computeMeridianConvergence(slon, slat);
       S = strike*radconv; D = dip*radconv; R = rake*radconv;
       
       mxx = -1.0 * ( sin(D) * cos(R) * sin (2*S) + sin(2*D) * sin(R) * sin(S)*sin(S) );
@@ -6105,6 +6299,7 @@ void EW::processRuptureHDF5(char* buffer, vector<vector<Source*> > & a_GlobalUni
 #ifdef USE_HDF5
   int event = 0;
   bool rfileset=false;
+  bool skip_outside=false;
   char rfile[1000];
   double stime, etime;
   stime = MPI_Wtime();
@@ -6152,6 +6347,13 @@ void EW::processRuptureHDF5(char* buffer, vector<vector<Source*> > & a_GlobalUni
 	    event = it->second;
 	 }
       }
+      else if (startswith("outside=",token))
+      {
+         token += 8;
+         CHECK_INPUT( strcmp(token,"error") == 0 || strcmp(token,"skip") == 0,
+                      err << "rupturehdf5 command: outside must be 'error' or 'skip', not '" << token << "'" );
+         skip_outside = strcmp(token,"skip") == 0;
+      }
       else
       {
          badOption("rupturehdf5", token);
@@ -6160,11 +6362,11 @@ void EW::processRuptureHDF5(char* buffer, vector<vector<Source*> > & a_GlobalUni
     }
 
 
+  CHECK_INPUT( rfileset, err << "rupturehdf5 command: file=... must be given" );
   if( event_is_in_proc(event) )
   {
      event = global_to_local_event(event);
-  if( rfileset)
-    readRuptureHDF5(rfile, a_GlobalUniqueSources, this, event, m_global_xmax, m_global_ymax, m_global_zmax, mGeoAz, xmin, ymin, zmin, mVerbose, m_nwriters);
+     readRuptureHDF5(rfile, a_GlobalUniqueSources, this, event, m_global_xmax, m_global_ymax, m_global_zmax, mGeoAz, xmin, ymin, zmin, mVerbose, m_nwriters, skip_outside);
   }
 
   etime = MPI_Wtime();
@@ -6172,8 +6374,7 @@ void EW::processRuptureHDF5(char* buffer, vector<vector<Source*> > & a_GlobalUni
   if (proc_zero())
       cout << "Process rupture data, took " << etime-stime << "seconds." << endl;
 #else
-  if (proc_zero())
-    cout << "Using HDF5 rupture input but sw4 is not compiled with HDF5!"<< endl;
+  CHECK_INPUT( false, "rupturehdf5 command: sw4 is not compiled with HDF5 (USE_HDF5)" );
 #endif
 
 } // end processRupture()
@@ -6208,9 +6409,10 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
   char formstring[1000];
   strcpy(formstring, "Discrete");
   char rfile[1000];
+  bool skip_outside=false;
 
 // bounding box
-// only check the z>zmin when we have topography. For a flat free surface, we will remove sources too 
+// only check the z>zmin when we have topography. For a flat free surface, we will remove sources too
 // close or above the surface in the call to mGlobalUniqueSources[i]->correct_Z_level()
   float_sw4 xmin = 0.;
   float_sw4 ymin = 0.;
@@ -6256,6 +6458,13 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
                 std::cout << "Rupture warning: event with name " << token << " not found" << std::endl;
 	 }
       }
+      else if (startswith("outside=",token))
+      {
+         token += 8;
+         CHECK_INPUT( strcmp(token,"error") == 0 || strcmp(token,"skip") == 0,
+                      err << "rupture command: outside must be 'error' or 'skip', not '" << token << "'" );
+         skip_outside = strcmp(token,"skip") == 0;
+      }
       else
       {
          badOption("rupture", token);
@@ -6263,7 +6472,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
       token = strtok(NULL, " \t");
     }
 
-  float_sw4 rVersion;
+  double rVersion;
 
   const int bufsize=1024;
   char buf[bufsize];
@@ -6273,6 +6482,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
   float_sw4* par=NULL;
   int* ipar=NULL;
   int npar=0, nipar=0, ncyc=0;
+  CHECK_INPUT( rfileset, err << "rupture command: file=... must be given" );
   if( rfileset )
   {
      //  g(t) defined by spline points on a uniform grid, read from file.
@@ -6331,7 +6541,10 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
       printf("Number of point sources in data block: %i\n", npts);
 
 // read all point sources
-    int nSources=0, nu1=0, nu2=0, nu3=0;
+    int nSources=0, nu1=0, nu2=0, nu3=0, nskip_zero_slip=0;
+    // Every rank reads the whole file, so all ranks agree on noutside.
+    int noutside=0;
+    const int max_outside_report = 10;
     for (int pts=0; pts<npts; pts++) 
     {
       double lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, slip2, slip3;
@@ -6366,7 +6579,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	ipar    = new int[1];
 	ipar[0] = nt1dim+1; // add an extra point 
 	ret = fgets(buf,bufsize,fd);
-	token = strtok(buf, " \t");
+	token = ret ? strtok(buf, " \t\r\n") : NULL;
 //	printf("buf='%s'\n", buf);
 	for( int i=0 ; i < nt1 ; i++ )
 	{
@@ -6374,12 +6587,17 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	  if (token == NULL)
 	  {
 	    ret = fgets(buf,bufsize,fd);
-	    token = strtok(buf, " \t");
+	    token = ret ? strtok(buf, " \t\r\n") : NULL;
 	  }
 //	  printf("token='%s'\n", token);
-	  sscanf(token,"%lg", &par[i+1] );
+	  // "%lg" fills a double: read into a double temporary, float_sw4 may be float.
+	  double sr;
+	  CHECK_INPUT( token != NULL && sscanf(token,"%lg", &sr ) == 1,
+		       err << "file " << rfile << ": point #" << pts+1 << " has NT1=" << nt1
+		       << " but only " << i << " slip-rate values could be read" );
+	  par[i+1] = sr;
 // read next token
-	  token = strtok(NULL, " \t");
+	  token = strtok(NULL, " \t\r\n");
 	}
 // pad with 0
 	if (nt1 < 6)
@@ -6410,20 +6628,35 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
         {
            printf("INFO: SRF file: dt*sum(slip_vel)=%e [m], total slip (from header)=%e [m]\n", slip_sum, slip_m);
         }
-// scale time series to sum to integrate to one        
-	for (int i=1; i<=nt1dim+1; i++)
-	{
-           par[i] /= slip_sum;
-	}
-        if (proc_zero() && mVerbose >= 2)
+        float_sw4 slip_sum_tol = 1e-12;
+        bool skip_zero_slip_point = false;
+        if( slip_sum > -slip_sum_tol && slip_sum < slip_sum_tol )
         {
-           slip_sum=0;
-           for (int i=1; i<=nt1dim+1; i++)
+           nskip_zero_slip++;
+           skip_zero_slip_point = true;
+           if( proc_zero() && nskip_zero_slip <= 10 )
            {
-              slip_sum += par[i];
+              printf("WARNING: skipping rupture point #%i because dt*sum(slip_vel)=%e [m], total slip (from header)=%e [m]\n",
+                     pts+1, slip_sum, slip_m);
            }
-           slip_sum *=dt;
-           printf("INFO: SRF file: After scaling time series: dt*sum(par)=%e [m]\n", slip_sum);
+        }
+// scale time series to sum to integrate to one        
+	if( !skip_zero_slip_point )
+	{
+	  for (int i=1; i<=nt1dim+1; i++)
+	  {
+             par[i] /= slip_sum;
+	  }
+          if (proc_zero() && mVerbose >= 2)
+          {
+             slip_sum=0;
+             for (int i=1; i<=nt1dim+1; i++)
+             {
+                slip_sum += par[i];
+             }
+             slip_sum *=dt;
+             printf("INFO: SRF file: After scaling time series: dt*sum(par)=%e [m]\n", slip_sum);
+          }
         }
 //done scaling        
         
@@ -6442,7 +6675,9 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 // convert strike, dip, rake to Mij
 	float_sw4 radconv = M_PI / 180.;
 	float_sw4 S, D, R;
-	stk -= mGeoAz; // subtract off the grid azimuth
+	// SRF STK is a bearing from TRUE north; the grid x-axis points at true
+	// azimuth mGeoAz + gamma (gamma = meridian convergence at the subfault).
+	stk -= mGeoAz + computeMeridianConvergence(lon, lat);
 	S = stk*radconv; D = dip*radconv; R = rake*radconv;
       
 	mxx = -1.0 * ( sin(D) * cos(R) * sin (2*S) + sin(2*D) * sin(R) * sin(S)*sin(S) );
@@ -6469,10 +6704,13 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 
 	if (x < xmin || x > m_global_xmax || y < ymin || y > m_global_ymax || z < zmin || z > m_global_zmax)
 	{
+	 // Points with zero slip would be skipped anyway and are not counted.
+	 if (!skip_zero_slip_point && ++noutside <= max_outside_report)
+	 {
 	  stringstream sourceposerr;
 	  sourceposerr << endl
 		       << "***************************************************" << endl
-		       << " ERROR:  Source positioned outside grid!  " << endl
+		       << (skip_outside ? " WARNING:" : " ERROR:") << "  Source positioned outside grid!  \n"
 		       << endl
 		       << " Source from rupture file @" << endl
 		       << "  x=" << x << " y=" << y << " z=" << z << endl 
@@ -6500,8 +6738,9 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	  sourceposerr << "***************************************************" << endl;
 	  if (m_myRank == 0)
 	    cout << sourceposerr.str();
+	 }
 	}
-	else if( event_is_in_proc(event) )
+	else if( !skip_zero_slip_point && event_is_in_proc(event) )
 	{
            event = global_to_local_event(event);
            sourcePtr = new Source(this, freq, t0, x, y, z, mxx, mxy, mxz, myy, myz, mzz,
@@ -6533,7 +6772,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	if (proc_zero())
 	  printf("WARNING nt2=%i > 0 will be ignored\n", nt2);
 	ret = fgets(buf,bufsize,fd);
-	token = strtok(buf, " \t");
+	token = strtok(buf, " \t\r\n");
 //	printf("buf='%s'\n", buf);
 	for( int i=0 ; i < nt2 ; i++ )
 	{
@@ -6541,12 +6780,13 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	  if (token == NULL)
 	  {
 	    ret = fgets(buf,bufsize,fd);
-	    token = strtok(buf, " \t");
+	    token = strtok(buf, " \t\r\n");
 	  }
 //	  printf("token='%s'\n", token);
-	  sscanf(token,"%lg", &dum );
+	  CHECK_INPUT( token != NULL, err << "file " << rfile << ": point #" << pts+1
+		       << " has fewer slip-rate values than NT2/NT3 say" );
 // read next token
-	  token = strtok(NULL, " \t");
+	  token = strtok(NULL, " \t\r\n");
 	}
       } // end if nt2 > 0
 
@@ -6558,7 +6798,7 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	if (proc_zero())
 	  printf("WARNING nt3=%i > 0 will be ignored\n", nt3);
 	ret = fgets(buf,bufsize,fd);
-	token = strtok(buf, " \t");
+	token = strtok(buf, " \t\r\n");
 //	printf("buf='%s'\n", buf);
 	for( int i=0 ; i < nt3 ; i++ )
 	{
@@ -6566,12 +6806,13 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
 	  if (token == NULL)
 	  {
 	    ret = fgets(buf,bufsize,fd);
-	    token = strtok(buf, " \t");
+	    token = strtok(buf, " \t\r\n");
 	  }
 //	  printf("token='%s'\n", token);
-	  sscanf(token,"%lg", &dum );
+	  CHECK_INPUT( token != NULL, err << "file " << rfile << ": point #" << pts+1
+		       << " has fewer slip-rate values than NT2/NT3 say" );
 // read next token
-	  token = strtok(NULL, " \t");
+	  token = strtok(NULL, " \t\r\n");
 	}
       } // end if nt3 > 0
       
@@ -6579,7 +6820,29 @@ void EW::processRupture(char* buffer, vector<vector<Source*> > & a_GlobalUniqueS
     if (proc_zero())
       printf("Read npts=%i, made %i point moment tensor sources, nu1=%i, nu2=%i, nu3=%i\n", 
 	     npts, nSources, nu1, nu2, nu3);
+    if (proc_zero() && nskip_zero_slip > 0)
+      printf("Skipped %i rupture points with zero slip-velocity integral in u1.\n", nskip_zero_slip);
     
+    if (noutside > 0)
+    {
+      if (skip_outside)
+      {
+        if (proc_zero())
+          printf("WARNING: dropped %i rupture points positioned outside grid (outside=skip)\n", noutside);
+      }
+      else
+      {
+        if (proc_zero())
+          cout << "Fatal input error: rupture: " << noutside << " of " << npts
+               << " rupture points in '" << rfile << "' are positioned outside grid"
+               << (noutside > max_outside_report ? " (first ones listed above)." : ".")
+               << " Enlarge the domain, or add outside=skip to the rupture command"
+               << " to drop these points." << '\n' << std::flush;
+        // Make sure rank 0 has printed before anyone aborts.
+        MPI_Barrier(MPI_COMM_WORLD);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+      }
+    }
     fclose(fd);
   }
 
@@ -8117,7 +8380,7 @@ void EW::processObservation( char* buffer, vector<vector<TimeSeries*> > & a_Glob
                        "processObservation: ERROR, sac file does not contain station coordinates " << sacfile1);
            fclose(fd);
         }
-        MPI_Bcast( latlon, 2, MPI_DOUBLE, 0, m_1d_communicator );
+        MPI_Bcast( latlon, 2, m_mpifloat, 0, m_1d_communicator );
         if( geoCoordSet && ( fabs(lat-latlon[0])<1e-10 && fabs(lon-latlon[1])<1e-10 ))
         {
            if( m_myRank == 0 )
@@ -9305,7 +9568,7 @@ void EW::processEvent( char* buffer, int enr )
 //-----------------------------------------------------------------------
 int EW::findNumberOfEvents()
 {
-   char buffer[256];
+   std::vector<char> lineBuf;
    ifstream inputFile;
    MPI_Barrier(MPI_COMM_WORLD);
    inputFile.open(mName.c_str());
@@ -9316,9 +9579,9 @@ int EW::findNumberOfEvents()
       CHECK_INPUT(false,"ERROR opening input file : " << mName << endl << endl);
    }
    int events=0;
-   while (!inputFile.eof())
+   while (readInputLine(inputFile, lineBuf))
    {
-      inputFile.getline(buffer, 256);
+      char* buffer = lineBuf.data();
       if( startswith("event",buffer ) )
       {
 	 processEvent( buffer, events );
