@@ -46,6 +46,11 @@
 #ifdef USE_HDF5
 #include "sachdf5.h"
 #endif
+#include "ESSI3D.h"   // SW4_ZFP_MODE_* definitions
+#ifdef USE_ZFP
+#include "H5Zzfp_lib.h"
+#include "H5Zzfp_props.h"
+#endif
 
 // initializing static member
 int Image::mPreceedZeros=0;
@@ -91,7 +96,9 @@ Image::Image(EW * a_ew,
   mStoreGrid(true),
   m_gridimage(Image::nil),
   m_write_time(0.0),
-  m_user_created(userCreated)
+  m_user_created(userCreated),
+  m_compressionMode(0),
+  m_compressionPar(0.0)
 {
   mMode2Suffix.resize(MODES);
   mMode2Suffix[NONE] = "unknown";
@@ -163,6 +170,22 @@ Image::Image(EW * a_ew,
   {
     m_floatField.resize(mEW->mNumberOfGrids);
   }
+}
+
+//-----------------------------------------------------------------------
+void Image::set_compression( int mode, double par )
+{
+   // Compression is only available for images in HDF5 format with ZFP linked in.
+   // The caller (EW::processImage) is responsible for warnings.
+   m_compressionMode = 0;
+   m_compressionPar  = 0.0;
+#if defined(USE_HDF5) && defined(USE_ZFP)
+   if( m_usehdf5 && mode >= SW4_ZFP_MODE_RATE && mode <= SW4_ZFP_MODE_REVERSIBLE )
+   {
+      m_compressionMode = mode;
+      m_compressionPar  = par;
+   }
+#endif
 }
 
 //-----------------------------------------------------------------------
@@ -1338,14 +1361,19 @@ void Image::writeImagePlane_2(int cycle, std::string &path, float_sw4 t )
       else
         dtype = H5T_NATIVE_FLOAT;
 
-      dims = total_elem;
-      dset_space = H5Screate_simple(1, &dims, NULL);
-      /* cout << "Rank " << mEW->getRank() << " creating patches array with length " << dims << endl; */
-      dset = H5Dcreate(h5_fid, "patches", dtype, dset_space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-      if( dset < 0 )
-	 cout << "ERROR: Image::writeImagePlane_2 could not create HDF5 patches dataset" << endl;
-      H5Sclose(dset_space);
-      H5Dclose(dset);
+      // With compression, the 2-D datasets patch0, patch1, ... are created and
+      // written later by write_patches_hdf5_compressed (no 1-D 'patches' dataset).
+      if( m_compressionMode == 0 )
+      {
+         dims = total_elem;
+         dset_space = H5Screate_simple(1, &dims, NULL);
+         /* cout << "Rank " << mEW->getRank() << " creating patches array with length " << dims << endl; */
+         dset = H5Dcreate(h5_fid, "patches", dtype, dset_space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+         if( dset < 0 )
+            cout << "ERROR: Image::writeImagePlane_2 could not create HDF5 patches dataset" << endl;
+         H5Sclose(dset_space);
+         H5Dclose(dset);
+      }
 
       char grid_name[16];
       if( mGridinfo >= 1 )
@@ -1449,7 +1477,16 @@ void Image::writeImagePlane_2(int cycle, std::string &path, float_sw4 t )
    {
 #ifdef USE_HDF5
       hsize_t dims, dims1 = 1;
-      if( ihavearray )
+      if( ihavearray && m_compressionMode != 0 )
+      {
+         // Gather each patch onto the rank that created the file and write it
+         // with a single H5Dwrite, so that every compressed chunk is written once.
+         write_patches_hdf5_compressed( s.str().c_str(), glow, ghigh );
+         // Make sure the file is closed before other ranks append grid data.
+         if( mGridinfo >= 1 )
+            MPI_Barrier( m_mpiComm_writers );
+      }
+      else if( ihavearray )
       {
          offset = 0;
          for( int g = glow ; g < ghigh; g++)
@@ -1492,6 +1529,179 @@ void Image::writeImagePlane_2(int cycle, std::string &path, float_sw4 t )
    } // End use_hdf5 == true
    etime = MPI_Wtime();
    m_write_time += (etime - stime);
+}
+
+//-----------------------------------------------------------------------
+void Image::write_patches_hdf5_compressed( const char* fname, int glow, int ghigh )
+{
+// Write the image patches as ZFP compressed 2-D datasets 'patch0', 'patch1', ...
+//
+// Collective over m_mpiComm_writers (the processors that own part of the image plane).
+// Each patch is gathered onto the processor that created the file (m_pio[0]->proc_zero()),
+// which writes it with one H5Dwrite. Dataset p has HDF5 shape (nj,ni) (C order), so that
+// reading it flat gives exactly the sequence the patch has in the uncompressed 1-D
+// 'patches' dataset (first in-plane index fastest).
+//
+// Writing the whole patch in a single call guarantees that every chunk is compressed
+// exactly once (no read-modify-write of partially filled lossy chunks).
+#if defined(USE_HDF5) && defined(USE_ZFP)
+   int myid, nproc;
+   MPI_Comm_rank( m_mpiComm_writers, &myid );
+   MPI_Comm_size( m_mpiComm_writers, &nproc );
+
+   // Find the root, i.e., the processor that created the file.
+   int rootcand = m_pio[0]->proc_zero() ? myid : -1, root;
+   MPI_Allreduce( &rootcand, &root, 1, MPI_INT, MPI_MAX, m_mpiComm_writers );
+   if( root < 0 )
+      VERIFY2(0, "ERROR: Image::write_patches_hdf5_compressed, could not find writing processor");
+   bool iroot = (myid == root);
+
+   MPI_Datatype mpitype = m_double ? MPI_DOUBLE : MPI_FLOAT;
+   size_t tsize = m_double ? sizeof(double) : sizeof(float);
+
+   hid_t h5_fid=-1;
+   if( iroot )
+   {
+      // No H5Pset_alignment here (unlike the uncompressed path): aligning the
+      // compressed chunks to 64 KB boundaries would pad each file by up to 64 KB,
+      // which is comparable to the size of a compressed image.
+      h5_fid = H5Fopen(fname, H5F_ACC_RDWR, H5P_DEFAULT);
+      if( h5_fid < 0 )
+	 VERIFY2(0, "ERROR: Image::write_patches_hdf5_compressed, error opening file " << fname );
+   }
+
+   for( int g = glow ; g < ghigh ; g++ )
+   {
+      // Global patch size: first in-plane index (fastest) and second in-plane index.
+      int nig, njg;
+      // Local in-plane index ranges. The local array is stored with i fastest, then j, then k;
+      // one of the three directions has length one, so the local array is a 2-D array
+      // in the two remaining directions.
+      int loc[4];
+      if( mLocationType == Image::X )
+      {
+	 nig = mEW->m_global_ny[g];
+	 njg = mEW->m_global_nz[g];
+	 loc[0] = mWindow[g][2]; loc[1] = mWindow[g][3];
+	 loc[2] = mWindow[g][4]; loc[3] = mWindow[g][5];
+      }
+      else if( mLocationType == Image::Y )
+      {
+	 nig = mEW->m_global_nx[g];
+	 njg = mEW->m_global_nz[g];
+	 loc[0] = mWindow[g][0]; loc[1] = mWindow[g][1];
+	 loc[2] = mWindow[g][4]; loc[3] = mWindow[g][5];
+      }
+      else
+      {
+	 nig = mEW->m_global_nx[g];
+	 njg = mEW->m_global_ny[g];
+	 loc[0] = mWindow[g][0]; loc[1] = mWindow[g][1];
+	 loc[2] = mWindow[g][2]; loc[3] = mWindow[g][3];
+      }
+      int nloc = (loc[1]-loc[0]+1)*(loc[3]-loc[2]+1);
+      if( nloc < 0 )
+	 nloc = 0;
+
+      vector<int> allloc, counts, displs;
+      if( iroot )
+      {
+	 allloc.resize(4*nproc);
+	 counts.resize(nproc);
+	 displs.resize(nproc);
+      }
+      MPI_Gather( loc, 4, MPI_INT, iroot ? &allloc[0] : NULL, 4, MPI_INT, root, m_mpiComm_writers );
+
+      char* recvbuf = NULL;
+      size_t ntot = 0;
+      if( iroot )
+      {
+	 for( int p=0 ; p < nproc ; p++ )
+	 {
+	    int n = (allloc[4*p+1]-allloc[4*p]+1)*(allloc[4*p+3]-allloc[4*p+2]+1);
+	    counts[p] = n > 0 ? n : 0;
+	    displs[p] = static_cast<int>(ntot);
+	    ntot += counts[p];
+	 }
+	 if( ntot != static_cast<size_t>(nig)*njg )
+	    cout << "WARNING: Image::write_patches_hdf5_compressed, gathered " << ntot << " points, expected "
+		 << static_cast<size_t>(nig)*njg << " for patch " << g-glow << endl;
+	 recvbuf = new char[ntot*tsize];
+      }
+      void* sendbuf = m_double ? static_cast<void*>(m_doubleField[g]) : static_cast<void*>(m_floatField[g]);
+      MPI_Gatherv( sendbuf, nloc, mpitype, recvbuf, iroot ? &counts[0] : NULL,
+		   iroot ? &displs[0] : NULL, mpitype, root, m_mpiComm_writers );
+
+      if( iroot )
+      {
+	 // Assemble the global patch, first in-plane index fastest.
+	 size_t npatch = static_cast<size_t>(nig)*njg;
+	 char* patch = new char[npatch*tsize];
+	 for( int p=0 ; p < nproc ; p++ )
+	 {
+	    int a0 = allloc[4*p], a1 = allloc[4*p+1], b0 = allloc[4*p+2], b1 = allloc[4*p+3];
+	    size_t na = a1-a0+1;
+	    if( counts[p] == 0 )
+	       continue;
+	    for( int b=b0 ; b <= b1 ; b++ )
+	    {
+	       size_t src = displs[p] + na*(b-b0);
+	       size_t dst = (a0-1) + static_cast<size_t>(nig)*(b-1);
+	       memcpy( patch + dst*tsize, recvbuf + src*tsize, na*tsize );
+	    }
+	 }
+	 delete[] recvbuf;
+
+	 // 2-D dataset, C order (nj,ni).
+	 hsize_t dims[2] = {static_cast<hsize_t>(njg), static_cast<hsize_t>(nig)};
+	 // Chunking: the whole patch as a single chunk, unless it is larger than
+	 // maxchunk bytes (HDF5 limits chunks to 4 GB). Then use chunks of full rows,
+	 // with the number of rows a multiple of 4 (ZFP compresses 4x4 blocks).
+	 const size_t maxchunk = 256*1024*1024;
+	 hsize_t chunk[2] = {dims[0], dims[1]};
+	 if( npatch*tsize > maxchunk )
+	 {
+	    hsize_t rows = maxchunk/(dims[1]*tsize);
+	    rows = (rows/4)*4;
+	    if( rows < 4 )
+	       rows = 4;
+	    if( rows < chunk[0] )
+	       chunk[0] = rows;
+	 }
+	 hid_t dcpl = H5Pcreate(H5P_DATASET_CREATE);
+	 H5Pset_chunk( dcpl, 2, chunk );
+	 herr_t ierr = 0;
+	 if( m_compressionMode == SW4_ZFP_MODE_RATE )
+	    ierr = H5Pset_zfp_rate( dcpl, m_compressionPar );
+	 else if( m_compressionMode == SW4_ZFP_MODE_PRECISION )
+	    ierr = H5Pset_zfp_precision( dcpl, static_cast<unsigned int>(m_compressionPar) );
+	 else if( m_compressionMode == SW4_ZFP_MODE_ACCURACY )
+	    ierr = H5Pset_zfp_accuracy( dcpl, m_compressionPar );
+	 else if( m_compressionMode == SW4_ZFP_MODE_REVERSIBLE )
+	    ierr = H5Pset_zfp_reversible( dcpl );
+	 if( ierr < 0 )
+	    cout << "ERROR: Image::write_patches_hdf5_compressed, could not set ZFP filter" << endl;
+
+	 hid_t dtype = m_double ? H5T_NATIVE_DOUBLE : H5T_NATIVE_FLOAT;
+	 hid_t space = H5Screate_simple(2, dims, NULL);
+	 char dname[32];
+	 snprintf( dname, sizeof(dname), "patch%d", g-glow );
+	 hid_t dset = H5Dcreate( h5_fid, dname, dtype, space, H5P_DEFAULT, dcpl, H5P_DEFAULT );
+	 if( dset < 0 )
+	    VERIFY2(0, "ERROR: Image::write_patches_hdf5_compressed, could not create dataset " << dname
+		    << " in file " << fname );
+	 if( H5Dwrite( dset, dtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, patch ) < 0 )
+	    VERIFY2(0, "ERROR: Image::write_patches_hdf5_compressed, could not write dataset " << dname
+		    << " in file " << fname );
+	 H5Dclose(dset);
+	 H5Sclose(space);
+	 H5Pclose(dcpl);
+	 delete[] patch;
+      }
+   }
+   if( iroot )
+      H5Fclose(h5_fid);
+#endif
 }
 
 //-----------------------------------------------------------------------

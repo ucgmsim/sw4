@@ -4101,10 +4101,36 @@ uzerr   & $z$-component of error (difference between computed and exact solution
 \label{keyword:imagehdf5}
 \begin{flushleft}
 \bf Syntax:\\ \tt imagehdf5 x=... y=... z=...
-time=... timeInterval=... cycle=... cycleInterval=... file=... mode=... precision=...\\ \bf Required
+time=... timeInterval=... cycle=... cycleInterval=... file=... mode=... precision=...
+zfp-\{accuracy/precision/rate/reversible\}=...\\ \bf Required
 parameters:\\ \rm Location of the image plane (x, y, or z) \\ Time for output (time, timeInterval,
 cycle, or cycleInterval)\\ \bf Notes: \\ imagehdf5 is identical to the image command, while writing the image data in an HDF5 file. One can easily read and plot the data using python function provided in the jupyter notebook at \verb+tools/plotimageh5.ipynb+
 \end{flushleft}
+
+The image data can optionally be compressed with ZFP \url{https://github.com/LLNL/zfp}, through the
+H5Z-ZFP HDF5 filter, using one of the options below. They have the same meaning as for the
+\verb+ssioutput+ and \verb+checkpoint+ commands. With compression, each patch of the image is
+stored as a chunked two-dimensional dataset (see Section~\ref{sec:imagehdf5-format}), instead of
+the one-dimensional {\tt patches} dataset. Note that the accuracy mode bounds the absolute error,
+in the units of the image (e.g., m for {\tt mode=mag}, m/s for {\tt mode=velmag}), so it should be
+chosen relative to the amplitudes of the solution. The rate mode (bits per value) gives a fixed
+file size, and the reversible mode is lossless. ZFP and H5Z-ZFP must be installed and linked with
+SW4 to use these options (see the Installation Guide); otherwise a warning is printed and the
+images are written uncompressed. The options are ignored, with a warning, by the {\tt image}
+command. Reading compressed images requires the H5Z-ZFP filter, e.g., \verb+import hdf5plugin+
+together with {\tt h5py} in Python.
+\begin{center}
+\begin{tabular}{|l|p{8cm}|l|l|l|} \hline
+\multicolumn{5}{|c|}{\bf imagehdf5 compression options}\\ \hline
+{\bf Option} & {\bf Description}          & {\bf Type} & {\bf Units} & {\bf Default} \\ \hline
+\hline
+zfp-accuracy & ZFP fixed-accuracy mode, absolute error tolerance & float & image units & N/A \\ \hline
+zfp-precision & ZFP fixed-precision mode, number of uncompressed bits per value & int & none & N/A \\ \hline
+zfp-rate & ZFP fixed-rate mode, number of compressed bits per value & float & none & N/A \\ \hline
+zfp-reversible & ZFP lossless compression (the value is ignored) & int & none & N/A \\ \hline
+\end{tabular}
+\end{center}
+\index{imagehdf5 parameters!zfp-accuracy, zfp-precision, zfp-rate, zfp-reversible}
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -5678,6 +5704,23 @@ GROUP "/" {
 }
 }
 \end{verbatim}
+
+When one of the {\tt zfp-...} options of the {\tt imagehdf5} command is used, all the datasets
+above are unchanged, except that the one-dimensional {\tt patches} dataset is replaced by one
+two-dimensional dataset per patch, named {\tt patch0}, {\tt patch1}, \ldots, {\tt patch<npatch-1>}
+(in the same patch order). Dataset {\tt patch<p>} has the HDF5 (C order) shape
+$({\tt nj}[p],{\tt ni}[p])$, has the same datatype as the {\tt precision} option, and is chunked and
+compressed by the H5Z-ZFP filter (HDF5 filter id 32013). Reading the dataset flat in C order gives
+exactly the values that the patch occupies in the {\tt patches} dataset of an uncompressed file,
+i.e., the first in-plane index varies fastest. For example, in Python:
+\begin{verbatim}
+import h5py, hdf5plugin
+f = h5py.File("image.cycle=100.z=0.mag.sw4img.h5", "r")
+img = f["patch0"][:]        # shape (nj[0], ni[0]), img[j,i]
+\end{verbatim}
+Each patch is gathered onto one processor and written in a single operation, so that every
+compressed chunk is written exactly once.
+
 
 
 \section{volimage}\label{sec:volimage-format}

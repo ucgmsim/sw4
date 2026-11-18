@@ -79,6 +79,10 @@ static  void setSteps(int a_steps);
 // 			      const int           a_padding       );
 
 void set_double( bool val=true ); 
+// Lossy/lossless ZFP compression of HDF5 images (imagehdf5 only).
+// mode is one of SW4_ZFP_MODE_{RATE,PRECISION,ACCURACY,REVERSIBLE} (see ESSI3D.h), 0 = no compression.
+void set_compression( int mode, double par );
+
   /* Here, we compute the index --in the local grid-- of the coordinate value at which we have to plot. 
      For x, y, the local grid is the same as the global grid, but for z, k resets at each refinement boundary. */
 void computeGridPtIndex();
@@ -128,6 +132,7 @@ void writeImagePlane_2(int cycle, std::string &a_path, float_sw4 time );
 void add_grid_filenames_to_file( const char* fname );
 void add_grid_to_file( const char* fname, bool iwrite, size_t offset );
 void add_grid_to_file_hdf5( const char* fname, bool iwrite, size_t offset );
+void write_patches_hdf5_compressed( const char* fname, int glow, int ghigh );
 
 // several curvilinear grids (MR)
 void add_grids_to_file( const char* fname, bool iwrite, size_t offset );
@@ -207,6 +212,8 @@ bool m_double;
 bool m_usehdf5;
 EW* mEW;
 Parallel_IO** m_pio;
+int m_compressionMode;   // 0 = uncompressed (1-D 'patches' dataset), otherwise SW4_ZFP_MODE_*
+double m_compressionPar; // ZFP rate, precision or accuracy, depending on m_compressionMode
 double m_write_time;
 
 // moved to class EW
