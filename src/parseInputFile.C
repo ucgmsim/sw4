@@ -5487,7 +5487,6 @@ void EW::processImage(char* buffer, bool use_hdf5)
     }
     else if (startswith("zfp-reversible=", token))
     {
-      token += 15;
       compressionMode = SW4_ZFP_MODE_REVERSIBLE;
     }
     else
@@ -5510,7 +5509,7 @@ void EW::processImage(char* buffer, bool use_hdf5)
      {
 	if( proc_zero() )
 	   cout << "WARNING: zfp-* options are only supported by the imagehdf5 command, "
-		<< "ignored for image command" << endl;
+		<< "ignored for image command" << '\n';
 	compressionMode = 0;
      }
      else
@@ -5520,19 +5519,19 @@ void EW::processImage(char* buffer, bool use_hdf5)
 	{
 	   cout << "imagehdf5 will use ZFP ";
 	   if( compressionMode == SW4_ZFP_MODE_RATE )
-	      cout << "rate=" << compressionPar << endl;
+	      cout << "rate=" << compressionPar << '\n';
 	   else if( compressionMode == SW4_ZFP_MODE_PRECISION )
-	      cout << "precision=" << compressionPar << endl;
+	      cout << "precision=" << compressionPar << '\n';
 	   else if( compressionMode == SW4_ZFP_MODE_ACCURACY )
-	      cout << "accuracy=" << compressionPar << endl;
+	      cout << "accuracy=" << compressionPar << '\n';
 	   else
-	      cout << "reversible mode" << endl;
+	      cout << "reversible mode" << '\n';
 	}
 #else
 	static bool zfpwarned = false;
 	if( proc_zero() && !zfpwarned )
 	   cout << "WARNING: SW4 is not compiled with ZFP but ZFP command is used, "
-		<< "imagehdf5 output will not be compressed" << endl;
+		<< "imagehdf5 output will not be compressed" << '\n';
 	zfpwarned = true;
 	compressionMode = 0;
 #endif

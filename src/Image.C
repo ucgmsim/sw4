@@ -1400,7 +1400,7 @@ void Image::writeImagePlane_2(int cycle, std::string &path, float_sw4 t )
          /* cout << "Rank " << mEW->getRank() << " creating patches array with length " << dims << endl; */
          dset = H5Dcreate(h5_fid, "patches", dtype, dset_space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
          if( dset < 0 )
-            cout << "ERROR: Image::writeImagePlane_2 could not create HDF5 patches dataset" << endl;
+            cout << "ERROR: Image::writeImagePlane_2 could not create HDF5 patches dataset" << '\n';
          H5Sclose(dset_space);
          H5Dclose(dset);
       }
@@ -1655,7 +1655,7 @@ void Image::write_patches_hdf5_compressed( const char* fname, int glow, int ghig
 	 }
 	 if( ntot != static_cast<size_t>(nig)*njg )
 	    cout << "WARNING: Image::write_patches_hdf5_compressed, gathered " << ntot << " points, expected "
-		 << static_cast<size_t>(nig)*njg << " for patch " << g-glow << endl;
+		 << static_cast<size_t>(nig)*njg << " for patch " << g-glow << '\n';
 	 recvbuf = new char[ntot*tsize];
       }
       void* sendbuf = m_double ? static_cast<void*>(m_doubleField[g]) : static_cast<void*>(m_floatField[g]);
@@ -1710,7 +1710,7 @@ void Image::write_patches_hdf5_compressed( const char* fname, int glow, int ghig
 	 else if( m_compressionMode == SW4_ZFP_MODE_REVERSIBLE )
 	    ierr = H5Pset_zfp_reversible( dcpl );
 	 if( ierr < 0 )
-	    cout << "ERROR: Image::write_patches_hdf5_compressed, could not set ZFP filter" << endl;
+	    cout << "ERROR: Image::write_patches_hdf5_compressed, could not set ZFP filter" << '\n';
 
 	 hid_t dtype = m_double ? H5T_NATIVE_DOUBLE : H5T_NATIVE_FLOAT;
 	 hid_t space = H5Screate_simple(2, dims, NULL);
