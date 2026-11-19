@@ -5262,6 +5262,8 @@ void EW::processImage(char* buffer, bool use_hdf5)
   bool coordWasSet = false;
   bool use_double = false;
   bool mode_is_grid = false;
+  int compressionMode = 0;
+  double compressionPar = 0.0;
   
   char* token = strtok(buffer, " \t");
   if ( strcmp("image", token) != 0 && strcmp("imagehdf5", token) != 0 )
@@ -5465,6 +5467,28 @@ void EW::processImage(char* buffer, bool use_hdf5)
 	MPI_Abort( MPI_COMM_WORLD, 1 );
       }
     }
+    else if (startswith("zfp-rate=", token))
+    {
+      token += 9;
+      compressionMode = SW4_ZFP_MODE_RATE;
+      compressionPar = atof(token);
+    }
+    else if (startswith("zfp-precision=", token))
+    {
+      token += 14;
+      compressionMode = SW4_ZFP_MODE_PRECISION;
+      compressionPar = atof(token);
+    }
+    else if (startswith("zfp-accuracy=", token))
+    {
+      token += 13;
+      compressionMode = SW4_ZFP_MODE_ACCURACY;
+      compressionPar = atof(token);
+    }
+    else if (startswith("zfp-reversible=", token))
+    {
+      compressionMode = SW4_ZFP_MODE_REVERSIBLE;
+    }
     else
     {
       badOption("image", token);
@@ -5476,6 +5500,42 @@ void EW::processImage(char* buffer, bool use_hdf5)
   {
     cerr << "Processing image command: " << "at least one timing mechanism must be set: cycle, time, cycleInterval or timeInterval" << endl;
     MPI_Abort( MPI_COMM_WORLD, 1 );
+  }
+
+  // ZFP compression is only supported for images in HDF5 format
+  if( compressionMode != 0 )
+  {
+     if( !use_hdf5 )
+     {
+	if( proc_zero() )
+	   cout << "WARNING: zfp-* options are only supported by the imagehdf5 command, "
+		<< "ignored for image command" << '\n';
+	compressionMode = 0;
+     }
+     else
+     {
+#if defined(USE_HDF5) && defined(USE_ZFP)
+	if( proc_zero() )
+	{
+	   cout << "imagehdf5 will use ZFP ";
+	   if( compressionMode == SW4_ZFP_MODE_RATE )
+	      cout << "rate=" << compressionPar << '\n';
+	   else if( compressionMode == SW4_ZFP_MODE_PRECISION )
+	      cout << "precision=" << compressionPar << '\n';
+	   else if( compressionMode == SW4_ZFP_MODE_ACCURACY )
+	      cout << "accuracy=" << compressionPar << '\n';
+	   else
+	      cout << "reversible mode" << '\n';
+	}
+#else
+	static bool zfpwarned = false;
+	if( proc_zero() && !zfpwarned )
+	   cout << "WARNING: SW4 is not compiled with ZFP but ZFP command is used, "
+		<< "imagehdf5 output will not be compressed" << '\n';
+	zfpwarned = true;
+	compressionMode = 0;
+#endif
+     }
   }
   
   // if topographic image, set flag
@@ -5505,27 +5565,33 @@ void EW::processImage(char* buffer, bool use_hdf5)
 	    {
 	       i = new Image(this, time, timeInterval, cycle, cycleInterval, 
 			 filePrefix, Image::GRIDY, locationType, coordValue, use_double, use_hdf5);
+	       i->set_compression(compressionMode, compressionPar);
 	       addImage(i);
 	       i = new Image(this, time, timeInterval, cycle, cycleInterval, 
 			 filePrefix, Image::GRIDZ, locationType, coordValue, use_double, use_hdf5);
+	       i->set_compression(compressionMode, compressionPar);
 	       addImage(i);
 	    }
 	    else if( locationType == Image::Y )
 	    {
 	       i = new Image(this, time, timeInterval, cycle, cycleInterval, 
 			 filePrefix, Image::GRIDX, locationType, coordValue, use_double, use_hdf5);
+	       i->set_compression(compressionMode, compressionPar);
 	       addImage(i);
 	       i = new Image(this, time, timeInterval, cycle, cycleInterval, 
 			 filePrefix, Image::GRIDZ, locationType, coordValue, use_double, use_hdf5);
+	       i->set_compression(compressionMode, compressionPar);
 	       addImage(i);
 	    }
 	    else if( locationType == Image::Z )
 	    {
 	       i = new Image(this, time, timeInterval, cycle, cycleInterval, 
 			 filePrefix, Image::GRIDX, locationType, coordValue, use_double, use_hdf5);
+	       i->set_compression(compressionMode, compressionPar);
 	       addImage(i);
 	       i = new Image(this, time, timeInterval, cycle, cycleInterval, 
 			     filePrefix, Image::GRIDY, locationType, coordValue, use_double, use_hdf5);
+	       i->set_compression(compressionMode, compressionPar);
 	       addImage(i);
 	    }
 	 }
@@ -5533,7 +5599,8 @@ void EW::processImage(char* buffer, bool use_hdf5)
 	 {
 	    i = new Image(this, time, timeInterval, cycle, cycleInterval, 
 			  filePrefix, mode, locationType, coordValue, use_double, use_hdf5);
-	    addImage(i);
+	    i->set_compression(compressionMode, compressionPar);
+	       addImage(i);
 	 }
       }
       else 

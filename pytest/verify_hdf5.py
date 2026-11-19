@@ -126,9 +126,16 @@ def read_sw4img_hdf5(fname):
     if 'grid' in image_h5.keys():
         has_grid = True
     
-    pdata = image_h5['patches']
-
-    return np.array(pdata)
+    if 'patches' in image_h5.keys():
+        pdata = np.array(image_h5['patches'])
+    else:
+        # ZFP compressed image (imagehdf5 zfp-*=... option): one 2-D dataset
+        # 'patch<p>' of shape (nj[p], ni[p]) per patch. Reading it flat in C order
+        # gives the same sequence as the patch has in the 1-D 'patches' dataset.
+        # Reading requires the H5Z-ZFP filter, e.g., 'import hdf5plugin'.
+        pdata = np.concatenate([np.array(image_h5['patch%d' % p]).ravel() for p in range(npatch)])
+    image_h5.close()
+    return pdata
 
 
 def read_essi(fname):
@@ -345,3 +352,44 @@ def verify_sac_image(pytest_dir, tolerance):
     #     print ('All %d images data match!' % nimg)
 
     return verify
+
+def verify_image_zfp(pytest_dir, tolerance):
+    """Compare ZFP compressed images (test loh1-h100-mr-hdf5-zfp) with the uncompressed reference images."""
+    try:
+        import hdf5plugin  # registers the H5Z-ZFP filter with h5py
+    except ImportError:
+        print("  hdf5plugin is needed to read ZFP compressed images (pip install hdf5plugin)")
+        return False
+    ref_dir = pytest_dir + '/hdf5/loh1-h100-mr-1/'
+    hdf5_dir = os.getcwd() + '/loh1-h100-mr-1-hdf5-zfp/'
+    nimg = 0
+    for filename in sorted(os.listdir(ref_dir)):
+        if not filename.endswith(".sw4img"):
+            continue
+        sw4img_file = ref_dir + filename
+        h5img_file = hdf5_dir + filename + '.h5'
+        if not os.path.exists(h5img_file):
+            print("Image file [%s] is missing!" % h5img_file)
+            return False
+        with h5py.File(h5img_file, 'r') as f:
+            npatch = f['npatch'][0]
+            ni = f['ni'][()]
+            nj = f['nj'][()]
+            if 'patches' in f.keys():
+                print("Image [%s] is not compressed" % h5img_file)
+                return False
+            for p in range(npatch):
+                d = f['patch%d' % p]
+                if d.shape != (nj[p], ni[p]) or '32013' not in d._filters:
+                    print("Image [%s] patch%d has wrong shape or no ZFP filter" % (h5img_file, p))
+                    return False
+        sw4_pdata = read_sw4img(sw4img_file)
+        h5_pdata = read_sw4img_hdf5(h5img_file)
+        if len(sw4_pdata) != len(h5_pdata):
+            print("Image sizes are different! %d/%d" % (len(sw4_pdata), len(h5_pdata)))
+            return False
+        if np.max(np.abs(h5_pdata - sw4_pdata)) > tolerance:
+            print("Image data [%s] does not match!" % sw4img_file)
+            return False
+        nimg += 1
+    return nimg > 0
